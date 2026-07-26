@@ -6,6 +6,8 @@ Last updated: 2026-07-20
 
 Target: **Neon Serverless PostgreSQL**, with the `pgvector` extension enabled for collections that use pgvector as their backend (per the per-collection choice explained in `ARCHITECTURE.md` §8).
 
+> **Superseded in part by `PROJECT_PLAN.md` §3.2, §3.5.** This document describes a single-tenant schema. EKIP is now multi-tenant SaaS: every table below gains an `organization_id` column (tenant-scoped tables also gain `project_id`), and RBAC's `user_roles`/`role_permissions` tables become organization-scoped rather than global. New tables owned by the tenancy model (`organizations`, `projects`, `sso_configurations`, `external_identity_mappings`, `connector_configs`, `project_memberships`) are defined in `PROJECT_PLAN.md` §3.2 rather than duplicated here. Everything below remains accurate for column-level detail on the tables that already exist; treat it as needing the tenancy columns added, not as wrong.
+
 ---
 
 ## Conventions
@@ -18,6 +20,8 @@ Target: **Neon Serverless PostgreSQL**, with the `pgvector` extension enabled fo
 ---
 
 ## `core/` — owned tables
+
+> **Note:** every table in this section gains `organization_id` per `PROJECT_PLAN.md` §3.2. `user_roles`'s primary key becomes the composite `(user_id, organization_id, role_id)` per §3.5, since role assignment is now scoped per organization rather than global.
 
 ### `users`
 | column | type | notes |
@@ -59,6 +63,8 @@ Primary key: composite `(role_id, permission_id)`.
 | role_id | UUID FK → roles.id | ON DELETE CASCADE |
 
 Primary key: composite `(user_id, role_id)`.
+
+> **Superseded — see `PROJECT_PLAN.md` §3.5.** Add `organization_id UUID FK → organizations.id` (ON DELETE CASCADE); primary key becomes the composite `(user_id, organization_id, role_id)`, so the same user can hold different roles in different organizations. Project-scoped role overrides are a separate new table, `project_memberships`, defined in `PROJECT_PLAN.md` §3.2 — not a variant of this table.
 
 *Why roles/permissions are separated rather than a single enum on `users`:* RBAC needs to support MCP-scoped access checks (`ARCHITECTURE.md` §6) using the same permission codes as the REST API — a flat role enum would force duplicating permission logic per entry point.
 
@@ -211,6 +217,8 @@ Index: `(document_id)`, and `(key, value)` for metadata-filtered retrieval.
 ---
 
 ## `retrieval/` — owned tables (pgvector-backed collections only)
+
+> **Extended — see `PROJECT_PLAN.md` §5.4-§5.5.** Every chunk (in Postgres, or in Qdrant payload for Qdrant-backed collections) carries `organization_id`, `project_id`, and document-ACL metadata, applied as a mandatory filter on the retrieval query itself — never as a post-filter on results, and never something an LLM is trusted to "ignore." This is the mechanism that guarantees a caller's search can never surface another organization's data.
 
 Chunk-level tables exist per collection, following the same shape; documented once here and reused:
 
