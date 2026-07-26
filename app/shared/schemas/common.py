@@ -43,4 +43,4 @@ class ErrorBody(TypedDict, total=False):
 
     error_code: str
     message: str
-    detail: dict | None
+    detail: dict | None 
