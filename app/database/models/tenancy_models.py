@@ -18,8 +18,10 @@ Python class imports -- this avoids a circular import between
 tenancy_models.py and core_models.py, since core_models.py will in turn need
 to reference `organizations.id` once tenant columns are added there.
 """
+
 import uuid
 from datetime import datetime
+
 from sqlalchemy import (
     Boolean,
     DateTime,
@@ -33,7 +35,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.shared.config.database.session import Base
+from app.database.session import Base
 
 
 class Organization(Base):
@@ -130,6 +132,8 @@ class SSOConfiguration(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
+
+
 class ExternalIdentityMapping(Base):
     """Maps one IdP's subject claim to one EKIP user, within one organization.
 
@@ -160,6 +164,8 @@ class ExternalIdentityMapping(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
 class ConnectorConfig(Base):
     """One row per (organization, external tool) connection.
 
@@ -199,16 +205,18 @@ class ConnectorConfig(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
+
+
 class ProjectMembership(Base):
     """Grants a user a role within one specific project.
 
     This is the project-level authorization tier from PROJECT_PLAN.md
     section 3.6 -- distinct from `user_roles` (organization-level role
-    assignment, added to core_models.py in the next file). Reuses the
-    existing `roles` catalog rather than inventing project-specific roles, so
-    the same permission vocabulary applies at both the organization and
-    project scope.
+    assignment). Reuses the existing `roles` catalog rather than inventing
+    project-specific roles, so the same permission vocabulary applies at both
+    the organization and project scope.
     """
+
     __tablename__ = "project_memberships"
 
     user_id: Mapped[uuid.UUID] = mapped_column(

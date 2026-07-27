@@ -4,8 +4,8 @@ Owned by: database/ (ARCHITECTURE.md section 3 -- infrastructure layer).
 
 Wires Alembic to this project's async engine and declarative Base, so:
   - `alembic revision --autogenerate` diffs against `Base.metadata`, which
-    will include every model in app/database/models/ once those exist
-    (they all import and register against the same Base from session.py).
+    includes every model in app/database/models/ (they all import and
+    register against the same Base from session.py).
   - `alembic upgrade` / `downgrade` run through the same async engine
     machinery as the rest of the app, using Settings.database_url --
     not a second, hand-maintained sync connection string.
@@ -14,7 +14,7 @@ This file is generated once by `alembic init -t async migrations` and then
 hand-edited to point at the project's Base/settings; it is not meant to be
 regenerated after this point, only edited as needed (e.g. if new model
 modules are added and need to be imported below so their tables are visible
-to autogenerate)...
+to autogenerate).
 """
 
 import asyncio
@@ -27,15 +27,15 @@ from app.database.session import Base, engine
 from app.shared.config.settings import get_settings
 
 # Import every model module here so its tables register on Base.metadata
-# before autogenerate runs. Uncommented as each module is implemented --
-# empty for now since no model files exist yet (DATABASE_DESIGN.md tables
-# are still just documentation at this point).
-#
-# from app.database.models import core_models  # noqa: F401
+# before autogenerate runs. Add a new import line as each model group is
+# implemented. Retrieval chunk tables are intentionally absent: their shape
+# depends on open items in DATABASE_DESIGN.md (embedding dimension N, index
+# type), so they are not yet modeled.
+from app.database.models import core_models  # noqa: F401
+from app.database.models import tenancy_models  # noqa: F401
 # from app.database.models import agent_models  # noqa: F401
 # from app.database.models import mcp_models  # noqa: F401
 # from app.database.models import ingestion_models  # noqa: F401
-# from app.database.models import retrieval_models  # noqa: F401
 
 config = context.config
 

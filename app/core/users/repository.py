@@ -18,7 +18,7 @@ from collections.abc import Sequence
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.shared.config.database.models.core_models import (
+from app.database.models.core_models import (
     Permission,
     Role,
     RolePermission,

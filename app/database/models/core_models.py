@@ -1,4 +1,5 @@
 """SQLAlchemy models for tables owned by core/.
+
 Owned by: database/ (ARCHITECTURE.md section 3 -- database/ holds every
 table's definition, but per DATABASE_DESIGN.md's ownership convention, only
 core/'s repository.py files are permitted to write to these tables; other
@@ -15,21 +16,28 @@ first Alembic migration, not here.
 
 import uuid
 from datetime import datetime
+
 from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
     Index,
-    Integer,
-    String,
     Text,
     func,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+
 from app.database.session import Base
+
+
 class User(Base):
+    """A person who can authenticate and act within EKIP.
+
+    Matches DATABASE_DESIGN.md's `users` table exactly.
+    """
+
     __tablename__ = "users"
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -47,6 +55,12 @@ class User(Base):
 
 
 class Role(Base):
+    """A named role, e.g. `engineer` or `incident_commander`.
+
+    Grants zero or more `Permission`s via `RolePermission`, and is assigned
+    to users via `UserRole`.
+    """
+
     __tablename__ = "roles"
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -57,6 +71,13 @@ class Role(Base):
 
 
 class Permission(Base):
+    """A single grantable capability, e.g. `incident:write`.
+
+    Permission codes are the vocabulary `core/users`'s `authorize()` checks
+    against -- the same codes apply whether the caller entered via REST or
+    MCP (ARCHITECTURE.md section 6).
+    """
+
     __tablename__ = "permissions"
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -78,6 +99,7 @@ class RolePermission(Base):
         UUID(as_uuid=True), ForeignKey("permissions.id", ondelete="CASCADE"), primary_key=True
     )
 
+
 class UserRole(Base):
     """Join table: user <-> role. Composite PK, per DATABASE_DESIGN.md."""
 
@@ -90,7 +112,10 @@ class UserRole(Base):
         UUID(as_uuid=True), ForeignKey("roles.id", ondelete="CASCADE"), primary_key=True
     )
 
+
 class Incident(Base):
+    """A single incident record -- the transactional heart of `core/`."""
+
     __tablename__ = "incidents"
     __table_args__ = (
         Index("ix_incidents_status", "status"),
@@ -128,7 +153,10 @@ class Incident(Base):
         back_populates="incident", cascade="all, delete-orphan"
     )
 
+
 class IncidentTimeline(Base):
+    """One chronological entry (note, status change, evidence) on an incident."""
+
     __tablename__ = "incident_timeline"
     __table_args__ = (Index("ix_incident_timeline_incident_occurred", "incident_id", "occurred_at"),)
 
@@ -150,7 +178,10 @@ class IncidentTimeline(Base):
 
     incident: Mapped["Incident"] = relationship(back_populates="timeline")
 
+
 class Postmortem(Base):
+    """A postmortem report tied to one incident, gated by human review."""
+
     __tablename__ = "postmortems"
     __table_args__ = (
         Index("ix_postmortems_incident_id", "incident_id"),
@@ -180,8 +211,8 @@ class Postmortem(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
+
 class AuditLog(Base):
-    
     """Append-only. No updates, no deletes, ever -- enforced by convention in
     core/audit/'s repository.py (the only module permitted to write here),
     not by anything at the ORM level.

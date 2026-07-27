@@ -20,7 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit.schemas import AuditLogQuery
-from app.shared.config.database.models.core_models import AuditLog
+from app.database.models.core_models import AuditLog
 
 
 async def insert(
