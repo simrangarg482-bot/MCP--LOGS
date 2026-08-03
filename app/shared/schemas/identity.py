@@ -11,6 +11,24 @@ It is deliberately transport-agnostic: it carries *who* the caller is and
 *what* they're allowed to do, with no knowledge of JWTs, MCP tokens, or HTTP.
 Resolving a raw credential into an `Identity` is core/auth/'s job; everything
 downstream just receives the resolved object.
+
+Multi-tenancy (PROJECT_PLAN.md section 3.4-3.6): an `Identity` is scoped to
+exactly one organization -- there is no global, org-less identity in this
+system. `organization_id` is the claim every session token carries (section
+3.4) and the value every downstream query filters by (section 3.7); making it
+a required field here, rather than an optional add-on, is what makes
+"resolve this user's identity" and "resolve this user's identity within this
+organization" the same operation -- there is no other kind to accidentally
+fall back to.
+
+`project_permissions` is the extension point for the second, finer-grained
+authorization tier (section 3.6): a project-scoped role can override the
+identity's org-level `permissions` for a specific project. It defaults to
+empty here -- no code path populates it yet (project-level authorization is
+not implemented as of this change; see core/users/service.py's docstring) --
+but the field is part of the target `Identity` shape per PROJECT_PLAN.md, so
+`has_permission`/`authorize` already support it and adding real project-scoped
+resolution later is additive, not another breaking change to this schema.
 """
 
 from __future__ import annotations
@@ -37,11 +55,15 @@ class ActorKind(str, Enum):
 
 
 class Identity(BaseModel):
-    """A resolved caller. Immutable once constructed.
+    """A resolved caller, scoped to exactly one organization. Immutable once
+    constructed.
 
-    `permissions` is the flattened set of permission codes granted via the
-    caller's roles (resolved once by core/users/), so downstream `authorize()`
-    checks are a pure set-membership test with no further database access.
+    `permissions` is the flattened set of org-level permission codes granted
+    via the caller's roles *within `organization_id`* (resolved once by
+    core/users/), so downstream `authorize()` checks are a pure set-membership
+    test with no further database access. `project_permissions` holds any
+    project-scoped overrides, keyed by project id (section 3.6) -- a project
+    absent from that mapping simply has no override.
     """
 
     # Frozen: an identity is a fact about who is calling, resolved once at the
@@ -53,6 +75,11 @@ class Identity(BaseModel):
     # The stable principal id: a stringified user UUID, a service name, or an
     # agent name -- whatever uniquely identifies this caller of `kind`.
     subject: str
+    # The organization this identity is scoped to. Required, not optional:
+    # per PROJECT_PLAN.md section 3.4/3.7, a session -- and therefore every
+    # resolved Identity -- belongs to exactly one organization; there is no
+    # "global" Identity to construct without one.
+    organization_id: uuid.UUID
     # Populated only when kind == USER; None for services/agents that have no
     # `users` row (consistent with DATABASE_DESIGN.md's rationale for tagged
     # actors rather than strict FKs).
@@ -60,6 +87,10 @@ class Identity(BaseModel):
     display_name: str | None = None
     roles: tuple[str, ...] = ()
     permissions: frozenset[str] = Field(default_factory=frozenset)
+    # Project-scoped permission overrides (PROJECT_PLAN.md section 3.6):
+    # project_id -> permission codes granted *for that project*. Empty by
+    # default; see the module docstring for why this isn't populated yet.
+    project_permissions: dict[uuid.UUID, frozenset[str]] = Field(default_factory=dict)
 
     @property
     def audit_tag(self) -> str:
@@ -70,16 +101,34 @@ class Identity(BaseModel):
         """
         return f"{self.kind.value}:{self.subject}"
 
-    def has_permission(self, permission_code: str) -> bool:
-        """Pure, database-free permission check against the pre-resolved set."""
+    def has_permission(
+        self, permission_code: str, project_id: uuid.UUID | None = None
+    ) -> bool:
+        """Pure, database-free permission check against the pre-resolved
+        set(s).
+
+        With no `project_id`, checks the org-level `permissions` set. With a
+        `project_id` that has an explicit override in `project_permissions`,
+        checks *only* that project-scoped set -- it does not also fall back to
+        `permissions`, since a project override that's intentionally more
+        restrictive (e.g. a `viewer`-only project role) must actually be able
+        to restrict. A `project_id` with no override falls back to the
+        org-level set, per PROJECT_PLAN.md section 3.6.
+        """
+        if project_id is not None and project_id in self.project_permissions:
+            return permission_code in self.project_permissions[project_id]
         return permission_code in self.permissions
 
-    @classmethod
-    def for_agent(cls, agent_name: str) -> "Identity":
+    @classmethod  # qki agents bohot saare hai
+    def for_agent(cls, agent_name: str, organization_id: uuid.UUID) -> "Identity":
         """Convenience constructor for internal agent-initiated calls.
 
-        Agents act with no interactive user (AGENT_WORKFLOWS.md); this keeps
-        their identity construction in one place rather than scattered literal
-        ``Identity(kind=ActorKind.AGENT, ...)`` calls across agents/.
+        Agents act with no interactive user (AGENT_WORKFLOWS.md), but still
+        act *within* one organization's scope -- e.g. the organization that
+        owns the incident being triaged -- so `organization_id` is required
+        here too, keeping agent identity construction consistent with every
+        other `Identity` in the system rather than a special-cased exception.
         """
-        return cls(kind=ActorKind.AGENT, subject=agent_name)
+        return cls(
+            kind=ActorKind.AGENT, subject=agent_name, organization_id=organization_id
+        )

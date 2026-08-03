@@ -18,6 +18,7 @@ modules that use this file, not by anything in this file itself.
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -28,6 +29,34 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.orm import DeclarativeBase
 
 from app.shared.config.settings import get_settings
+
+# Query parameters libpq-style clients (psql, psycopg) understand but
+# asyncpg's connect() does not -- SQLAlchemy's asyncpg dialect forwards every
+# URL query parameter straight through as a keyword argument to
+# asyncpg.connect(), so an unrecognized one raises a bare
+# `TypeError: connect() got an unexpected keyword argument '...'` rather than
+# a clear connection error. Neon's default copy-paste connection string
+# includes both of these by default. SSL is still enforced -- via
+# `connect_args` in `_build_engine`, using the parameter name asyncpg
+# actually accepts, not via a query string it doesn't understand.
+_UNSUPPORTED_ASYNCPG_QUERY_PARAMS = {"sslmode", "channel_binding"}
+
+
+def _normalize_database_url(raw_url: str) -> str:
+    """Strip libpq-only query parameters from a connection string before
+    handing it to asyncpg.
+
+    A permanent fix rather than asking every developer to hand-edit their
+    `DATABASE_URL` to remove them: a connection string copy-pasted directly
+    from Neon's dashboard should just work, unmodified.
+    """
+    parsed = urlsplit(raw_url)
+    kept_params = [
+        (key, value)
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if key.lower() not in _UNSUPPORTED_ASYNCPG_QUERY_PARAMS
+    ]
+    return urlunsplit(parsed._replace(query=urlencode(kept_params)))
 
 
 class Base(DeclarativeBase):
@@ -50,9 +79,17 @@ def _build_engine() -> AsyncEngine:
     """
     settings = get_settings()
     return create_async_engine(
-        str(settings.database_url),
+        _normalize_database_url(str(settings.database_url)),
         echo=settings.environment == "development",
         pool_pre_ping=True,
+        # Neon requires SSL; asyncpg wants it as a connect-time keyword, not
+        # a URL query parameter (see _normalize_database_url above).
+        # NOTE: unconditional today because Neon is the only target this
+        # project connects to so far (DATABASE_DESIGN.md). Once local
+        # Postgres (docker/docker-compose.yml, not yet created) is wired up
+        # for development, this will need to become conditional -- a local,
+        # non-SSL Postgres would fail to connect with `ssl=True` forced on.
+        connect_args={"ssl": True},
     )
 
 

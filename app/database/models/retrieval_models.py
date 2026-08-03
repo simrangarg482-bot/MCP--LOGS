@@ -1,0 +1,144 @@
+"""SQLAlchemy models for tables owned by retrieval/ -- one `<collection>_chunks`
+table per content category (DATABASE_DESIGN.md), pgvector-backed.
+
+Owned by: database/ (definition) + retrieval/ (write access) -- same
+ownership discipline as every other models file in this project: only
+retrieval/'s repository code writes here.
+
+Three concrete tables (`documentation_chunks`, `code_chunks`,
+`conversations_chunks`), not one generic `chunks` table with a `collection`
+discriminator column: DATABASE_DESIGN.md's per-collection convention exists
+precisely so each collection can independently choose pgvector vs. Qdrant as
+its backend (PROJECT_PLAN.md section 8.4) -- a single shared table would
+make that per-collection choice inexpressible at the schema level.
+`_ChunkColumns` factors out the identical column set so the three concrete
+classes don't duplicate it field-by-field.
+
+Collections map 1:1 onto the `ContentType` classification ingestion's
+processing pipeline already produces
+(`app.ingestion.processors.chunking.ContentType`: `"code"`/`"chat"`/
+`"document"`): `code_chunks` <- `"code"`, `conversations_chunks` <- `"chat"`
+(this table's name for it), `documentation_chunks` <- `"document"` (ditto),
+matching PROJECT_PLAN.md section 8.2's naming ("documentation, incidents,
+code, conversations"). No `incidents` collection exists yet: nothing in
+core/incidents produces embeddable chunks for it today, and Milestone 5's
+own bullet list scopes this work to ingestion's documents, not incidents --
+a real, flagged gap, not an oversight, should incident-similarity search
+(the `search_similar_incidents` MCP tool named for Milestone 8) need it
+later.
+
+Every chunk carries `organization_id`, `project_id`, and `acl_permission_code`
+directly (not just `document_id`, requiring a join) -- PROJECT_PLAN.md
+sections 5.4-5.5 require these as hard query-time filters, and denormalizing
+them here matches the same "carry the tenant columns directly, for RLS/query
+filtering" convention already used for `IncidentTimeline`, `Postmortem`,
+`IngestionJob` in this codebase.
+
+Embedding dimension (384) and model choice are pinned in
+ENGINEERING_DECISIONS.md #006 -- changing either later means a migration on
+every table below (`VECTOR(N)` is fixed width per column).
+
+Requires the `vector` Postgres extension (`CREATE EXTENSION IF NOT EXISTS
+vector;`) to be enabled before these tables can be created -- the same
+"enabled in the first Alembic migration, not here" treatment
+`core_models.py`'s docstring already gives `pgcrypto`. Neon supports the
+`vector` extension natively; it just needs enabling once per database.
+
+`content_tsv` backs the lexical half of hybrid search (PROJECT_PLAN.md
+section 5.2: "dense retrieval with BM25 (lexical/keyword) retrieval, merged
+via reciprocal rank fusion"). Honest naming note: this is Postgres's own
+full-text search (`to_tsvector`/`ts_rank_cd`), not literally the BM25
+algorithm -- reusing the existing Postgres instance (the same "simplest to
+stand up first" reasoning Milestone 5 already applies to choosing pgvector
+over Qdrant) rather than adding a dedicated search engine or a separate BM25
+library. A `GENERATED ALWAYS AS (...) STORED` column, not computed inline
+per query: makes the GIN index below usable (Postgres can't index an
+expression it has to recompute per-row per-query), and keeps the tsvector
+automatically in sync with `content` with no application code responsible
+for updating it.
+"""
+
+import uuid
+
+from pgvector.sqlalchemy import Vector
+from sqlalchemy import Computed, ForeignKey, Index, Integer, Text, UniqueConstraint, text
+from sqlalchemy.dialects.postgresql import TSVECTOR, UUID
+from sqlalchemy.orm import Mapped, declared_attr, mapped_column
+
+from app.database.session import Base
+
+_EMBEDDING_DIMENSION = 384  # ENGINEERING_DECISIONS.md #006
+
+
+class _ChunkColumns:
+    """Mixin: the column set, indexes, and constraint every
+    `<collection>_chunks` table shares. Not a `Base` subclass itself -- each
+    concrete class below combines this mixin with `Base` and supplies its
+    own `__tablename__`.
+    """
+
+    @declared_attr
+    def __table_args__(cls):  # noqa: N805 -- SQLAlchemy declarative convention
+        table = cls.__tablename__
+        return (
+            UniqueConstraint(
+                "document_id", "chunk_index", name=f"uq_{table}_document_chunk_index"
+            ),
+            Index(f"ix_{table}_org_project", "organization_id", "project_id"),
+            Index(f"ix_{table}_content_tsv", "content_tsv", postgresql_using="gin"),
+        )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False
+    )
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("projects.id", ondelete="RESTRICT"), nullable=False
+    )
+    # CASCADE (unlike organization_id/project_id above): a chunk is
+    # meaningless once its parent document is gone, matching
+    # DATABASE_DESIGN.md's original `<collection>_chunks.document_id ON
+    # DELETE CASCADE`.
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False
+    )
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding: Mapped[list[float]] = mapped_column(Vector(_EMBEDDING_DIMENSION), nullable=False)
+    source_offset_start: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_offset_end: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Denormalized from the parent document at upsert time -- see this
+    # module's docstring and ENGINEERING_DECISIONS.md #007.
+    acl_permission_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Generated column backing lexical search -- see this module's docstring.
+    content_tsv: Mapped[str] = mapped_column(
+        TSVECTOR, Computed("to_tsvector('english', content)", persisted=True), nullable=False
+    )
+
+
+class DocumentationChunk(_ChunkColumns, Base):
+    """Chunks classified as `ContentType == "document"` by ingestion's
+    processing pipeline (long-form docs, READMEs, chunked by heading
+    section) -- PROJECT_PLAN.md section 8.2's "documentation" collection.
+    """
+
+    __tablename__ = "documentation_chunks"
+
+
+class CodeChunk(_ChunkColumns, Base):
+    """Chunks classified as `ContentType == "code"` (chunked by
+    function/class boundary) -- section 8.2's "code" collection.
+    """
+
+    __tablename__ = "code_chunks"
+
+
+class ConversationChunk(_ChunkColumns, Base):
+    """Chunks classified as `ContentType == "chat"` (one chunk per message,
+    per `chunk_document`'s chat strategy) -- section 8.2's "conversations"
+    collection (this table's name for "chat").
+    """
+
+    __tablename__ = "conversations_chunks"

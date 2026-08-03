@@ -22,11 +22,19 @@ class AuditLogEntry(BaseModel):
     `AuditLog` ORM row (`AuditLogEntry.model_validate(row)`) without a manual
     field-by-field copy. Note `event_metadata` mirrors the ORM attribute name
     (the underlying Postgres column is `metadata`, remapped in the model).
+
+    `organization_id` is nullable, mirroring the ORM column
+    (`database/models/core_models.py`'s `AuditLog`): every event core/
+    currently records has one (every `Identity` carries a required
+    `organization_id`), but the column stays nullable for a possible future
+    platform-admin action not scoped to any single company -- an open item,
+    not yet designed, flagged on the ORM model itself.
     """
 
     model_config = ConfigDict(from_attributes=True, frozen=True)
 
     id: uuid.UUID
+    organization_id: uuid.UUID | None
     actor: str
     action: str
     resource_type: str
@@ -42,6 +50,12 @@ class AuditLogQuery(BaseModel):
     future API/MCP layer share one validated contract, and so new filters can
     be added without changing call signatures. All filters are optional and
     AND-combined; omitting them all returns the most recent entries.
+
+    Deliberately does NOT include `organization_id`: matching
+    `core.incidents.schemas.IncidentFilter`'s convention, tenant scoping is a
+    mandatory, separate argument on `query_audit_log` (enforced via the same
+    tenant-isolation guard every other org-scoped read uses), not an optional
+    field a caller could simply omit to see every organization's events.
     """
 
     resource_type: str | None = None

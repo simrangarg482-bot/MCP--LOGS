@@ -1,0 +1,80 @@
+"""SQLAlchemy model for the one table owned by agents/: `agent_executions`
+(DATABASE_DESIGN.md "agents/ -- owned tables").
+
+Owned by: database/ (definition) + agents/ (write access) -- same ownership
+discipline as every other models file in this project: only agents/'s
+repository code writes here; every other module reads agent results through
+`agents`' public interface (`answer_question`, `triage_incident`,
+`generate_postmortem`, `detect_knowledge_gaps`, PROJECT_PLAN.md section 9.7),
+never by importing this model directly.
+
+`organization_id` added beyond DATABASE_DESIGN.md's original column list --
+that table definition predates the org-scoping migration (ENGINEERING_DECISIONS.md
+#004) and was never revisited, the same gap `audit_logs` and `ingestion_jobs`
+had before their own equivalent additions. Without it, the Knowledge Gap
+Agent's own query ("recent low-confidence `agent_executions` rows",
+PROJECT_PLAN.md section 6.6 / DATABASE_DESIGN.md's own "why this table
+matters" note) would have no way to scope its clustering pass to one
+organization at a time, silently mixing every tenant's low-confidence queries
+together -- the same class of cross-tenant leak #004 fixed for role
+resolution. Carried directly on the row (not derived solely via a join),
+matching `IncidentTimeline`/`Postmortem`/`IngestionJob`'s convention.
+
+`input_summary` is deliberately JSONB, not the raw prompt/context: per
+DATABASE_DESIGN.md, "not the full prompt -- a structured summary for
+observability, to avoid storing sensitive full context indefinitely" -- this
+table is an execution-outcome log, not a prompt cache.
+
+`confidence_score` uses `Numeric(asdecimal=False)` so SQLAlchemy hands back a
+plain Python `float` (matching every other confidence-adjacent value in this
+codebase -- `Settings.confidence_threshold`, `ScoredChunk.score` -- rather
+than a `decimal.Decimal` the rest of the app would need to convert at every
+read site).
+"""
+
+import uuid
+from datetime import datetime
+
+from sqlalchemy import DateTime, ForeignKey, Index, Numeric, Text, func, text
+from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.orm import Mapped, mapped_column
+
+from app.database.session import Base
+
+
+class AgentExecution(Base):
+    """One run of one agent node/graph -- observability record, and the
+    Knowledge Gap Agent's own data source (DATABASE_DESIGN.md: "repeated
+    low-confidence_score executions on similar input_summary topics are the
+    signal that drives documentation-gap recommendations").
+
+    Not an audit-trail table (`core/audit`'s `audit_logs` already covers
+    "who did what, when" for human-auditable actions) -- this is
+    agents-internal execution telemetry: which agent ran, how it was
+    triggered, how confident it was, and whether it succeeded.
+    """
+
+    __tablename__ = "agent_executions"
+    __table_args__ = (
+        Index("ix_agent_executions_agent_name_started_at", "agent_name", "started_at"),
+        Index("ix_agent_executions_org_started_at", "organization_id", "started_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False
+    )
+    agent_name: Mapped[str] = mapped_column(Text, nullable=False)
+    trigger_source: Mapped[str] = mapped_column(Text, nullable=False)  # mcp/core_api/scheduled
+    input_summary: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    confidence_score: Mapped[float | None] = mapped_column(
+        Numeric(asdecimal=False), nullable=True
+    )
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="running")
+    error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

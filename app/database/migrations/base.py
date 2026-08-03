@@ -28,14 +28,20 @@ from app.shared.config.settings import get_settings
 
 # Import every model module here so its tables register on Base.metadata
 # before autogenerate runs. Add a new import line as each model group is
-# implemented. Retrieval chunk tables are intentionally absent: their shape
-# depends on open items in DATABASE_DESIGN.md (embedding dimension N, index
-# type), so they are not yet modeled.
+# implemented.
+from app.database.models import agent_models  # noqa: F401
+from app.database.models import auth_models  # noqa: F401
 from app.database.models import core_models  # noqa: F401
+from app.database.models import ingestion_models  # noqa: F401
+from app.database.models import retrieval_models  # noqa: F401
 from app.database.models import tenancy_models  # noqa: F401
-# from app.database.models import agent_models  # noqa: F401
-# from app.database.models import mcp_models  # noqa: F401
-# from app.database.models import ingestion_models  # noqa: F401
+from app.database.models import mcp_models  # noqa: F401
+#
+# retrieval_models' embedding dimension is now pinned (ENGINEERING_DECISIONS.md
+# #006), but the vector index type (HNSW vs. IVFFlat) is still deliberately
+# deferred (DATABASE_DESIGN.md's "Open items": "until real data volume is
+# known") -- the `embedding` columns exist and are queryable via sequential
+# scan today, just without an ANN index yet.
 
 config = context.config
 

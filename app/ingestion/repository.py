@@ -1,0 +1,239 @@
+"""Persistence for ingestion/ -- `ingestion_jobs`, `documents`,
+`document_metadata` -- plus a read-only view onto core/tenancy's
+`connector_configs`.
+
+Owned by: ingestion/. Pure data access, same discipline as every other
+repository.py in this codebase: one statement per function, ORM rows in/out,
+no business rules, no ORM->Pydantic mapping.
+
+Reads `app.database.models.tenancy_models.ConnectorConfig` directly rather
+than going through `core.tenancy`'s service layer -- a deliberate,
+user-confirmed choice (see `app/ingestion/schemas.py`'s
+`ResolvedConnectorConfig` docstring): PROJECT_PLAN.md section 9.8 lists
+ingestion's dependencies as retrieval/database/shared only, so reading via
+`database/` directly, rather than adding an undocumented ingestion -> core
+dependency, keeps that list accurate. This blurs DATABASE_DESIGN.md's "read
+only through the owning module's interface" convention slightly for reads;
+writes back to `connector_configs` still go through
+`core.tenancy.service.update_connector_sync_status` (called from
+`ingestion/service.py`, not here), respecting write ownership.
+"""
+
+from __future__ import annotations
+
+import uuid
+from collections.abc import Sequence
+from typing import Any
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.database.models.ingestion_models import Document, DocumentMetadata, IngestionJob
+from app.database.models.tenancy_models import ConnectorConfig
+from app.ingestion.schemas import DocumentMetadataEntry
+
+# --- Connector configs (read-only; see module docstring) --------------------
+
+
+async def get_connector_config(
+    session: AsyncSession, connector_config_id: uuid.UUID
+) -> ConnectorConfig | None:
+    """Fetch one `connector_configs` row by primary key, or None if absent."""
+    return await session.get(ConnectorConfig, connector_config_id)
+
+
+async def list_active_connector_configs(session: AsyncSession) -> Sequence[ConnectorConfig]:
+    """Return every connector configuration eligible for the periodic
+    reconciliation pass (PROJECT_PLAN.md section 4.4: "a periodic
+    reconciliation pass even for webhook-supported sources, to catch
+    anything a missed/failed webhook delivery would otherwise silently
+    drop").
+
+    Deliberately cross-tenant/unscoped -- no `organization_id` filter, no
+    `actor`. This is the one legitimate exception to "every ingestion read
+    is org-scoped": the worker's own job-scheduling loop necessarily spans
+    every organization's connectors, the same way a cron process enumerates
+    all due work regardless of who owns it. Each *job* this produces still
+    only touches its own connector_config's organization -- tenant isolation
+    is enforced at the work itself (this function's caller passes one
+    `connector_config_id` at a time into `run_ingestion_job`), not at this
+    enumeration step.
+
+    Includes `"error"` alongside `"active"`: a connector that failed its
+    last sync should get picked up and retried on the next reconciliation
+    pass, not silently excluded until an admin manually intervenes.
+    Excludes `"connecting"` (onboarding not yet finished) and
+    `"disconnected"` (deliberately turned off).
+    """
+    stmt = select(ConnectorConfig).where(ConnectorConfig.status.in_(("active", "error")))
+    result = await session.execute(stmt)
+    return result.scalars().all()
+
+
+async def get_connector_config_for_source(
+    session: AsyncSession, organization_id: uuid.UUID, source: str
+) -> ConnectorConfig | None:
+    """Fetch the most recently created connector configuration registered
+    for `organization_id` + `source`. Backs `reindex(document_id)`: given a
+    document, find *some* connector_config that can re-sync its source.
+
+    Doesn't attempt to disambiguate further if an organization has
+    registered more than one connector_config for the same source (e.g. two
+    separate GitHub app installations) -- an edge case out of scope here.
+    """
+    stmt = (
+        select(ConnectorConfig)
+        .where(ConnectorConfig.organization_id == organization_id, ConnectorConfig.source == source)
+        .order_by(ConnectorConfig.created_at.desc())
+        .limit(1)
+    )
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none()
+
+
+# --- Ingestion jobs ----------------------------------------------------------
+
+
+async def insert_ingestion_job(
+    session: AsyncSession, *, organization_id: uuid.UUID, connector_config_id: uuid.UUID
+) -> IngestionJob:
+    """Create one ingestion job row (`status="queued"`) and return it with
+    server-side defaults populated.
+    """
+    row = IngestionJob(
+        organization_id=organization_id,
+        connector_config_id=connector_config_id,
+        status="queued",
+    )
+    session.add(row)
+    await session.flush()
+    await session.refresh(row)
+    return row
+
+
+async def get_ingestion_job_by_id(session: AsyncSession, job_id: uuid.UUID) -> IngestionJob | None:
+    """Fetch a single ingestion job by primary key, or None if absent."""
+    return await session.get(IngestionJob, job_id)
+
+
+async def update_ingestion_job(
+    session: AsyncSession, job_id: uuid.UUID, **fields: Any
+) -> IngestionJob | None:
+    """Apply `fields` to an ingestion job row, returning the updated row or
+    None if it doesn't exist. Generic, dict-driven updater -- same rationale
+    as `core.incidents.repository.update_incident`: a job has enough
+    independently-updatable fields (status, failed_stage,
+    documents_processed, started_at, completed_at) that a narrow function
+    per field would multiply faster than it's worth.
+    """
+    row = await session.get(IngestionJob, job_id)
+    if row is None:
+        return None
+    for key, value in fields.items():
+        setattr(row, key, value)
+    await session.flush()
+    await session.refresh(row)
+    return row
+
+
+# --- Documents -----------------------------------------------------------------
+
+
+async def get_latest_document(
+    session: AsyncSession, organization_id: uuid.UUID, source: str, external_id: str
+) -> Document | None:
+    """Fetch the highest-`version` row for (organization_id, source,
+    external_id), or None if this item has never been ingested before.
+
+    Changed content becomes a *new* row with `version` incremented rather
+    than an update to the existing one (DATABASE_DESIGN.md: "gets a new row
+    with version incremented ... rather than overwriting history"), so
+    "the current version" means "the row with the highest version number
+    for this key," not "the only row for this key."
+    """
+    stmt = (
+        select(Document)
+        .where(
+            Document.organization_id == organization_id,
+            Document.source == source,
+            Document.external_id == external_id,
+        )
+        .order_by(Document.version.desc())
+        .limit(1)
+    )
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none()
+
+
+async def insert_document(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    project_id: uuid.UUID,
+    source: str,
+    external_id: str,
+    content_hash: str,
+    title: str | None,
+    source_url: str | None,
+    version: int,
+    acl_permission_code: str | None = None,
+) -> Document:
+    """Insert one document row at `version` and return it with server-side
+    defaults populated. Always `status="proposed"` -- publishing is a
+    separate, not-yet-built review step (ARCHITECTURE.md section 5's
+    human-review gate), matching `documents.status`'s documented lifecycle.
+
+    `acl_permission_code` defaults to `None` (no ACL restriction): no caller
+    in this codebase currently passes a non-null value -- see
+    ENGINEERING_DECISIONS.md #007's flagged gap. The parameter exists so a
+    future feature (e.g. connector-config-level tagging) has somewhere to
+    plug in without another signature change.
+    """
+    row = Document(
+        organization_id=organization_id,
+        project_id=project_id,
+        source=source,
+        external_id=external_id,
+        content_hash=content_hash,
+        title=title,
+        source_url=source_url,
+        status="proposed",
+        version=version,
+        acl_permission_code=acl_permission_code,
+    )
+    session.add(row)
+    await session.flush()
+    await session.refresh(row)
+    return row
+
+
+async def get_document_by_id(session: AsyncSession, document_id: uuid.UUID) -> Document | None:
+    """Fetch a single document by primary key, or None if absent."""
+    return await session.get(Document, document_id)
+
+
+# --- Document metadata -------------------------------------------------------
+
+
+async def insert_document_metadata(
+    session: AsyncSession, *, document_id: uuid.UUID, entries: list[DocumentMetadataEntry]
+) -> None:
+    """Bulk-insert metadata rows for `document_id`.
+
+    Never needs "replace" semantics: each content change gets a brand-new
+    `Document` row (see `get_latest_document`'s docstring), so a new
+    document_id always starts with zero metadata rows -- there is nothing
+    stale to delete first.
+    """
+    for entry in entries:
+        session.add(DocumentMetadata(document_id=document_id, key=entry.key, value=entry.value))
+    await session.flush()
+
+
+async def list_document_metadata(
+    session: AsyncSession, document_id: uuid.UUID
+) -> Sequence[DocumentMetadata]:
+    """Return every metadata row for `document_id`."""
+    stmt = select(DocumentMetadata).where(DocumentMetadata.document_id == document_id)
+    result = await session.execute(stmt)
+    return result.scalars().all()

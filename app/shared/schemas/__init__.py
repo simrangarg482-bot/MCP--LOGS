@@ -9,11 +9,20 @@ rather than reaching into submodules -- the submodule layout can then change
 without breaking every import site.
 """
 
+from app.shared.schemas.agent_contracts import (
+    AskResponse,
+    Citation,
+    EvidenceItem,
+    InvestigationResult,
+    RootCauseHypothesis,
+)
 from app.shared.schemas.common import (
     ActionItemStatus,
+    AgentExecutionStatus,
     DocumentStatus,
     ErrorBody,
     IncidentStatus,
+    IngestionJobStatus,
     PostmortemStatus,
     Severity,
     TriggerSource,
@@ -23,11 +32,18 @@ from app.shared.schemas.identity import ActorKind, Identity
 __all__ = [
     "ActionItemStatus",
     "ActorKind",
+    "AgentExecutionStatus",
+    "AskResponse",
+    "Citation",
     "DocumentStatus",
     "ErrorBody",
+    "EvidenceItem",
     "Identity",
     "IncidentStatus",
+    "IngestionJobStatus",
+    "InvestigationResult",
     "PostmortemStatus",
+    "RootCauseHypothesis",
     "Severity",
     "TriggerSource",
 ]

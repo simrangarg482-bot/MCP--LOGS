@@ -1,0 +1,14 @@
+# EKIP -- development/test tooling, on top of the core runtime deps.
+#
+# Derived from pyproject.toml's [project.optional-dependencies].dev -- same
+# note as requirements.txt: pyproject.toml is the source of truth, update it
+# first.
+
+-r requirements.txt
+
+pytest>=8.3
+pytest-asyncio>=0.24
+pytest-cov>=5.0
+ruff>=0.6
+mypy>=1.11
+import-linter>=2.1

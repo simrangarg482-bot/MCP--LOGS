@@ -20,10 +20,19 @@ IncidentStatus = Literal["open", "investigating", "resolved", "closed"]
 PostmortemStatus = Literal["draft", "in_review", "approved", "published"]
 DocumentStatus = Literal["proposed", "published"]
 ActionItemStatus = Literal["open", "in_progress", "done"]
+# DATABASE_DESIGN.md: ingestion_jobs.status. `failed_stage` (a separate free-text
+# field, not part of this vocabulary) records *which* pipeline stage failed when
+# status == "failed", per PROJECT_PLAN.md section 4.5's resume-from-stage design.
+IngestionJobStatus = Literal["queued", "running", "succeeded", "failed"]
 
 # Where an agent execution / audited action originated (DATABASE_DESIGN.md:
 # agent_executions.trigger_source, and the same vocabulary reused elsewhere).
 TriggerSource = Literal["mcp", "core_api", "scheduled"]
+# DATABASE_DESIGN.md: agent_executions.status. No "queued" state (unlike
+# IngestionJobStatus) -- an agent execution row is only ever created once the
+# graph has actually started running; there is no queued-but-not-yet-started
+# phase to represent for an in-process LangGraph run.
+AgentExecutionStatus = Literal["running", "succeeded", "failed"]
 
 
 class ErrorBody(TypedDict, total=False):

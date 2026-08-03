@@ -1,0 +1,52 @@
+# --- Secrets / environment -------------------------------------------------
+.env
+.env.*
+!.env.example
+
+# --- Python ------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# --- Virtual environments ------------------------------------------------------
+.venv/
+venv/
+env/
+ENV/
+
+# --- Testing / linting / type-checking caches -----------------------------
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# --- Alembic -----------------------------------------------------------------
+# Migration scripts themselves are checked in; only local scratch state is not.
+app/database/migrations/versions/__pycache__/
+
+# --- Logs / runtime artifacts -----------------------------------------------
+*.log
+logs/
+
+# --- IDE / editor ------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- OS ------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+
+# --- Docker / deployment (once these exist) ---------------------------------
+docker/*.local.yml
+.dockerignore.local

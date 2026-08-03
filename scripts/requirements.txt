@@ -1,0 +1,25 @@
+# Minimal dependency set for running scripts/test_connectors.py in
+# isolation -- NOT the full project's requirements.txt (that one, at the
+# repo root, installs everything: FastAPI, SQLAlchemy, LangChain,
+# sentence-transformers, Qdrant, etc., none of which this script touches).
+#
+# Traced from test_connectors.py's actual import chain: it only reaches
+# app/ingestion/connectors/{slack,github}.py, app/ingestion/schemas.py, and
+# app/shared/{schemas,config}/* -- nothing in core/, agents/, mcp/,
+# retrieval/, or database/ ever gets imported, so none of those modules'
+# dependencies (SQLAlchemy, asyncpg, arq, redis, qdrant-client,
+# sentence-transformers, langchain, mcp, ...) are needed here.
+#
+# Versions match the floors already pinned in pyproject.toml, so installing
+# this into a fresh venv stays consistent with the rest of the project if
+# you later `pip install -r requirements.txt` (the full one) into the same
+# environment.
+#
+# Install: pip install -r scripts/requirements.txt
+# Requires Python >=3.11 (project-wide requirement, pyproject.toml).
+
+httpx>=0.27            # Slack/GitHub REST API calls (SlackConnector, GitHubConnector)
+pydantic>=2.8           # RawDocument/FetchResult/ResolvedConnectorConfig, etc.
+pydantic-settings>=2.4  # imported transitively via app.shared.config.settings
+structlog>=24.4         # imported transitively via app.shared.config.logging
+python-dotenv>=1.0      # scripts/test_connectors.py's own .env loading

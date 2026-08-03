@@ -17,7 +17,17 @@ are written as plain string references (`ForeignKey("users.id")`), not
 Python class imports -- this avoids a circular import between
 tenancy_models.py and core_models.py, since core_models.py will in turn need
 to reference `organizations.id` once tenant columns are added there.
-"""
+
+`OrganizationAccessRule` and `Invitation` (added after the initial tenancy
+foundation, see ENGINEERING_DECISIONS.md's SSO-provisioning-policy entry)
+model "who may join this organization" -- the design that replaces the
+temporary "a `users` row with this email already exists" assumption
+core/auth's SSO login previously relied on. Both are core/tenancy-owned,
+consistent with `core/tenancy`'s "organization provisioning rules"
+responsibility -- neither table belongs to core/auth (which only verifies
+authentication) or core/users (which only creates users and manages roles
+once provisioning has already been decided).
+""" 
 
 import uuid
 from datetime import datetime
@@ -98,7 +108,7 @@ class Project(Base):
     )
 
 
-class SSOConfiguration(Base):
+class SSOConfiguration(Base): #Single Sign-On.
     """One row per organization, describing how its employees log in.
 
     All four supported providers (Entra ID, Okta, Auth0, Google Workspace)
@@ -227,4 +237,107 @@ class ProjectMembership(Base):
     )
     role_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("roles.id", ondelete="CASCADE"), primary_key=True
+    )
+
+
+class OrganizationAccessRule(Base):
+    """A coarse, admin-configured rule describing who may auto-join an
+    organization via SSO, without an individual invitation.
+
+    Two rule types, deliberately not three: `domain` (any verified SSO login
+    whose email domain matches `value`, e.g. `"nevikenz.com"`) and `group`
+    (any verified SSO login whose IdP `groups` claim contains `value`, e.g.
+    `"engineering"`). A per-email allow-rule is intentionally NOT a third
+    rule_type here -- that exact need is served by `Invitation` below, which
+    is strictly more capable (expiry, status, who invited them) than a bare
+    email match would be; having both would be two mechanisms for one job.
+
+    `grants_role_id` is evaluated together with the rule matching, not just
+    the rule's existence: a match determines *which* role the auto-provisioned
+    user receives ("assign the default role according to the organization's
+    policy"), so two rules (e.g. one domain rule granting `viewer`, one group
+    rule granting `engineer`) can coexist for the same organization.
+    `is_active` lets an admin suspend a rule (e.g. temporarily pause
+    domain-based auto-join) without deleting its history.
+    """
+
+    __tablename__ = "organization_access_rules"
+    __table_args__ = (
+        Index("ix_org_access_rules_org_type", "organization_id", "rule_type"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    rule_type: Mapped[str] = mapped_column(Text, nullable=False)  # domain / group
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    grants_role_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("roles.id", ondelete="RESTRICT"), nullable=False
+    )
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class Invitation(Base):
+    """A time-boxed, per-person invitation to join an organization.
+
+    Status lifecycle: `pending` -> `accepted` (consumed at the invitee's
+    successful first SSO login matching `email`) | `expired` (past
+    `expires_at`, never accepted) | `revoked` (an admin cancelled it before
+    acceptance or expiry). Unlike `OrganizationAccessRule`, this grants access
+    to exactly one email, once -- `grants_role_id` mirrors that table's
+    "which role does a match receive" field.
+
+    `invited_by` uses RESTRICT, not this file's usual CASCADE for
+    organization-scoped rows: an invitation is itself a small audit record of
+    who invited whom, and should not silently vanish if the inviting admin's
+    `users` row is later removed.
+
+    The partial unique index enforces "at most one pending invitation per
+    email per organization" -- a second invite to the same address is either
+    a resend of the existing pending one or should wait until it's
+    accepted/expired/revoked, rather than creating a second live invitation.
+    """
+
+    __tablename__ = "invitations"
+    __table_args__ = (
+        Index("ix_invitations_org_email", "organization_id", "email"),
+        Index(
+            "uq_invitations_org_email_pending",
+            "organization_id",
+            "email",
+            unique=True,
+            postgresql_where=text("status = 'pending'"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    email: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="pending")
+    grants_role_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("roles.id", ondelete="RESTRICT"), nullable=False
+    )
+    invited_by: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )

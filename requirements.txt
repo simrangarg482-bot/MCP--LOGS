@@ -1,0 +1,44 @@
+# EKIP -- core runtime dependencies.
+#
+# Derived from pyproject.toml's [project.dependencies] -- that file remains
+# the source of truth (it's what `pip install -e .` and the build backend
+# actually read). This file exists only for tooling/workflows that expect a
+# requirements.txt directly; if you add/change a dependency, update
+# pyproject.toml first and mirror the change here, not the other way around.
+
+# Core API
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.8
+pydantic-settings>=2.4
+
+# Database
+sqlalchemy[asyncio]>=2.0
+asyncpg>=0.29
+alembic>=1.13
+pgvector>=0.3
+
+# Auth
+python-jose[cryptography]>=3.3
+passlib[bcrypt]>=1.7
+httpx>=0.27
+
+# Queue / background jobs (ENGINEERING_DECISIONS.md #002)
+redis>=5.0
+arq>=0.26
+
+# AI / RAG / agents
+langchain>=0.3
+langgraph>=0.2
+langchain-anthropic>=0.2
+sentence-transformers>=3.0
+qdrant-client>=1.11
+
+# MCP
+mcp>=1.0
+
+# Observability
+opentelemetry-sdk>=1.27
+opentelemetry-instrumentation-fastapi>=0.48b0
+prometheus-client>=0.20
+structlog>=24.4
