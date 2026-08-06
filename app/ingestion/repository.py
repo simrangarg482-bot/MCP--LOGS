@@ -25,7 +25,7 @@ import uuid
 from collections.abc import Sequence
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models.ingestion_models import Document, DocumentMetadata, IngestionJob
@@ -38,35 +38,74 @@ from app.ingestion.schemas import DocumentMetadataEntry
 async def get_connector_config(
     session: AsyncSession, connector_config_id: uuid.UUID
 ) -> ConnectorConfig | None:
-    """Fetch one `connector_configs` row by primary key, or None if absent."""
+    """Fetch one `connector_configs` row by primary key, or None if absent.
+
+    Milestone 10 RLS note: `connector_configs` is RLS-protected -- this call
+    only returns the row if `app.database.session.set_tenant_context` has
+    already been set to match its `organization_id` on this session. Every
+    caller that doesn't already know that organization_id ahead of time (see
+    `resolve_connector_config_organization_id` below) must resolve it first.
+    """
     return await session.get(ConnectorConfig, connector_config_id)
 
 
-async def list_active_connector_configs(session: AsyncSession) -> Sequence[ConnectorConfig]:
-    """Return every connector configuration eligible for the periodic
-    reconciliation pass (PROJECT_PLAN.md section 4.4: "a periodic
+async def resolve_connector_config_organization_id(
+    session: AsyncSession, connector_config_id: uuid.UUID
+) -> uuid.UUID | None:
+    """Resolve just the `organization_id` a `connector_configs` row belongs
+    to, bypassing RLS via the narrow `resolve_connector_config_organization`
+    SQL function (see the migration that defines it,
+    `d2e5f8a3c1b6_milestone_10_rls_bypass_functions.py`, for the full
+    reasoning).
+
+    The one legitimate reason to call this: a worker (`ingestion.service.
+    _execute_ingestion_job`) has only a bare `connector_config_id` and no
+    `Identity`/org context yet to `set_tenant_context` with -- this function
+    exists solely to break that chicken-and-egg deadlock, returning nothing
+    but the org id. The caller is expected to call `set_tenant_context` with
+    the result, then call `get_connector_config` above for the actual row --
+    never to treat this function's result as a substitute for that.
+
+    Returns None if no such row exists (mirrors `get_connector_config`'s own
+    `None`-for-missing convention).
+    """
+    result = await session.execute(
+        text("SELECT resolve_connector_config_organization(:config_id)"),
+        {"config_id": connector_config_id},
+    )
+    return result.scalar_one_or_none()
+
+
+async def list_active_connector_config_ids(session: AsyncSession) -> Sequence[uuid.UUID]:
+    """Return the ids of every connector configuration eligible for the
+    periodic reconciliation pass (PROJECT_PLAN.md section 4.4: "a periodic
     reconciliation pass even for webhook-supported sources, to catch
     anything a missed/failed webhook delivery would otherwise silently
     drop").
 
     Deliberately cross-tenant/unscoped -- no `organization_id` filter, no
-    `actor`. This is the one legitimate exception to "every ingestion read
-    is org-scoped": the worker's own job-scheduling loop necessarily spans
-    every organization's connectors, the same way a cron process enumerates
-    all due work regardless of who owns it. Each *job* this produces still
-    only touches its own connector_config's organization -- tenant isolation
-    is enforced at the work itself (this function's caller passes one
-    `connector_config_id` at a time into `run_ingestion_job`), not at this
-    enumeration step.
+    `actor`, and (Milestone 10) no `set_tenant_context` call either: this is
+    the one legitimate exception to "every ingestion read is org-scoped,"
+    the same way `core.tenancy.repository.list_organizations` is for the
+    Knowledge Gap Agent's scan. Goes through the narrow
+    `list_active_connector_config_ids` SQL function (see
+    `d2e5f8a3c1b6_milestone_10_rls_bypass_functions.py`) to bypass RLS for
+    exactly this enumeration, returning only ids -- never full rows -- since
+    the sole caller (`ingestion.workers.tasks.scheduled_reconciliation`)
+    only ever needs an id to enqueue a job with. Each *job* this produces
+    still only touches its own connector_config's organization -- tenant
+    isolation is enforced at the work itself (`_execute_ingestion_job`
+    resolves and sets that one connector_config's org before reading
+    anything else), not at this enumeration step.
 
     Includes `"error"` alongside `"active"`: a connector that failed its
     last sync should get picked up and retried on the next reconciliation
     pass, not silently excluded until an admin manually intervenes.
     Excludes `"connecting"` (onboarding not yet finished) and
-    `"disconnected"` (deliberately turned off).
+    `"disconnected"` (deliberately turned off) -- both filtered inside the
+    SQL function itself.
     """
-    stmt = select(ConnectorConfig).where(ConnectorConfig.status.in_(("active", "error")))
-    result = await session.execute(stmt)
+    result = await session.execute(text("SELECT id FROM list_active_connector_config_ids()"))
     return result.scalars().all()
 
 
@@ -208,8 +247,34 @@ async def insert_document(
 
 
 async def get_document_by_id(session: AsyncSession, document_id: uuid.UUID) -> Document | None:
-    """Fetch a single document by primary key, or None if absent."""
+    """Fetch a single document by primary key, or None if absent.
+
+    Milestone 10 RLS note: `documents` is RLS-protected -- same caveat as
+    `get_connector_config` above. `ingestion.service.reindex`'s first read
+    is a bare-PK lookup with no org context yet; see
+    `resolve_document_organization_id` below for how it resolves one first.
+    """
     return await session.get(Document, document_id)
+
+
+async def resolve_document_organization_id(
+    session: AsyncSession, document_id: uuid.UUID
+) -> uuid.UUID | None:
+    """Resolve just the `organization_id` a `documents` row belongs to,
+    bypassing RLS via the narrow `resolve_document_organization` SQL
+    function -- the same pattern, and the same reasoning, as
+    `resolve_connector_config_organization_id` above; see that function's
+    docstring and `d2e5f8a3c1b6_milestone_10_rls_bypass_functions.py`.
+
+    The one legitimate caller: `ingestion.service.reindex`, which starts
+    from a bare `document_id` with no org context yet to
+    `set_tenant_context` with.
+    """
+    result = await session.execute(
+        text("SELECT resolve_document_organization(:document_id)"),
+        {"document_id": document_id},
+    )
+    return result.scalar_one_or_none()
 
 
 # --- Document metadata -------------------------------------------------------

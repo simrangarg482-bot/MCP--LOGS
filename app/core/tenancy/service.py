@@ -22,6 +22,12 @@ core/audit's `record_audit_event` -- the same cross-submodule dependency
 pattern documented for core/incidents (PROJECT_PLAN.md section 9.4). Seeding
 `tenancy:manage` into the platform's fixed permission catalog is a data
 migration concern, not something this module manages.
+
+Milestone 10 addition (PROJECT_PLAN.md section 12.5): `register_connector`
+now depends on `shared/security` to envelope-encrypt a connector's plaintext
+credential before persisting it -- the first real caller of that module.
+See `register_connector`'s own docstring for the encrypt-at-write/decrypt-
+at-read split with `ingestion.service`.
 """
 
 from __future__ import annotations
@@ -35,6 +41,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit.service import record_audit_event
 from app.core.exceptions import ConflictError, NotFoundError, PermissionDeniedError, ValidationError
 from app.core.tenancy import repository
+from app.database.session import set_tenant_context
 from app.core.tenancy.schemas import (
     AccessRule,
     AccessRuleCreate,
@@ -51,9 +58,10 @@ from app.core.tenancy.schemas import (
     SSOConfigurationCreate,
 )
 from app.core.users import repository as users_repository
-from app.core.users.service import require_permission
+from app.core.users.service import require_permission, require_project_permission
 from app.shared.config.logging import get_logger
 from app.shared.schemas import Identity
+from app.shared.security import encrypt_secret, get_kms
 
 logger = get_logger(__name__)
 
@@ -90,17 +98,25 @@ def _ensure_same_organization(actor: Identity, organization_id: uuid.UUID) -> No
 
 
 async def create_organization(
-    session: AsyncSession, data: OrganizationCreate
+    session: AsyncSession, data: OrganizationCreate, actor: Identity | None = None
 ) -> Organization:
     """Create a new organization together with its mandatory default project.
 
-    No `actor: Identity` parameter: an organization does not exist yet at the
-    moment it is created, so there is no valid organization-scoped Identity to
-    require one from (Identity.organization_id is mandatory per
-    ENGINEERING_DECISIONS.md #004). This is a deliberate gap, not an oversight
-    -- who/what is allowed to call this (public self-serve signup vs. an
-    internal admin/sales tool) is not yet specified anywhere in the docs, and
-    is left for whatever onboarding flow accompanies core/auth.
+    `actor` is optional and defaults to `None`: an organization does not
+    exist yet at the moment it is created, so there is no valid
+    organization-scoped Identity to *require* one from (Identity.
+    organization_id is mandatory per ENGINEERING_DECISIONS.md #004) -- who/
+    what is allowed to call this (public self-serve signup vs. an internal
+    admin/sales tool) is still not pinned down anywhere in the docs. `actor`
+    exists purely so a caller that *does* already have one (the REST
+    `POST /organizations` endpoint, reached by an already-authenticated
+    identity creating an additional organization) can have the creation
+    audited under a real actor rather than silently going unaudited; no
+    permission check is added here, since one still isn't specified. Existing
+    callers with no `Identity` available at all (`scripts/seed_test_
+    organization.py`, `scripts/test_milestone6.py`) keep working unchanged by
+    omitting it, in which case no audit event is recorded (nothing to
+    attribute it to).
 
     Auto-creates the "General" default project in the same transaction
     (PROJECT_PLAN.md section 3.2: every organization has at least one project,
@@ -129,6 +145,16 @@ async def create_organization(
         session, organization_id=org_row.id, name="General", is_default=True
     )
 
+    if actor is not None:
+        await record_audit_event(
+            session,
+            actor,
+            action="organization.create",
+            resource_type="organization",
+            resource_id=org_row.id,
+            metadata={"slug": org_row.slug},
+        )
+
     logger.info(
         "organization_created", organization_id=str(org_row.id), slug=org_row.slug
     )
@@ -151,6 +177,27 @@ async def get_organization(
     return Organization.model_validate(row)
 
 
+async def list_organizations(session: AsyncSession) -> list[Organization]:
+    """Return every organization in the system, unscoped.
+
+    No `actor` parameter, by design -- like `get_organization_sso_config`,
+    this is a deliberate exception to "every operation takes an actor and is
+    checked against it," not an oversight. The only legitimate caller is a
+    scheduled, system-internal job that must iterate every tenant by
+    definition (`app.agents.workers.tasks`'s Knowledge Gap Agent cron,
+    Milestone 9 -- mirroring `app.ingestion.workers.tasks.
+    scheduled_reconciliation`'s identical precedent of calling a repository-
+    level, unscoped listing directly from a worker task rather than through
+    a normal actor-scoped service call). There is no narrower organization
+    to scope this to when the whole point of the call is "every
+    organization" -- nothing about this function is reachable from REST or
+    MCP, where an actor is always available and this would be the wrong
+    tool.
+    """
+    rows = await repository.list_organizations(session)
+    return [Organization.model_validate(row) for row in rows]
+
+
 async def get_organization_sso_config(
     session: AsyncSession, org_slug: str
 ) -> SSOConfiguration:
@@ -166,6 +213,13 @@ async def get_organization_sso_config(
     Raises NotFoundError if the slug doesn't resolve to an organization, or if
     the organization exists but has no SSO configured yet (an organization
     mid-onboarding, before an IT Admin has connected an IdP).
+
+    Milestone 10 RLS note: `get_organization_by_slug` needs no bypass --
+    `organizations` itself is deliberately excluded from RLS (see the RLS
+    migration's own docstring), so this lookup succeeds unrestricted before
+    `organization_id` is even known. The very next query, though
+    (`sso_configurations`, which *is* RLS-protected), does need the GUC set
+    first -- done immediately below, the moment `org_row.id` is known.
     """
     org_row = await repository.get_organization_by_slug(session, org_slug)
     if org_row is None:
@@ -175,6 +229,7 @@ async def get_organization_sso_config(
             detail={"slug": org_slug},
         )
 
+    await set_tenant_context(session, org_row.id)
     sso_row = await repository.get_sso_configuration_by_organization_id(
         session, org_row.id
     )
@@ -313,9 +368,24 @@ async def register_connector(
     `organization_id` -- without this check, a caller could otherwise scope a
     connector to a project belonging to a *different* organization, which
     would be a tenant-isolation leak at write time rather than read time.
+    Once validated, the `tenancy:manage` check is itself narrowed to that
+    project (`require_project_permission`) rather than the organization as a
+    whole -- a user granted `tenancy:manage` only on one project should not
+    thereby be able to register a connector scoped to a different project in
+    the same organization. A connector with no `project_id` (org-wide) still
+    requires the plain org-level permission, since there is no narrower scope
+    to check it against.
+
+    `data.credential_ref` (the plaintext credential a caller submits -- e.g.
+    a Slack bot token, a Jira API token pair) is envelope-encrypted (§12.5,
+    `app.shared.security`) before it is ever persisted; only the encrypted
+    envelope is stored, and the plaintext value is never logged or written
+    to `connector_configs` directly. `ingestion.service._execute_ingestion_
+    job` is the sole place that decrypts it back, immediately before a
+    connector's `authenticate()` needs it -- see that function's own
+    docstring.
     """
     _ensure_same_organization(actor, organization_id)
-    require_permission(actor, _MANAGE_PERMISSION)
 
     if data.project_id is not None:
         project_row = await repository.get_project_by_id(session, data.project_id)
@@ -328,12 +398,16 @@ async def register_connector(
                     "project_id": str(data.project_id),
                 },
             )
+        require_project_permission(actor, data.project_id, _MANAGE_PERMISSION)
+    else:
+        require_permission(actor, _MANAGE_PERMISSION)
 
+    encrypted_credential_ref = encrypt_secret(get_kms(), data.credential_ref)
     row = await repository.insert_connector_config(
         session,
         organization_id=organization_id,
         source=data.source,
-        credential_ref=data.credential_ref,
+        credential_ref=encrypted_credential_ref,
         project_id=data.project_id,
         config=data.config,
     )
@@ -629,7 +703,47 @@ async def accept_invitation(session: AsyncSession, invitation_id: uuid.UUID) -> 
     as the rest of SSO login completion. No `actor`: this runs as part of the
     same pre-session login flow as `evaluate_provisioning`, not as an
     admin-facing action.
+
+    Guards added for its second caller, `POST /invitations/{invitation_id}/
+    accept` (a REST entry point added alongside this comment, for a caller
+    that -- unlike `evaluate_provisioning` -- has not already verified the
+    invitation is pending and unexpired): raises NotFoundError for an unknown
+    id, and ConflictError if the invitation is not currently `"pending"` (already
+    accepted/revoked) or has passed its `expires_at`. `evaluate_provisioning`
+    only ever passes an id it just confirmed satisfies both conditions, so
+    these checks are a no-op, defense-in-depth addition for that call path,
+    not a behavior change for it.
+
+    Known limitation, stated plainly: `invitations` has no separate secret
+    token column (`Invitation`'s schema exposes only its opaque `id`) --
+    unlike a real "click this emailed link" flow, possessing this id alone is
+    sufficient to accept here, with no proof the caller controls the invited
+    email address. Adding a real single-use secret token is a schema/
+    migration change, out of scope for wiring up the REST surface this
+    guards; the same limitation already applies to how `create_invitation`
+    itself is delivered (no email-sending exists in this codebase at all --
+    see docs/USER_TESTING_GUIDE.md section 3).
     """
+    invitation = await repository.get_invitation_by_id(session, invitation_id)
+    if invitation is None:
+        raise NotFoundError(
+            "Invitation not found.",
+            error_code="invitation.not_found",
+            detail={"invitation_id": str(invitation_id)},
+        )
+    if invitation.status != "pending":
+        raise ConflictError(
+            "Only a pending invitation can be accepted.",
+            error_code="invitation.not_pending",
+            detail={"status": invitation.status},
+        )
+    if invitation.expires_at <= datetime.now(timezone.utc):
+        raise ConflictError(
+            "This invitation has expired.",
+            error_code="invitation.expired",
+            detail={"invitation_id": str(invitation_id)},
+        )
+
     await repository.update_invitation_status(
         session, invitation_id, status="accepted", accepted_at=datetime.now(timezone.utc)
     )
@@ -663,7 +777,20 @@ async def evaluate_provisioning(
          group rules are simply skipped rather than treated as a denial
          signal on their own).
       4. Otherwise, denied.
+
+    Milestone 10 RLS note: unlike `get_organization_sso_config`, this
+    function is *handed* `organization_id` directly by its caller (core/auth,
+    which resolved it via `get_organization_sso_config`'s own slug lookup
+    earlier in the same login transaction) rather than discovering it itself
+    -- so the GUC is set unconditionally at the top, before the first
+    RLS-protected query (`invitations`) runs. Since `set_tenant_context` uses
+    `SET LOCAL` (transaction-scoped, not connection-scoped), and SSO login
+    completion runs `get_organization_sso_config` -> `evaluate_provisioning`
+    -> `accept_invitation` inside one shared transaction, this same call also
+    covers `accept_invitation`'s later `invitations` update on this session
+    -- no separate wiring needed there.
     """
+    await set_tenant_context(session, organization_id)
     now = datetime.now(timezone.utc)
 
     invitation = await repository.get_pending_invitation(session, organization_id, email)

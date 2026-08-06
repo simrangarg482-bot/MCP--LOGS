@@ -39,3 +39,21 @@ class McpRequestLog(BaseModel):
     status_code: int | None
     latency_ms: int | None
     occurred_at: datetime
+
+
+class McpToolStats(BaseModel):
+    """Aggregated latency/error metrics for one MCP tool over some time
+    window -- Milestone 10's "MCP latency metrics" dashboard requirement
+    (PROJECT_PLAN.md section 10). Deliberately not per-organization: see
+    `app.database.models.mcp_models.McpRequest`'s own docstring for why that
+    table carries no `organization_id` at all -- this is a platform-wide
+    view, the same scope the underlying table already has.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    tool_name: str
+    request_count: int
+    error_count: int
+    avg_latency_ms: float | None
+    max_latency_ms: int | None

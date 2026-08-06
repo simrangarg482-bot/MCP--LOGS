@@ -32,6 +32,15 @@ no orphaned embeddings for a document that never successfully persisted.
 `_CONTENT_TYPE_TO_COLLECTION` maps `ProcessedDocument.content_type` onto the
 `CollectionName` `retrieval/` expects (see that mapping's own comment for
 why it lives here rather than in either module it bridges).
+
+Milestone 10 additions (PROJECT_PLAN.md section 12.5/section 10): (1)
+`config_row.credential_ref` is decrypted via `app.shared.security` exactly
+once per job, immediately before `connector.authenticate()` needs it --
+see `_execute_ingestion_job`'s own docstring; (2) every `fetch_batch` call
+acquires from two `app.ingestion.rate_limiter.TokenBucketRateLimiter`
+budgets first (per-connector_config and per-organization), closing the gap
+`app.ingestion.workers.tasks.scheduled_reconciliation`'s docstring used to
+flag as "not attempted here."
 """
 
 from __future__ import annotations
@@ -43,16 +52,26 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import ConflictError, NotFoundError
 from app.core.tenancy import service as tenancy_service
+from app.database.session import set_tenant_context
 from app.ingestion import repository
 from app.ingestion.connectors.base import Connector
+from app.ingestion.connectors.azure_devops import AzureDevOpsConnector
+from app.ingestion.connectors.confluence import ConfluenceConnector
 from app.ingestion.connectors.github import GitHubConnector
+from app.ingestion.connectors.jira import JiraConnector
+from app.ingestion.connectors.runbooks import RunbooksConnector
+from app.ingestion.connectors.sharepoint import SharePointConnector
 from app.ingestion.connectors.slack import SlackConnector
+from app.ingestion.connectors.teams import TeamsConnector
 from app.ingestion.processors.pipeline import process_document
+from app.ingestion.rate_limiter import TokenBucketRateLimiter
 from app.ingestion.schemas import ContentType, IngestionJob, ResolvedConnectorConfig
 from app.retrieval import service as retrieval_service
 from app.retrieval.schemas import CollectionName, UpsertChunk
 from app.shared.config.logging import get_logger
+from app.shared.config.settings import get_settings
 from app.shared.schemas import Identity
+from app.shared.security import decrypt_secret, get_kms
 
 logger = get_logger(__name__)
 
@@ -64,7 +83,18 @@ logger = get_logger(__name__)
 _CONNECTOR_REGISTRY: dict[str, Connector] = {
     SlackConnector.source_name: SlackConnector(),
     GitHubConnector.source_name: GitHubConnector(),
+    JiraConnector.source_name: JiraConnector(),
+    TeamsConnector.source_name: TeamsConnector(),
+    AzureDevOpsConnector.source_name: AzureDevOpsConnector(),
+    ConfluenceConnector.source_name: ConfluenceConnector(),
+    SharePointConnector.source_name: SharePointConnector(),
+    RunbooksConnector.source_name: RunbooksConnector(),
 }
+
+# One shared, in-process limiter for every job this worker process runs --
+# see `app.ingestion.rate_limiter`'s module docstring for exactly what this
+# does and does not guarantee (per-process, not cross-process/distributed).
+_rate_limiter = TokenBucketRateLimiter()
 
 # `ProcessedDocument.content_type` -> `retrieval.schemas.CollectionName`
 # (PROJECT_PLAN.md section 8.2's collection names; see
@@ -101,7 +131,24 @@ async def reindex(session: AsyncSession, document_id: uuid.UUID) -> IngestionJob
     target document (along with everything else from that source) -- honest
     about the mechanism actually available today rather than a narrower
     operation this milestone's connector protocol can't perform.
+
+    Milestone 10 RLS note: `documents` is RLS-protected, and this function
+    starts from a bare `document_id` with no `Identity`/org context yet --
+    the same chicken-and-egg shape `_execute_ingestion_job` has for
+    `connector_configs`. Resolved the same way: a narrow, RLS-bypassing
+    lookup (`repository.resolve_document_organization_id`) discovers just
+    the owning organization_id, `set_tenant_context` is set to it, and only
+    then does the real, RLS-scoped `get_document_by_id` query run.
     """
+    document_organization_id = await repository.resolve_document_organization_id(session, document_id)
+    if document_organization_id is None:
+        raise NotFoundError(
+            "Document not found.",
+            error_code="document.not_found",
+            detail={"document_id": str(document_id)},
+        )
+    await set_tenant_context(session, document_organization_id)
+
     document = await repository.get_document_by_id(session, document_id)
     if document is None:
         raise NotFoundError(
@@ -151,7 +198,39 @@ async def _execute_ingestion_job(
     need each stage to be its own chained, independently-retriable task,
     which is a larger undertaking flagged here rather than silently assumed
     to already exist.
+
+    Milestone 10 addition (PROJECT_PLAN.md section 12.5): `config_row.
+    credential_ref` is the envelope-encrypted blob `core.tenancy.service.
+    register_connector` stored, not a usable credential -- decrypted here,
+    exactly once per job, into the `ResolvedConnectorConfig` handed to
+    `connector.authenticate()`. This is the one place in the whole ingestion
+    path a plaintext credential exists at all; it is never persisted,
+    logged, or held any longer than this function's own local variables
+    live.
+
+    Milestone 10 RLS note: this is the one code path in the whole
+    application that cannot call `set_tenant_context` before its first
+    query, because it starts from a bare `connector_config_id` with no
+    `Identity`/org context yet (a worker job argument, not a request that
+    already resolved one) -- and `connector_configs` is itself RLS-protected
+    by the row this exact call needs to read. Broken via a narrow,
+    RLS-bypassing lookup (`repository.resolve_connector_config_organization_id`,
+    see `d2e5f8a3c1b6_milestone_10_rls_bypass_functions.py`) that answers
+    only "which org owns this connector_config," nothing else; only once
+    that's known and `set_tenant_context` is set does the real, RLS-scoped
+    `get_connector_config` query below run.
     """
+    organization_id = await repository.resolve_connector_config_organization_id(
+        session, connector_config_id
+    )
+    if organization_id is None:
+        raise NotFoundError(
+            "Connector configuration not found.",
+            error_code="connector_config.not_found",
+            detail={"connector_config_id": str(connector_config_id)},
+        )
+    await set_tenant_context(session, organization_id)
+
     config_row = await repository.get_connector_config(session, connector_config_id)
     if config_row is None:
         raise NotFoundError(
@@ -169,12 +248,13 @@ async def _execute_ingestion_job(
         )
 
     actor = Identity.for_agent("ingestion_worker", config_row.organization_id)
+    plaintext_credential = decrypt_secret(get_kms(), config_row.credential_ref)
     resolved_config = ResolvedConnectorConfig(
         connector_config_id=config_row.id,
         organization_id=config_row.organization_id,
         project_id=config_row.project_id,
         source=config_row.source,
-        credential_ref=config_row.credential_ref,
+        credential_ref=plaintext_credential,
         config=config_row.config,
     )
 
@@ -210,6 +290,17 @@ async def _execute_ingestion_job(
             cursor: str | None = None
             while True:
                 stage = "fetch"
+                # Two independent budgets, both acquired before every fetch
+                # (PROJECT_PLAN.md sections 4.5/10: "per connector, per
+                # tenant") -- see `app.ingestion.rate_limiter`'s module
+                # docstring for why both are needed and what each is for.
+                await _rate_limiter.acquire(
+                    f"connector:{connector_config_id}", connector.requests_per_second
+                )
+                await _rate_limiter.acquire(
+                    f"org:{config_row.organization_id}",
+                    get_settings().ingestion_org_max_requests_per_second,
+                )
                 fetch_result = await connector.fetch_batch(client, since=since, cursor=cursor)
 
                 stage = "process_item"

@@ -107,6 +107,15 @@ name = "mcp never touches database or retrieval directly"
 type = "forbidden"
 source_modules = ["app.mcp"]
 forbidden_modules = ["app.database", "app.retrieval", "app.ingestion"]
+# Without this, import-linter's "forbidden" contract also flags *indirect*
+# imports (any transitive chain), which breaks on exactly the pattern this
+# codebase deliberately builds: app.mcp.auth/dispatch calling into
+# app.core.auth/users/observability services, which themselves reach
+# app.database further down. The contract's own name says "directly" -- this
+# flag is what makes that literal, restricting the check to direct imports
+# of a forbidden module from app.mcp itself (app.core.observability.service
+# exists specifically so app.mcp never has to do that).
+allow_indirect_imports = true
 
 [[tool.importlinter.contracts]]
 name = "core does not depend on mcp or ingestion"
@@ -125,3 +134,18 @@ name = "ingestion does not depend on agents or mcp"
 type = "forbidden"
 source_modules = ["app.ingestion"]
 forbidden_modules = ["app.agents", "app.mcp"]
+
+[[tool.importlinter.contracts]]
+name = "api does not depend on mcp or ingestion internals"
+type = "forbidden"
+source_modules = ["app.api"]
+forbidden_modules = ["app.mcp", "app.ingestion"]
+# Mirrors the equivalent "agents does not depend on mcp or ingestion
+# internals" contract above: app/api is a thin transport wrapper around
+# core/ and agents/ (API_DESIGN.md section 2), the same as app/mcp is --
+# neither transport layer may reach into the other's or ingestion's
+# internals. Unlike app.mcp, app.api is deliberately NOT forbidden from
+# importing app.database: app.database.session.get_db_session is already
+# shaped as a FastAPI dependency, so app/api uses it directly (see
+# app/api/deps.py's docstring) rather than through an injected
+# session_factory indirection.

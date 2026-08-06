@@ -13,6 +13,7 @@ from app.shared.schemas.agent_contracts import (
     AskResponse,
     Citation,
     EvidenceItem,
+    GapReport,
     InvestigationResult,
     RootCauseHypothesis,
 )
@@ -38,6 +39,7 @@ __all__ = [
     "DocumentStatus",
     "ErrorBody",
     "EvidenceItem",
+    "GapReport",
     "Identity",
     "IncidentStatus",
     "IngestionJobStatus",

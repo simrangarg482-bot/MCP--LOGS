@@ -22,11 +22,19 @@ Design notes:
     optional `project_id` for the finer-grained project-scoped check; omitting
     it preserves the original, cheaper org-level-only check.
   - Project-level permission *resolution* (populating
-    `Identity.project_permissions` from `project_memberships`) is not wired up
-    yet -- that is a separate, not-yet-built piece of core/users (there is no
-    project-membership read path here today). `has_permission` already
-    supports a `project_id` argument so that follow-up is additive once it
-    lands, not another breaking change to this module's signatures.
+    `Identity.project_permissions` from `project_memberships`) is now wired
+    up: `resolve_identity` loads it via `repository.get_project_permission_map`
+    in the same fixed-number-of-queries shape as the org-level `roles`/
+    `permissions` lookups. `has_permission` already supported a `project_id`
+    argument before this landed, so this was purely additive -- no other
+    module's call sites needed to change to start getting real project-scoped
+    enforcement (see `core.incidents.service`, whose `require_permission(...,
+    project_id=...)` calls predate this and were, until now, silently always
+    falling back to the org-level check for every caller).
+  - `require_project_permission` is a thin, explicitly-named wrapper around
+    `require_permission` for call sites that are *always* project-scoped
+    (never optionally) -- it changes no enforcement behavior, only readability
+    at the call site.
 """
 
 from __future__ import annotations
@@ -38,6 +46,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import NotFoundError, PermissionDeniedError
 from app.core.users import repository
 from app.core.users.schemas import UserProfile
+from app.database.session import set_tenant_context
 from app.shared.config.logging import get_logger
 from app.shared.schemas import ActorKind, Identity
 
@@ -68,7 +77,23 @@ async def resolve_identity(
     This is the resolver that core/auth calls after it has verified a
     credential/token and determined which organization the session is scoped
     to; auth never reads roles/permissions itself.
+
+    Milestone 10 RLS note: `user_roles` (and the tables `get_role_names`/
+    `get_permission_codes` join through it) is RLS-protected -- and,
+    critically, this function is what runs *before* `app.api.deps.
+    get_current_identity`/`app.mcp.dispatch.run_mcp_tool` get a chance to
+    call `set_tenant_context` themselves (both call it only *after*
+    `resolve_identity` already returned). Since `organization_id` is already
+    a required parameter here -- unlike the genuine bare-id chicken-and-egg
+    cases elsewhere in Milestone 10 -- the fix is simply to set the GUC
+    here, first, rather than waiting for a caller further up the stack.
+    Without this, every single request's role/permission lookup would
+    silently return empty sets under RLS (not an error -- an `Identity`
+    with zero permissions, failing every `authorize()` check closed) rather
+    than the caller's real roles.
     """
+    await set_tenant_context(session, organization_id)
+
     user = await repository.get_by_id(session, user_id)
     if user is None:
         raise NotFoundError(
@@ -87,6 +112,9 @@ async def resolve_identity(
     permission_codes = await repository.get_permission_codes(
         session, user_id, organization_id
     )
+    project_permissions = await repository.get_project_permission_map(
+        session, user_id, organization_id
+    )
 
     return Identity(
         kind=ActorKind.USER,
@@ -96,6 +124,7 @@ async def resolve_identity(
         display_name=user.display_name,
         roles=tuple(role_names),
         permissions=frozenset(permission_codes),
+        project_permissions=project_permissions,
     )
 
 
@@ -237,3 +266,21 @@ def require_permission(
             error_code="permission_denied",
             detail={"required_permission": permission_code},
         )
+
+
+def require_project_permission(
+    actor: Identity, project_id: uuid.UUID, permission_code: str
+) -> None:
+    """Project-scoped `require_permission` -- for call sites that always have
+    a specific project in hand and are never checking at the organization
+    level only.
+
+    Pure call-site clarity, not a new enforcement path: this is exactly
+    `require_permission(actor, permission_code, project_id=project_id)`.
+    Keeping both names lets a reader tell "this operation is scoped to one
+    project, unconditionally" (this function) apart from "this operation
+    optionally narrows to a project if one happens to be known"
+    (`require_permission`'s own `project_id: ... | None` parameter) without
+    reading the call site's surrounding context.
+    """
+    require_permission(actor, permission_code, project_id=project_id)

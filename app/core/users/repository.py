@@ -33,6 +33,7 @@ from app.database.models.core_models import (
     User,
     UserRole,
 )
+from app.database.models.tenancy_models import Project, ProjectMembership
 
 
 async def get_by_id(session: AsyncSession, user_id: uuid.UUID) -> User | None:
@@ -160,3 +161,48 @@ async def get_permission_codes(
     )
     result = await session.execute(stmt)
     return set(result.scalars().all())
+
+
+async def get_project_permission_map(
+    session: AsyncSession, user_id: uuid.UUID, organization_id: uuid.UUID
+) -> dict[uuid.UUID, frozenset[str]]:
+    """Return `user_id`'s permission codes, grouped by project, for every
+    project *within `organization_id`* they hold a `project_memberships` row
+    for (PROJECT_PLAN.md section 3.6's project-level authorization tier --
+    `Identity.project_permissions`).
+
+    Joins `project_memberships -> projects -> role_permissions -> permissions`,
+    filtered by `user_id` and `projects.organization_id` (not
+    `project_memberships.organization_id` -- that column doesn't exist;
+    `project_memberships` has no organization_id of its own, only a
+    `project_id`, so scoping to this organization has to go through
+    `projects` the same way `core.tenancy.service.register_connector`
+    already validates a submitted `project_id` against its owning
+    organization). A project the user has no membership row for is simply
+    absent from the returned dict -- `Identity.has_permission`'s own
+    docstring already treats "no entry for this project" as "fall back to
+    org-level `permissions`", so there is no need to return an empty
+    frozenset placeholder for every project in the organization.
+
+    One query, grouped in Python rather than issued once per project: this
+    mirrors `get_permission_codes`'s single-query-per-identity-resolution
+    shape, so populating `Identity.project_permissions` in `resolve_identity`
+    costs exactly one more indexed query, not N.
+    """
+    stmt = (
+        select(ProjectMembership.project_id, Permission.code)
+        .join(Project, Project.id == ProjectMembership.project_id)
+        .join(RolePermission, RolePermission.role_id == ProjectMembership.role_id)
+        .join(Permission, Permission.id == RolePermission.permission_id)
+        .where(
+            ProjectMembership.user_id == user_id,
+            Project.organization_id == organization_id,
+        )
+        .distinct()
+    )
+    result = await session.execute(stmt)
+
+    grouped: dict[uuid.UUID, set[str]] = {}
+    for project_id, code in result.all():
+        grouped.setdefault(project_id, set()).add(code)
+    return {project_id: frozenset(codes) for project_id, codes in grouped.items()}

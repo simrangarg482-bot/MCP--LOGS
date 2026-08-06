@@ -111,7 +111,13 @@ async def run_mcp_tool(
             "app.mcp.servers.server.session_factory is unset -- "
             "scripts/run_mcp_server.py must set it before serving requests."
         )
+    if server_module.set_tenant_context is None:
+        raise McpServerNotReadyError(
+            "app.mcp.servers.server.set_tenant_context is unset -- "
+            "scripts/run_mcp_server.py must set it before serving requests."
+        )
     session_factory = server_module.session_factory
+    set_tenant_context = server_module.set_tenant_context
 
     start = time.monotonic()
     status_code = 200
@@ -122,6 +128,15 @@ async def run_mcp_tool(
         async with session_factory() as session:
             identity = await resolve_mcp_identity(session, raw_token)
             identity_tag = identity.audit_tag
+            # Milestone 10 RLS backstop: every table `handler` might query
+            # from here on is RLS-protected against `organization_id` --
+            # this must run before `handler` does anything else on `session`.
+            # (`resolve_mcp_identity` -> `users_service.resolve_identity`
+            # already set this same GUC internally, before its own
+            # RLS-protected `user_roles` lookup -- this call is a cheap,
+            # intentional redundancy, not the only place it happens; see
+            # that function's own docstring.)
+            await set_tenant_context(session, identity.organization_id)
             return await handler(session, identity)
     except EKIPError as exc:
         status_code = exc.status_hint

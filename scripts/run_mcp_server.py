@@ -9,7 +9,9 @@ any form, but *something* has to open the real database sessions every MCP
 tool call needs (identity resolution, the business call itself, and request
 logging). This script is that something -- it wires the real
 `app.database.session.session_scope` into `app.mcp.servers.server.
-session_factory` once, at startup, then hands control to the FastMCP
+session_factory`, and the real `app.database.session.set_tenant_context`
+(Milestone 10's RLS backstop) into `app.mcp.servers.server.
+set_tenant_context`, once, at startup, then hands control to the FastMCP
 server. See `app.mcp.servers.server`'s module docstring for the full
 reasoning behind this dependency-inversion split.
 
@@ -26,7 +28,7 @@ a real install, and adjust this one call if it differs.
 
 from __future__ import annotations
 
-from app.database.session import session_scope
+from app.database.session import session_scope, set_tenant_context
 from app.mcp.servers import main as mcp_assembly
 from app.mcp.servers import server as server_module
 from app.shared.config.logging import configure_logging
@@ -38,6 +40,7 @@ configure_logging()
 _ = mcp_assembly.mcp_server
 
 server_module.session_factory = session_scope
+server_module.set_tenant_context = set_tenant_context
 
 if __name__ == "__main__":
-    server_module.mcp_server.run(transport="streamable-http")
+    server_module.mcp_server.run(transport="streamable-http", port=8001)

@@ -95,6 +95,31 @@ class RefreshRequest(BaseModel):
     refresh_token: str
 
 
+class LogoutAllResponse(BaseModel):
+    """Response for `POST /auth/logout-all` and `POST /users/{user_id}/
+    logout-all` -- "logout everywhere" (`revoke_all_sessions`).
+
+    `revoked_session_count` is `revoke_all_sessions`'s own return value (the
+    number of `refresh_tokens` rows it revoked), included alongside the
+    human-readable `message` so a caller can tell "nothing to revoke" (0)
+    apart from "some sessions really were revoked" without parsing prose.
+
+    Important, and stated here rather than only in the endpoint docstring:
+    this revokes refresh tokens, not already-issued access tokens.
+    `core.auth.service.verify_access_token` is stateless (pure JWT signature/
+    expiry check, no database lookup) -- an access token issued before this
+    call remains valid until its own `exp` (bounded by `settings.
+    jwt_expiry_minutes`), even after every refresh token is revoked. "Logged
+    out everywhere" therefore means "no session can be *refreshed* past this
+    point," not "every existing access token stops working immediately."
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    message: str
+    revoked_session_count: int
+
+
 class TokenClaims(BaseModel):
     """The verified, decoded claims of an access token -- the output of
     `verify_access_token`.

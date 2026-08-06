@@ -1,9 +1,17 @@
 """Public interface for agents/ (PROJECT_PLAN.md section 9.7):
-`answer_question`, `triage_incident` (task #23), and, as of task #24,
-`generate_postmortem`. `detect_knowledge_gaps` (API_DESIGN.md section 2's
-remaining entry point) is not implemented here: it depends on the Knowledge
-Gap Agent, Milestone 9 -- stubbing it now would mean inventing behavior for
-an agent that doesn't exist, rather than an honest "not yet built."
+`answer_question`, `triage_incident`, `generate_postmortem`, and, as of
+Milestone 9, `detect_knowledge_gaps` / `list_gap_reports` -- the actual
+`agents/knowledge_gap/pipeline.py` logic lives in its own subpackage (same
+split as `agents.postmortem.pipeline`); this module's job is the same thin
+wrapper role it plays for every other agent: resolve settings/LLM, call the
+pipeline, and (for `detect_knowledge_gaps`) record the run's own
+`agent_executions` row.
+
+`detect_knowledge_gaps` is called per-organization on a schedule (`app/
+agents/workers/`, since `app.ingestion.workers` may not import `app.agents`
+-- see that package's own module docstring), not from any per-question
+graph -- AGENT_WORKFLOWS.md section 2.6 is explicit this agent is "not part
+of the per-question flow."
 
 `generate_postmortem` returns *computed content only* (`(root_cause,
 action_items)`), never a persisted row -- `core.incidents.service.
@@ -48,6 +56,20 @@ factored into `_run_graph_and_record` rather than duplicated -- the same
 DRY reasoning `core/incidents/repository.py`'s module docstring gives for
 its own generic `**fields` updaters.
 
+`search_similar_incidents`/`search_recent_changes` (added for Milestone 8's
+MCP tool handlers, API_DESIGN.md section 3) are thin `retrieval.search`
+passthroughs that resolve `SearchFilters` from `actor` before calling in --
+exactly the boundary `retrieval/schemas.py`'s own module docstring assigns
+to a caller ("`SearchFilters` is a plain value object ... whatever calls
+`retrieval.search()` ... is responsible for resolving from an `Identity`").
+They live here, not in `app/mcp/tools/` directly, because `app.mcp` may not
+import `app.retrieval` at all (pyproject.toml's "mcp never touches database
+or retrieval directly" contract forbids that *direct* import outright, not
+just the transitive chains `allow_indirect_imports` relaxes) -- `agents/`
+has no such restriction, so it is the correct place for MCP's search tools
+to route through, the same way `app.mcp.auth`/`app.mcp.dispatch` route
+through `core/` rather than reaching into `app.database` themselves.
+
 `generate_postmortem` does **not** go through `_run_graph_and_record` (it
 isn't graph-based at all -- AGENT_WORKFLOWS.md section 2.5's "linear
 pipeline, no routing logic," see `agents.postmortem.pipeline`'s module
@@ -65,26 +87,49 @@ silently says nothing useful, which is worse than the call simply raising.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents import repository
 from app.agents.graph import GraphState, build_graph, build_investigation_graph
+from app.agents.knowledge_gap import repository as knowledge_gap_repository
+from app.agents.knowledge_gap.pipeline import detect_knowledge_gaps as _run_knowledge_gap_pipeline
 from app.agents.llm import get_llm
 from app.agents.postmortem.pipeline import run_postmortem_pipeline
+from app.agents.schemas import AgentExecutionStats
 from app.core.exceptions import EKIPError
 from app.core.incidents import service as incidents_service
 from app.core.incidents.schemas import ActionItem
+from app.core.users.service import require_permission
+from app.database.models.agent_models import KnowledgeGapReport
+from app.retrieval import service as retrieval_service
+from app.retrieval.schemas import CollectionName, ScoredChunk, SearchFilters
 from app.shared.config.logging import get_logger
-from app.shared.schemas import AskResponse, Identity, TriggerSource
+from app.shared.config.settings import get_settings
+from app.shared.schemas import AskResponse, GapReport, Identity, TriggerSource
 
 logger = get_logger(__name__)
 
 _GENERIC_FAILURE_MESSAGE = (
     "Something went wrong while processing this request. This has been logged."
 )
+
+# Same permission `core.knowledge.service` requires for its proposed-
+# documents review queue -- see `list_gap_reports`'s docstring.
+_GAP_REVIEW_PERMISSION = "knowledge:review"
+
+# Same permission code `core.observability.service.get_mcp_dashboard`
+# requires -- see `get_agent_execution_stats`'s docstring on why this is a
+# duplicated constant, not a shared import.
+_OBSERVABILITY_READ_PERMISSION = "observability:read"
+
+# Metadata keys checked (in order) for a chunk's own recency timestamp by
+# `search_recent_changes`'s best-effort `since` filter -- see that
+# function's docstring for why this is inherently a best-effort, not a hard
+# guarantee.
+_RECENCY_METADATA_KEYS = ("source_timestamp", "updated_at", "timestamp")
 
 
 async def answer_question(
@@ -238,6 +283,220 @@ async def generate_postmortem(
         completed_at=datetime.now(timezone.utc),
     )
     return root_cause, action_items
+
+
+async def search_similar_incidents(
+    session: AsyncSession,
+    description: str,
+    actor: Identity,
+    *,
+    top_k: int = 10,
+) -> list[ScoredChunk]:
+    """Search for evidence resembling `description` (API_DESIGN.md section 3's
+    `search_similar_incidents` MCP tool: `{description: str}` ->
+    `list[ScoredChunk]`).
+
+    API_DESIGN.md's table describes this as searching a `collection=
+    "incidents"` -- no such collection exists (`retrieval.schemas.
+    CollectionName` is `Literal["documentation", "code", "conversations"]`;
+    that Literal's own comment already flags "nothing produces embeddable
+    chunks for [incidents] today"). Passing a nonexistent collection would be
+    a hard runtime type error, not a graceful degradation, so this searches
+    every collection (`collection=None`, `retrieval.search`'s own
+    all-collections default) instead -- a real, flagged gap versus the
+    documented contract's literal wording, not a silent workaround.
+    """
+    filters = SearchFilters(organization_id=actor.organization_id)
+    return await retrieval_service.search(session, description, filters, top_k)
+
+
+async def search_recent_changes(
+    session: AsyncSession,
+    query: str,
+    actor: Identity,
+    *,
+    since: datetime | None = None,
+    top_k: int = 10,
+    collection: CollectionName = "code",
+) -> list[ScoredChunk]:
+    """Search for recent code/documentation changes matching `query`
+    (API_DESIGN.md section 3's `search_recent_changes` MCP tool:
+    `{query: str, since?: str}` -> `list[ScoredChunk]`).
+
+    `since`-based recency filtering is a best-effort, not a guarantee:
+    `retrieval.schemas.SearchFilters` has no recency field (this project's
+    "Open items" in API_DESIGN.md already flags "whether `search_recent_
+    changes` needs its own dedicated retrieval collection or can filter the
+    existing `code` collection by metadata recency" as an undecided
+    question), so filtering happens client-side against each
+    `ScoredChunk.metadata` entry (populated via `include_metadata=True`) --
+    checked against whichever of `_RECENCY_METADATA_KEYS` is present. A
+    chunk whose metadata carries none of those keys is kept rather than
+    dropped, since "no timestamp available" is not the same claim as "not
+    recent."
+    """
+    filters = SearchFilters(organization_id=actor.organization_id)
+    results = await retrieval_service.search(
+        session, query, filters, top_k, collection, include_metadata=True
+    )
+    if since is None:
+        return results
+    return [chunk for chunk in results if _passes_recency_filter(chunk, since)]
+
+
+def _passes_recency_filter(chunk: ScoredChunk, since: datetime) -> bool:
+    """See `search_recent_changes`'s docstring for why this is best-effort."""
+    for key in _RECENCY_METADATA_KEYS:
+        raw_value = chunk.metadata.get(key)
+        if not raw_value:
+            continue
+        try:
+            timestamp = datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        return timestamp >= since
+    return True
+
+
+def _gap_report_to_schema(row: KnowledgeGapReport) -> GapReport:
+    return GapReport(
+        id=row.id,
+        organization_id=row.organization_id,
+        suggested_topic=row.suggested_topic,
+        supporting_execution_ids=[uuid.UUID(value) for value in row.supporting_execution_ids],
+        suggested_action=row.suggested_action,
+        related_document_id=row.related_document_id,
+        status=row.status,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+async def detect_knowledge_gaps(
+    session: AsyncSession,
+    actor: Identity,
+    *,
+    trigger_source: TriggerSource = "scheduled",
+) -> list[GapReport]:
+    """Run the Knowledge Gap Agent for `actor.organization_id`
+    (`agents.knowledge_gap.pipeline.detect_knowledge_gaps`) and record one
+    `agent_executions` row for the run itself (DATABASE_DESIGN.md's uniform
+    "one row per agent run" convention -- this agent's own execution is as
+    observable as any other, even though it runs on a schedule rather than
+    per-question).
+
+    Takes `actor: Identity` like every other entry point in this module
+    (API_DESIGN.md: "Identity is threaded through every call"), not a bare
+    `organization_id` -- the only caller, `app.agents.workers.tasks`'s cron
+    job, constructs `Identity.for_agent("knowledge_gap_agent",
+    organization_id)` per organization, mirroring
+    `core.tenancy.service.update_connector_sync_status`'s identical
+    precedent for a scheduled worker's system-triggered identity.
+
+    `trigger_source` defaults to `"scheduled"` (not `"core_api"`, unlike
+    every other entry point in this module): there is no REST/MCP action
+    that triggers a fresh run on demand, only reads the results
+    (`list_gap_reports`), per AGENT_WORKFLOWS.md section 2.6's "not part of
+    the per-question flow."
+
+    No two-tier failure handling here, matching `generate_postmortem`'s
+    reasoning, not `answer_question`'s: a `GapReport` is a real
+    recommendation a human may act on, not a disposable chat answer, so a
+    failure here is marked `failed` and re-raised rather than papered over
+    with a fabricated empty result.
+    """
+    settings = get_settings()
+    execution = await repository.insert_agent_execution(
+        session,
+        organization_id=actor.organization_id,
+        agent_name="detect_knowledge_gaps",
+        trigger_source=trigger_source,
+        input_summary={"organization_id": str(actor.organization_id)},
+    )
+
+    try:
+        llm = get_llm()
+        rows = await _run_knowledge_gap_pipeline(
+            session,
+            llm,
+            actor.organization_id,
+            confidence_threshold=settings.confidence_threshold,
+            lookback=timedelta(days=settings.knowledge_gap_lookback_days),
+            min_cluster_size=settings.knowledge_gap_min_cluster_size,
+            similarity_threshold=settings.knowledge_gap_similarity_threshold,
+        )
+    except Exception as exc:
+        await repository.update_agent_execution(
+            session,
+            execution.id,
+            status="failed",
+            error_detail=str(exc)[:2000],
+            completed_at=datetime.now(timezone.utc),
+        )
+        raise
+
+    await repository.update_agent_execution(
+        session,
+        execution.id,
+        status="succeeded",
+        completed_at=datetime.now(timezone.utc),
+    )
+    return [_gap_report_to_schema(row) for row in rows]
+
+
+async def list_gap_reports(session: AsyncSession, actor: Identity) -> list[GapReport]:
+    """List every currently-open gap report for `actor.organization_id`
+    (API_DESIGN.md: `GET /knowledge/gaps`) -- a pure read, no agent run
+    triggered, no `agent_executions` row recorded.
+
+    Gated by `knowledge:review`, the same permission
+    `core.knowledge.service.list_proposed_documents` requires -- gap
+    reports surface the same kind of oversight information (what's
+    under-documented, per PROJECT_PLAN.md's "Documentation/platform owner"
+    persona) as the proposed-documents review queue, not something every
+    employee should see by default.
+    """
+    require_permission(actor, _GAP_REVIEW_PERMISSION)
+    rows = await knowledge_gap_repository.list_open_gap_reports(session, actor.organization_id)
+    return [_gap_report_to_schema(row) for row in rows]
+
+
+async def get_agent_execution_stats(
+    session: AsyncSession, actor: Identity, *, since: datetime | None = None
+) -> list[AgentExecutionStats]:
+    """Per-agent execution/latency/confidence aggregate for
+    `actor.organization_id` -- Milestone 10's observability-dashboard
+    requirement (PROJECT_PLAN.md section 10), the `agent_executions`-side
+    counterpart to `core.observability.service.get_mcp_dashboard`.
+
+    Gated by `observability:read` (a new permission code, duplicated here
+    rather than imported from `core.observability.service` -- matching this
+    codebase's existing convention of each module owning its own permission
+    constant even when the string value is shared, e.g. `_GAP_REVIEW_
+    PERMISSION` above vs. `core.knowledge.service._REVIEW_PERMISSION`, both
+    `"knowledge:review"`).
+    """
+    require_permission(actor, _OBSERVABILITY_READ_PERMISSION)
+    rows = await repository.get_agent_execution_stats(
+        session, actor.organization_id, since=since
+    )
+    return [
+        AgentExecutionStats(
+            agent_name=row.agent_name,
+            execution_count=row.execution_count,
+            succeeded_count=int(row.succeeded_count or 0),
+            failed_count=int(row.failed_count or 0),
+            avg_confidence_score=(
+                float(row.avg_confidence_score) if row.avg_confidence_score is not None else None
+            ),
+            avg_latency_seconds=(
+                float(row.avg_latency_seconds) if row.avg_latency_seconds is not None else None
+            ),
+        )
+        for row in rows
+    ]
 
 
 async def _run_graph_and_record(

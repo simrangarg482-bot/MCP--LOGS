@@ -35,3 +35,25 @@ class AgentExecution(BaseModel):
     error_detail: str | None
     started_at: datetime
     completed_at: datetime | None
+
+
+class AgentExecutionStats(BaseModel):
+    """Aggregated execution metrics for one agent, over some organization
+    and time window -- Milestone 10's observability-dashboard requirement
+    (PROJECT_PLAN.md section 10), the `agent_executions`-side counterpart to
+    `core.observability.schemas.McpToolStats`. Organization-scoped (unlike
+    `McpToolStats`): `agent_executions.organization_id` exists specifically
+    because a *named* per-tenant consumer (the Knowledge Gap Agent) already
+    needs it -- see `app.database.models.agent_models.AgentExecution`'s own
+    docstring -- so a per-tenant dashboard view is a natural, already-
+    supported query shape here, unlike `mcp_requests`.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    agent_name: str
+    execution_count: int
+    succeeded_count: int
+    failed_count: int
+    avg_confidence_score: float | None
+    avg_latency_seconds: float | None

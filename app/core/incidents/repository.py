@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -226,6 +227,50 @@ async def list_postmortems_by_organization(
         .order_by(Postmortem.created_at.desc())
         .limit(limit)
     )
+    result = await session.execute(stmt)
+    return result.scalars().all()
+
+
+async def list_postmortems_for_ingestion(
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    *,
+    statuses: Sequence[str],
+    since: datetime | None = None,
+    offset: int = 0,
+    limit: int,
+) -> Sequence[Postmortem]:
+    """Return postmortems for `organization_id` whose `status` is in
+    `statuses`, oldest-`created_at`-first, offset-paginated -- backs the
+    Milestone 9 runbooks/incident-report ingestion connector
+    (`app.ingestion.connectors.runbooks`), NOT the Investigation Agent's
+    evidence source above (that one is `list_postmortems_by_organization`:
+    newest-first, no pagination, a small fixed `limit` -- a fundamentally
+    different access pattern: "give me recent context" vs. "walk everything,
+    resumably, oldest first" ).
+
+    Ascending order, not descending: matches every other Milestone 9
+    connector's own "ORDER BY ... ASC" incremental-sync convention
+    (`JiraConnector`'s WIQL, `AzureDevOpsConnector`'s WIQL, `ConfluenceConnector`'s
+    CQL), so a paginated walk started today and resumed tomorrow sees stable,
+    non-overlapping pages.
+
+    Offset-based, not keyset-based: postmortem approval is a rare,
+    human-gated event (one per resolved incident, not a high-volume stream),
+    so the usual "a concurrent insert shifts the window" offset-pagination
+    risk is a low-priority, documented tradeoff here, not a correctness-
+    critical gap -- unlike a chat/commit-firehose source, which is why
+    those connectors don't use plain offsets.
+    """
+    stmt = (
+        select(Postmortem)
+        .where(Postmortem.organization_id == organization_id, Postmortem.status.in_(statuses))
+        .order_by(Postmortem.created_at.asc())
+        .offset(offset)
+        .limit(limit)
+    )
+    if since is not None:
+        stmt = stmt.where(Postmortem.created_at >= since)
     result = await session.execute(stmt)
     return result.scalars().all()
 

@@ -51,6 +51,12 @@ if config.config_file_name is not None:
 # Overrides whatever sqlalchemy.url is in alembic.ini with the live setting,
 # so there's exactly one source of truth for the connection string
 # (Settings.database_url) instead of it being duplicated in two config files.
+# `str(...)` is required, not cosmetic: `database_url` is a pydantic
+# `PostgresDsn` object, and `configparser` (what `set_main_option` writes
+# into) raises `TypeError: option values must be strings` if handed
+# anything else -- this was only caught the first time this migration
+# environment was actually run, since nothing in this project's sandbox
+# could execute Python against a live Alembic config before now.
 config.set_main_option("sqlalchemy.url", str(get_settings().database_url))
 
 target_metadata = Base.metadata

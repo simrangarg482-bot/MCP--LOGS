@@ -23,7 +23,7 @@ import uuid
 from collections.abc import Sequence
 from datetime import datetime
 
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models.auth_models import RefreshToken
@@ -69,9 +69,43 @@ async def get_refresh_token_by_hash(
     Called with the hash of a client-presented token (hashed by service.py,
     never compared in plaintext) -- the caller is responsible for then
     checking `revoked_at`/`expires_at` before trusting the result.
+
+    Milestone 10 RLS note: `refresh_tokens` is RLS-protected -- this only
+    returns the row if `app.database.session.set_tenant_context` has
+    already been set to match its `organization_id` on this session.
+    `service.refresh`/`service.logout` resolve that first via
+    `resolve_refresh_token_organization_id` below, since neither has any
+    other org context available at the point this is called.
     """
     stmt = select(RefreshToken).where(RefreshToken.token_hash == token_hash)
     result = await session.execute(stmt)
+    return result.scalar_one_or_none()
+
+
+async def resolve_refresh_token_organization_id(
+    session: AsyncSession, token_hash: str
+) -> uuid.UUID | None:
+    """Resolve just the `organization_id` a refresh token belongs to,
+    bypassing RLS via the narrow `resolve_refresh_token_organization` SQL
+    function (see `d2e5f8a3c1b6_milestone_10_rls_bypass_functions.py`) --
+    the same pattern as `app.ingestion.repository.
+    resolve_connector_config_organization_id`.
+
+    The one legitimate reason to call this: `core.auth.service.refresh`/
+    `logout` start from a bare, client-presented token hash with no
+    `Identity`/org context yet to `set_tenant_context` with -- this function
+    exists solely to break that chicken-and-egg deadlock, returning nothing
+    but the org id. The caller is expected to call `set_tenant_context` with
+    the result, then call `get_refresh_token_by_hash` above for the actual
+    row.
+
+    Returns None if no such token hash exists (mirrors
+    `get_refresh_token_by_hash`'s own `None`-for-missing convention).
+    """
+    result = await session.execute(
+        text("SELECT resolve_refresh_token_organization(:token_hash)"),
+        {"token_hash": token_hash},
+    )
     return result.scalar_one_or_none()
 
 

@@ -54,6 +54,15 @@ async def get_organization_by_id(
     return await session.get(Organization, organization_id)
 
 
+async def list_organizations(session: AsyncSession) -> Sequence[Organization]:
+    """Return every organization in the system, unscoped -- see
+    `service.list_organizations`'s docstring for why this has no actor/
+    organization_id filter, unlike every other query in this file.
+    """
+    result = await session.execute(select(Organization))
+    return result.scalars().all()
+
+
 async def get_organization_by_slug(
     session: AsyncSession, slug: str
 ) -> Organization | None:

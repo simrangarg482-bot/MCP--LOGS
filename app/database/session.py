@@ -16,10 +16,12 @@ still attached to a session. That rule is enforced by convention in the
 modules that use this file, not by anything in this file itself.
 """
 
+import uuid
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -29,6 +31,12 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.orm import DeclarativeBase
 
 from app.shared.config.settings import get_settings
+
+# The Postgres GUC every Milestone 10 RLS policy checks against (see
+# app/database/migrations/versions/c7d4e8f19a2b_milestone_10_row_level_security.py).
+# Named here, not just there, since this module is the one place that ever
+# sets it.
+_TENANT_GUC_NAME = "app.current_organization_id"
 
 # Query parameters libpq-style clients (psql, psycopg) understand but
 # asyncpg's connect() does not -- SQLAlchemy's asyncpg dialect forwards every
@@ -119,6 +127,45 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
             raise
         finally:
             await session.close()
+
+
+async def set_tenant_context(session: AsyncSession, organization_id: uuid.UUID) -> None:
+    """Set the session-local GUC every Milestone 10 RLS policy checks
+    (`app.current_organization_id`) for the remainder of the *current
+    transaction only*.
+
+    Uses `set_config(name, value, is_local=true)` rather than a literal
+    `SET LOCAL app.current_organization_id = '<uuid>'` string -- `SET` is not
+    a regular SQL statement and does not accept bind parameters, so building
+    it via string interpolation would be the one place in this codebase
+    doing that; `set_config` is an ordinary function call and takes a normal
+    bound parameter instead. The third argument, `true`, is what makes this
+    "local" (scoped to the current transaction, cleared on commit/rollback)
+    rather than "session" (would otherwise leak forward to whatever the next
+    request/job on this pooled connection happens to be, since sessions
+    aren't guaranteed to map 1:1 to connections).
+
+    Callers, in the order Identity/org context becomes known in this
+    codebase: `app.api.deps.get_current_identity` (REST, every request),
+    `app.mcp.auth.resolve_mcp_identity` (MCP, every call),
+    `app.core.tenancy.service.evaluate_provisioning` and
+    `get_organization_sso_config` (pre-Identity, login-flow paths that
+    resolve `organization_id` themselves before any token exists), and
+    `app.agents.workers.tasks`'s scheduled Knowledge Gap scan (each
+    per-organization iteration, using the `organization_id` the scan loop
+    already holds). `app.ingestion.service._execute_ingestion_job` is the
+    one exception that cannot call this first -- seeing this module's own
+    docstring and that function's docstring for why it resolves the org id
+    via a narrow RLS-bypassing lookup before it can call this at all.
+
+    Must be called on every session before any RLS-protected table is
+    queried on it -- a session that never calls this sees zero rows from
+    every such table (fail-closed; see the RLS migration's own docstring).
+    """
+    await session.execute(
+        text("SELECT set_config(:guc_name, :org_id, true)"),
+        {"guc_name": _TENANT_GUC_NAME, "org_id": str(organization_id)},
+    )
 
 
 @asynccontextmanager

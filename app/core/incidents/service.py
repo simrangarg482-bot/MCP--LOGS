@@ -57,7 +57,7 @@ from app.core.incidents.schemas import (
     TimelineNoteCreate,
 )
 from app.core.tenancy import service as tenancy_service
-from app.core.users.service import require_permission
+from app.core.users.service import require_permission, require_project_permission
 from app.shared.config.logging import get_logger
 from app.shared.schemas import Identity, InvestigationResult
 
@@ -152,7 +152,7 @@ async def create_incident(
         )
         project_id = default_project.id
 
-    require_permission(actor, _INCIDENT_WRITE_PERMISSION, project_id=project_id)
+    require_project_permission(actor, project_id, _INCIDENT_WRITE_PERMISSION)
 
     row = await repository.insert_incident(
         session,
@@ -220,7 +220,7 @@ async def update_incident(
     """
     _ensure_same_organization(actor, organization_id)
     existing = await _get_owned_incident(session, organization_id, incident_id)
-    require_permission(actor, _INCIDENT_WRITE_PERMISSION, project_id=existing.project_id)
+    require_project_permission(actor, existing.project_id, _INCIDENT_WRITE_PERMISSION)
 
     fields = patch.model_dump(exclude_unset=True)
     if not fields:
@@ -266,7 +266,7 @@ async def add_timeline_note(
     """
     _ensure_same_organization(actor, organization_id)
     existing = await _get_owned_incident(session, organization_id, incident_id)
-    require_permission(actor, _INCIDENT_WRITE_PERMISSION, project_id=existing.project_id)
+    require_project_permission(actor, existing.project_id, _INCIDENT_WRITE_PERMISSION)
 
     row = await repository.insert_timeline_entry(
         session,
@@ -458,7 +458,7 @@ async def trigger_postmortem_generation(
             detail={"incident_id": str(incident_id), "status": incident.status},
         )
 
-    require_permission(actor, _POSTMORTEM_WRITE_PERMISSION, project_id=incident.project_id)
+    require_project_permission(actor, incident.project_id, _POSTMORTEM_WRITE_PERMISSION)
 
     existing_postmortem = await repository.get_postmortem_by_incident_id(session, incident_id)
     if existing_postmortem is not None:
@@ -526,6 +526,42 @@ async def list_recent_postmortems(
     _ensure_same_organization(actor, organization_id)
     rows = await repository.list_postmortems_by_organization(
         session, organization_id, statuses=("approved", "published"), limit=limit
+    )
+    return [Postmortem.model_validate(row) for row in rows]
+
+
+async def list_postmortems_for_ingestion(
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    *,
+    since: datetime | None,
+    offset: int,
+    limit: int,
+) -> list[Postmortem]:
+    """Return approved/published postmortems for `organization_id`,
+    oldest-first, offset-paginated -- backs the Milestone 9 runbooks/
+    incident-report ingestion connector (`app.ingestion.connectors.runbooks`),
+    the source `agents.investigation.evidence`'s own docstring already flags
+    as missing ("no 'postmortems' retrieval collection exists yet").
+
+    Deliberately no `actor: Identity` parameter -- a rare, explicit exception
+    to this module's "every function takes an actor" rule, in the same
+    spirit as `core.tenancy.service.list_organizations`/`get_organization_
+    sso_config`: the caller is `ingestion`'s worker, a scheduled system job
+    with no per-request human identity (see `ingestion.service`'s own module
+    docstring: it already constructs `Identity.for_agent("ingestion_worker",
+    organization_id)` purely for audit-tagging, not for permission checks --
+    there is no permission check to gate here either, matching
+    `list_recent_postmortems`'s "read-only lookup, no require_permission
+    gate" precedent immediately above).
+    """
+    rows = await repository.list_postmortems_for_ingestion(
+        session,
+        organization_id,
+        statuses=("approved", "published"),
+        since=since,
+        offset=offset,
+        limit=limit,
     )
     return [Postmortem.model_validate(row) for row in rows]
 

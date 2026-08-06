@@ -49,17 +49,12 @@ from app.shared.schemas import AskResponse, Citation
 logger = get_logger(__name__)
 
 _INSUFFICIENT_GROUNDING_MESSAGE = (
-    "I don't have enough grounded information from the available sources to "
-    "answer this confidently."
+    "I don't have enough grounded information from the available sources to answer this confidently."
 )
 
 
 class _UngroundedAnswerError(Exception):
-    """Raised internally when a generated answer has no sentences left after
-    grounding verification (or the model explicitly declined to answer).
-    Caught by `agents.retry.call_with_retry` as a retryable failure, so a
-    fresh generation attempt is made rather than reusing the ungrounded
-    draft -- see module docstring.
+    """Raised internally when a generated answer has no sentences left after grounding verification (or the model explicitly declined to answer). Caught by `agents.retry.call_with_retry` as a retryable failure, so a fresh generation attempt is made rather than reusing the ungrounded draft -- see module docstring.
     """
 
 

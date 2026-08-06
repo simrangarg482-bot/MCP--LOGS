@@ -156,22 +156,22 @@ A single LLM call over the assembled `evidence` list, producing `RootCauseHypoth
 
 ```
                          ┌─────────────────┐
-                         │  Retrieval Agent │
-                         └────────┬─────────┘
+                         │  Retrieval Agent│
+                         └────────┬────────┘
                                   │
                                   ▼
                    ┌───────────────────────────┐
-                   │ Confidence Evaluation Node │
-                   └──────────────┬─────────────┘
+                   │ Confidence Evaluation Node│
+                   └──────────────┬────────────┘
                                   │
                  ┌────────────────┴────────────────┐
-                 │ route == "answer"                │ route == "investigation"
-                 ▼                                   ▼
+                 │ route == "answer"               │ route == "investigation"
+                 ▼                                 ▼
          ┌───────────────┐                  ┌───────────────────┐
-         │  Answer Agent │                  │ Investigation Agent│
-         └───────┬───────┘                  └──────────┬─────────┘
-                 │                                       │
-                 ▼                                       ▼
+         │  Answer Agent │                  │Investigation Agent│
+         └───────┬───────┘                  └──────────┬────────┘
+                 │                                     │
+                 ▼                                     ▼
             result populated                     result.investigation populated
                  │                                       │
                  └───────────────┬───────────────────────┘

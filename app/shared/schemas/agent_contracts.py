@@ -53,7 +53,13 @@ class EvidenceItem(BaseModel):
     `"issue"` was added to `source` alongside the GitHub connector's
     extension to issues/PRs/commits (`"pull_request"`/`"commit"` already
     existed here, built in anticipation of exactly this before the connector
-    itself could produce either). `source_timestamp`/`metadata` are
+    itself could produce either). `"monitoring"` was added alongside
+    `agents.investigation.live.MonitoringLiveSource`'s registration into
+    `_LIVE_SOURCES` -- that class still always returns an empty evidence
+    list (no real PagerDuty/Datadog/Grafana/etc. integration exists yet),
+    but now has a real, typed `source` value to use whenever one is built,
+    rather than the previous state where no legitimate value existed for it
+    at all. `source_timestamp`/`metadata` are
     additive fields (default `None`/`{}`, so every pre-existing construction
     site -- postmortem evidence, the zero-evidence/empty-evidence paths --
     keeps working unchanged): `source_timestamp` is the *original* GitHub
@@ -75,7 +81,15 @@ class EvidenceItem(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     source: Literal[
-        "github", "pull_request", "commit", "issue", "slack", "jira", "deployment", "postmortem"
+        "github",
+        "pull_request",
+        "commit",
+        "issue",
+        "slack",
+        "jira",
+        "deployment",
+        "postmortem",
+        "monitoring",
     ]
     reference: str  # PR number, message link, ticket ID, etc.
     summary: str
@@ -129,3 +143,29 @@ class AskResponse(BaseModel):
     answer: str | None = None
     citations: list[Citation] = Field(default_factory=list)
     investigation: InvestigationResult | None = None
+
+
+class GapReport(BaseModel):
+    """One recommendation produced by the Knowledge Gap Agent (Milestone 9,
+    AGENT_WORKFLOWS.md section 2.6 / PROJECT_PLAN.md section 6.6 /
+    API_DESIGN.md section 2's `detect_knowledge_gaps() -> list[GapReport]`).
+
+    Mirrors `app.database.models.agent_models.KnowledgeGapReport`'s columns
+    (see that model's own docstring for why `status` is an addition beyond
+    the original spec). `supporting_execution_ids` references
+    `AgentExecution.id` values, not a persisted evidence-item shape --
+    fetching the underlying executions is a separate lookup a reviewer's
+    tooling can do if it wants the actual query text back.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    id: uuid.UUID
+    organization_id: uuid.UUID
+    suggested_topic: str
+    supporting_execution_ids: list[uuid.UUID]
+    suggested_action: Literal["new_runbook", "update_existing"]
+    related_document_id: uuid.UUID | None
+    status: Literal["open", "dismissed"]
+    created_at: datetime
+    updated_at: datetime

@@ -1,5 +1,6 @@
-"""SQLAlchemy model for the one table owned by agents/: `agent_executions`
-(DATABASE_DESIGN.md "agents/ -- owned tables").
+"""SQLAlchemy models for the tables owned by agents/: `agent_executions` and,
+as of Milestone 9, `knowledge_gap_reports` (DATABASE_DESIGN.md "agents/ --
+owned tables").
 
 Owned by: database/ (definition) + agents/ (write access) -- same ownership
 discipline as every other models file in this project: only agents/'s
@@ -78,3 +79,59 @@ class AgentExecution(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class KnowledgeGapReport(Base):
+    """One recommendation produced by the Knowledge Gap Agent (Milestone 9,
+    AGENT_WORKFLOWS.md section 2.6 / PROJECT_PLAN.md section 6.6) --
+    "suggested topic, supporting execution IDs, suggested action."
+
+    Owned by: database/ (definition) + agents/ (write access) -- same
+    convention as `AgentExecution` above; `core/knowledge` reads
+    `related_document_id` indirectly (by id) when a human acts on a report,
+    never by joining into this table directly.
+
+    `topic_embedding` and `supporting_execution_ids` are JSONB, not a native
+    `pgvector` column or a join table: the per-organization row count here
+    is small (a handful of open gaps at a time, not millions), so the one
+    place this embedding is ever compared against another
+    (`app.agents.knowledge_gap.pipeline`'s re-run merge check) does the
+    cosine-similarity comparison in Python against the handful of currently
+    "open" rows, rather than needing a SQL-side vector index built for a
+    scale this table will never reach.
+
+    `status` (`"open"`/`"dismissed"`) is an addition beyond
+    AGENT_WORKFLOWS.md's literal spec, flagged plainly rather than silently
+    added: without some way to close a report, `GET /knowledge/gaps` would
+    show the same recommendation forever, even after a human has already
+    acted on it (created the runbook, updated the document) -- a real
+    usability gap the original spec didn't address. Nothing currently sets
+    `"dismissed"` (no dismiss action is wired up yet); the column exists so
+    that action is additive, not a later breaking schema change.
+    """
+
+    __tablename__ = "knowledge_gap_reports"
+    __table_args__ = (
+        Index("ix_knowledge_gap_reports_org_status", "organization_id", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False
+    )
+    suggested_topic: Mapped[str] = mapped_column(Text, nullable=False)
+    topic_embedding: Mapped[list] = mapped_column(JSONB, nullable=False)
+    supporting_execution_ids: Mapped[list] = mapped_column(JSONB, nullable=False)
+    suggested_action: Mapped[str] = mapped_column(Text, nullable=False)  # new_runbook/update_existing
+    related_document_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("documents.id", ondelete="SET NULL"), nullable=True
+    )
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="open")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )

@@ -82,7 +82,11 @@ def make_investigation_agent_node(
 
     async def node(state: GraphState) -> dict[str, Any]:
         evidence = await gather_evidence(
-            session, query=state.query, actor=state.actor, retry_count=state.retry_count
+            session,
+            query=state.query,
+            actor=state.actor,
+            retry_count=state.retry_count,
+            incident_id=state.incident_id,
         )
 
         if not evidence:

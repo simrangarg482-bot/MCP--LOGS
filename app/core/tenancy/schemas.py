@@ -20,11 +20,17 @@ though their ORM models live in the same tenancy_models.py file:
     (ENGINEERING_DECISIONS.md #004).
 
 Secrets discipline (PROJECT_PLAN.md section 12.5): `client_secret_ref` and
-`credential_ref` below are references/identifiers into an encrypted secret
-store, never a usable raw credential -- core/tenancy stores and returns only
-the reference, consistent with its "must never do the actual OAuth handshake"
-boundary (PROJECT_PLAN.md section 9.2). It is therefore safe for these
-read models to include them.
+`ConnectorConfig.credential_ref` below are references/identifiers into an
+encrypted secret store, never a usable raw credential -- core/tenancy stores
+and returns only the reference, consistent with its "must never do the
+actual OAuth handshake" boundary (PROJECT_PLAN.md section 9.2). It is
+therefore safe for these read models to include them. The one deliberate
+exception is `ConnectorConfigCreate.credential_ref` (below) -- a caller
+registering a new connector still submits the *plaintext* credential once,
+at setup time; `core.tenancy.service.register_connector` envelope-encrypts
+it (`app.shared.security`) before it is ever persisted, so by the time it
+comes back out through `ConnectorConfig.credential_ref` it is the encrypted
+envelope, not what was submitted.
 
 `AccessRuleCreate`/`InvitationCreate`/`ProvisioningDecision` back the SSO
 provisioning-policy design (ENGINEERING_DECISIONS.md's provisioning-policy
@@ -54,8 +60,25 @@ OrganizationStatus = Literal["onboarding", "active", "suspended"]
 SSOProvider = Literal["entra_id", "okta", "auth0", "google_workspace"]
 SSOProtocol = Literal["oidc", "saml"]
 ConnectorSource = Literal[
-    "slack", "teams", "github", "azure_devops", "jira", "confluence", "sharepoint"
+    "slack",
+    "teams",
+    "github",
+    "azure_devops",
+    "jira",
+    "confluence",
+    "sharepoint",
+    "runbooks",
+    "monitoring",
 ]
+"""`"monitoring"` (added alongside `agents.investigation.live.
+MonitoringLiveSource`'s registration into `_LIVE_SOURCES`) has no ingestion
+connector or `_CONNECTOR_REGISTRY` entry (`app.ingestion.service`) -- it is
+reachable only as a live-evidence source for the Investigation Agent, not as
+a document-ingestion connector. A `connector_configs` row with
+`source="monitoring"` is therefore only ever consulted by
+`agents.investigation.evidence`, never by `app.ingestion.workers`; registering
+one will not enqueue ingestion jobs the way the other seven sources would.
+"""
 ConnectorStatus = Literal["connecting", "active", "error", "disconnected"]
 AccessRuleType = Literal["domain", "group"]
 InvitationStatus = Literal["pending", "accepted", "expired", "revoked"]

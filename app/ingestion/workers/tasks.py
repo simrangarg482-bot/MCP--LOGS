@@ -66,14 +66,29 @@ async def scheduled_reconciliation(ctx: dict) -> None:
 
     Enqueues rather than running jobs inline, so one organization's large
     sync can't block this scan from reaching every other organization's
-    connectors (each enqueued job is independently rate-limited per
-    `connector_config`, per section 4.5 -- not attempted here).
+    connectors. Each enqueued job is rate-limited per `connector_config` and
+    per organization (PROJECT_PLAN.md section 4.5/Milestone 10) inside
+    `ingestion.service._execute_ingestion_job` itself, via
+    `app.ingestion.rate_limiter` -- not attempted here, since this function
+    only enqueues jobs, it never runs one.
+
+    Milestone 10 RLS note: `repository.list_active_connector_config_ids`
+    goes through a narrow RLS-bypassing SQL function rather than a normal
+    scoped query -- this scan is deliberately cross-tenant (it must reach
+    every organization's connectors, not just one), the same exception
+    `core.tenancy.repository.list_organizations` already is for the
+    Knowledge Gap Agent's scan. Only ids come back, never full rows; each
+    resulting job resolves and scopes to its own connector_config's
+    organization independently, inside `_execute_ingestion_job`.
     """
     async with session_scope() as session:
-        configs = await repository.list_active_connector_configs(session)
+        connector_config_ids = await repository.list_active_connector_config_ids(session)
 
     redis = ctx["redis"]
-    for config in configs:
-        await redis.enqueue_job("run_ingestion_job_task", str(config.id))
+    for connector_config_id in connector_config_ids:
+        await redis.enqueue_job("run_ingestion_job_task", str(connector_config_id))
 
-    logger.info("ingestion_reconciliation_scheduled", connector_config_count=len(configs))
+    logger.info(
+        "ingestion_reconciliation_scheduled",
+        connector_config_count=len(connector_config_ids),
+    )

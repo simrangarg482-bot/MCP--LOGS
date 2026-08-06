@@ -72,6 +72,7 @@ from app.core.exceptions import PermissionDeniedError
 from app.core.tenancy import service as tenancy_service
 from app.core.tenancy.schemas import SSOConfiguration
 from app.core.users import service as users_service
+from app.database.session import set_tenant_context
 from app.shared.config.logging import get_logger
 from app.shared.config.settings import get_settings
 
@@ -490,11 +491,29 @@ async def refresh(session: AsyncSession, data: RefreshRequest) -> SessionTokens:
     out), that is treated as a compromise signal -- the entire token family
     is revoked immediately and the request is denied, rather than silently
     accepting a replayed token.
+
+    Milestone 10 RLS note: `refresh_tokens` is RLS-protected, and this
+    function starts from a bare, client-presented token hash with no
+    `Identity`/org context yet -- the same chicken-and-egg shape
+    `ingestion.service._execute_ingestion_job` has for `connector_configs`.
+    Resolved the same way: a narrow, RLS-bypassing lookup
+    (`repository.resolve_refresh_token_organization_id`) discovers just the
+    owning organization_id, `set_tenant_context` is set to it, and only then
+    does the real, RLS-scoped `get_refresh_token_by_hash` query run.
     """
     now = datetime.now(timezone.utc)
     token_hash = _hash_token(data.refresh_token)
-    row = await repository.get_refresh_token_by_hash(session, token_hash)
 
+    token_organization_id = await repository.resolve_refresh_token_organization_id(
+        session, token_hash
+    )
+    if token_organization_id is None:
+        raise PermissionDeniedError(
+            "Invalid refresh token.", error_code="auth.invalid_refresh_token"
+        )
+    await set_tenant_context(session, token_organization_id)
+
+    row = await repository.get_refresh_token_by_hash(session, token_hash)
     if row is None:
         raise PermissionDeniedError(
             "Invalid refresh token.", error_code="auth.invalid_refresh_token"
@@ -529,8 +548,21 @@ async def logout(session: AsyncSession, data: RefreshRequest) -> None:
     Idempotent: logging out a token that's already invalid/gone is a no-op,
     not an error -- a client retrying a logout call should never see a
     failure for something that already succeeded.
+
+    Milestone 10 RLS note: same bare-token-hash-before-org-known shape as
+    `refresh` above -- see that function's docstring. Here, an unresolvable
+    token hash is simply a no-op (matching this function's own idempotent
+    contract) rather than an error.
     """
     token_hash = _hash_token(data.refresh_token)
+
+    token_organization_id = await repository.resolve_refresh_token_organization_id(
+        session, token_hash
+    )
+    if token_organization_id is None:
+        return
+    await set_tenant_context(session, token_organization_id)
+
     row = await repository.get_refresh_token_by_hash(session, token_hash)
     if row is None or row.revoked_at is not None:
         return

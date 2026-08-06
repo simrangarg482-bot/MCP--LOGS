@@ -19,11 +19,30 @@ cases.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Any
 
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models.agent_models import AgentExecution
+
+_SUCCEEDED_CASE = case((AgentExecution.status == "succeeded", 1), else_=0)
+_FAILED_CASE = case((AgentExecution.status == "failed", 1), else_=0)
+# Only completed executions have a meaningful latency (`completed_at` is
+# nullable, populated once a run finishes -- see `AgentExecution`'s own
+# docstring on the running->succeeded/failed lifecycle); a still-`running`
+# row's "elapsed so far" isn't the same measurement and would skew an
+# average latency downward for no good reason, so `func.avg` here only ever
+# sees non-null values by construction (the `else_=None` branch), not a
+# zero standing in for "unknown."
+_LATENCY_SECONDS_CASE = case(
+    (
+        AgentExecution.completed_at.is_not(None),
+        func.extract("epoch", AgentExecution.completed_at - AgentExecution.started_at),
+    ),
+    else_=None,
+)
 
 
 async def insert_agent_execution(
@@ -68,3 +87,35 @@ async def update_agent_execution(
     await session.flush()
     await session.refresh(row)
     return row
+
+
+async def get_agent_execution_stats(
+    session: AsyncSession, organization_id: uuid.UUID, *, since: datetime | None = None
+) -> list[Any]:
+    """Aggregate `agent_executions` by `agent_name` for `organization_id`:
+    count, succeeded/failed counts, average confidence, average latency --
+    backs the Milestone 10 observability dashboard (`agents.service.
+    get_agent_execution_stats`).
+
+    Returns raw SQLAlchemy `Row` objects, same reasoning as `core.
+    observability.repository.get_mcp_tool_stats`: an aggregate query has no
+    single ORM row to map back onto, so `service.py` builds
+    `AgentExecutionStats` directly from these labeled columns.
+    """
+    stmt = (
+        select(
+            AgentExecution.agent_name.label("agent_name"),
+            func.count().label("execution_count"),
+            func.sum(_SUCCEEDED_CASE).label("succeeded_count"),
+            func.sum(_FAILED_CASE).label("failed_count"),
+            func.avg(AgentExecution.confidence_score).label("avg_confidence_score"),
+            func.avg(_LATENCY_SECONDS_CASE).label("avg_latency_seconds"),
+        )
+        .where(AgentExecution.organization_id == organization_id)
+        .group_by(AgentExecution.agent_name)
+    )
+    if since is not None:
+        stmt = stmt.where(AgentExecution.started_at >= since)
+
+    result = await session.execute(stmt)
+    return list(result.all())

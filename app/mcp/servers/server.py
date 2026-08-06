@@ -1,12 +1,13 @@
 """The EKIP MCP server instance (PROJECT_PLAN.md section 9.6 / section 7.2).
 
-One `FastMCP` server, targeting the **streamable-HTTP** transport -- a
-hosted, multi-tenant endpoint serving every organization's MCP traffic
-through one running process, not a per-user local stdio subprocess. This
-was a genuinely undecided choice in the docs (section 7.2's diagram lists
-"stdio or HTTP+SSE" without picking one); streamable-HTTP was chosen because
-it fits EKIP's actual deployment model -- many organizations, many users,
-one hosted service, each request carrying its own bearer token -- the same
+One `MCPServer` instance (the `mcp` package's real 2.x class name -- see
+below), targeting the **streamable-HTTP** transport -- a hosted,
+multi-tenant endpoint serving every organization's MCP traffic through one
+running process, not a per-user local stdio subprocess. This was a
+genuinely undecided choice in the docs (section 7.2's diagram lists "stdio
+or HTTP+SSE" without picking one); streamable-HTTP was chosen because it
+fits EKIP's actual deployment model -- many organizations, many users, one
+hosted service, each request carrying its own bearer token -- the same
 reasoning `mcp.auth`'s module docstring gives for resolving `Identity` per
 call rather than once per long-lived connection.
 
@@ -38,38 +39,50 @@ any request. `app.mcp.dispatch.run_mcp_tool` reads this module's
 `session_factory` attribute at call time (not via a top-level `from ...
 import session_factory`, which would freeze on the pre-startup `None`).
 
-**Verify against the installed `mcp` package before deploying.** This
-project's sandbox could not execute Python during development (`pip show
-mcp` and a live import both failed -- no disk space available to start the
-isolated environment), so the exact API surface below could not be
-confirmed against the actually-installed version:
-  - `FastMCP(name=...)` and the `@mcp_server.tool()` /
-    `@mcp_server.resource(...)` / `@mcp_server.prompt()` decorators are the
-    long-stable core of the FastMCP API and are very likely correct as-is.
-  - `extract_bearer_token`'s reach into `ctx.request_context.request.headers`
-    is the one piece most likely to need adjusting: newer FastMCP-derived
-    packages expose a `get_access_token()` / `get_http_headers()`
-    dependency-injection helper instead of (or in addition to) raw
-    `Context` attribute access, and some versions ship a built-in
-    `TokenVerifier`-based auth provider (`mcp.server.auth`, passed as
-    `FastMCP(..., auth=verifier)`) that would let the MCP layer itself
-    reject invalid tokens before a tool handler runs at all -- if the
-    installed version has that, prefer it over this manual header read and
-    delete this function; if it doesn't, confirm this attribute path
-    against `mcp.server.fastmcp.Context`'s real source before relying on it.
+**`set_tenant_context` -- same dependency-inversion trick, for Milestone
+10's RLS backstop.** `app.mcp.dispatch.run_mcp_tool` resolves `Identity`
+(and therefore `organization_id`) itself, and every RLS-protected table
+query that follows needs `app.database.session.set_tenant_context` called
+on that same session first -- but `app.mcp` still cannot import
+`app.database` to call it directly. Declared here as another injected,
+initially-`None` callable of a third-party-only shape (`AsyncSession`,
+`uuid.UUID` -> `None`), set alongside `session_factory` by
+`scripts/run_mcp_server.py` to the real `app.database.session.
+set_tenant_context`, and read by `run_mcp_tool` at call time the same way.
+
+**Verified against the actually-installed `mcp` package (2026-08-06).** The
+pinned `mcp>=1.0` requirement turned out to be stale: the environment this
+project actually runs in has `mcp==2.0.0` installed, which is a genuine
+major-version break from the 1.x `FastMCP` API this module was originally
+written against (confirmed by direct inspection of
+`mcp/server/mcpserver/__init__.py` and `.../server.py` in the installed
+package, not by guessing):
+  - There is no `mcp.server.fastmcp` module in 2.0 at all. The equivalent
+    class lives at `mcp.server.mcpserver.MCPServer` (renamed from
+    `FastMCP`), alongside `mcp.server.mcpserver.Context` (unchanged name).
+    The `MCPServer(name=...)` constructor and the `@mcp_server.tool()` /
+    `@mcp_server.resource(...)` / `@mcp_server.prompt()` decorators kept the
+    same shape as the old FastMCP API, so nothing else in `mcp/tools/` or
+    `mcp/resources/` needed to change beyond their `Context` import path.
+  - `extract_bearer_token` below now reads `ctx.headers` -- a public
+    `Context` property in 2.0 (`Mapping[str, str] | None`, populated by
+    HTTP-based transports) -- instead of reaching into
+    `ctx.request_context.request.headers` directly. Same data, a
+    documented/stable accessor instead of a private-shape guess.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import uuid
+from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
 
-from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.mcpserver import Context, MCPServer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import PermissionDeniedError
 
-mcp_server = FastMCP(name="ekip")
+mcp_server = MCPServer(name="ekip")
 
 # Set once, at process startup, by `scripts/run_mcp_server.py` -- see this
 # module's docstring. Left `None` until then so an accidental tool call
@@ -77,20 +90,26 @@ mcp_server = FastMCP(name="ekip")
 # silently doing nothing.
 session_factory: Callable[[], AbstractAsyncContextManager[AsyncSession]] | None = None
 
+# Set once, at process startup, by `scripts/run_mcp_server.py` -- see this
+# module's docstring's "set_tenant_context" section. Same reasoning and same
+# fail-loud-if-unset behavior as `session_factory` above.
+set_tenant_context: Callable[[AsyncSession, uuid.UUID], Awaitable[None]] | None = None
+
 
 def extract_bearer_token(ctx: Context) -> str:
     """Pull the caller's bearer access token out of the current MCP
     request's `Authorization` header. See this module's docstring for the
-    version-verification caveat on this specific function.
+    `mcp` 2.0 API this now reads (`ctx.headers`, not the old private
+    `ctx.request_context.request.headers` reach-through).
     """
-    request = getattr(ctx.request_context, "request", None)
-    if request is None:
+    headers = ctx.headers
+    if headers is None:
         raise PermissionDeniedError(
             "MCP request has no HTTP context to read a bearer token from.",
             error_code="mcp.no_transport_context",
         )
 
-    header = request.headers.get("authorization", "")
+    header = headers.get("authorization", "")
     if not header.lower().startswith("bearer "):
         raise PermissionDeniedError(
             "Missing or malformed Authorization header.",
