@@ -8,13 +8,9 @@ only ever branches on `source` (for chat) or a file-extension check on
 shapes populate a `"path"` metadata key or have a title/external_id ending
 in a recognized code extension.
 """
-
 from __future__ import annotations
-
 from app.ingestion.processors.chunking import classify_content_type
 from app.ingestion.schemas import RawDocument
-
-
 def test_github_file_classifies_as_code() -> None:
     doc = RawDocument(
         source="github",
@@ -25,8 +21,6 @@ def test_github_file_classifies_as_code() -> None:
     )
 
     assert classify_content_type(doc) == "code"
-
-
 def test_github_commit_classifies_as_document() -> None:
     doc = RawDocument(
         source="github",

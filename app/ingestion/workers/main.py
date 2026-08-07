@@ -35,6 +35,16 @@ class WorkerSettings:
     # same convention as a bare `*` in crontab syntax).
     cron_jobs = [cron(scheduled_reconciliation, minute=0)]
     redis_settings = RedisSettings.from_dsn(str(get_settings().redis_url))
+    # arq defaults every Worker to the same hardcoded queue name
+    # ("arq:queue") regardless of `functions` -- with no override, this
+    # worker and `app.agents.workers.main`'s worker share one Redis queue on
+    # the same `Settings.redis_url`, so either one can pop a job it has no
+    # matching function for (`JobExecutionFailed: function ... not found`,
+    # a permanent, unretried failure) whenever both run at once, which is
+    # the normal, documented deployment shape (both are expected to run
+    # simultaneously). A distinct queue name per worker is required, not
+    # cosmetic.
+    queue_name = "arq:queue:ingestion"
     # Bounded max-attempt count (PROJECT_PLAN.md section 4.5). The
     # exponential backoff itself is implemented in
     # `run_ingestion_job_task` via `arq.jobs.Retry(defer=...)`, not here --

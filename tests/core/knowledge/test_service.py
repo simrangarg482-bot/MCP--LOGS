@@ -58,6 +58,7 @@ async def test_propose_document_stores_content_as_metadata(monkeypatch) -> None:
     inserted_metadata: list[dict[str, object]] = []
 
     async def fake_insert_document(session, **kwargs):
+        row.title = kwargs.get("title", row.title)
         return row
 
     async def fake_insert_metadata(session, *, document_id, key, value):

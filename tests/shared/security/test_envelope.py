@@ -1,22 +1,14 @@
 """Tests for `app.shared.security.envelope` -- `encrypt_secret`/
 `decrypt_secret`'s round trip, and tamper/version-mismatch handling.
 """
-
 from __future__ import annotations
-
 import json
 import os
-
 import pytest
-
 from app.shared.security.envelope import decrypt_secret, encrypt_secret
 from app.shared.security.kms import LocalKeyManagementService
-
-
 def _kms() -> LocalKeyManagementService:
     return LocalKeyManagementService(os.urandom(32))
-
-
 def test_encrypt_then_decrypt_round_trips() -> None:
     kms = _kms()
     plaintext = "xoxb-11725744885042-fake-slack-bot-token"
@@ -34,8 +26,6 @@ def test_encrypt_produces_a_versioned_json_envelope() -> None:
 
     assert envelope["v"] == 1
     assert set(envelope) == {"v", "encrypted_dek", "nonce", "ciphertext"}
-
-
 def test_encrypting_the_same_secret_twice_produces_different_ciphertext() -> None:
     """A fresh DEK (and nonce) per call -- see `encrypt_secret`'s own
     docstring on why one compromised secret must not expose any other.
@@ -47,8 +37,6 @@ def test_encrypting_the_same_secret_twice_produces_different_ciphertext() -> Non
     assert first != second
     assert decrypt_secret(kms, first) == "same-value"
     assert decrypt_secret(kms, second) == "same-value"
-
-
 def test_decrypt_rejects_unsupported_envelope_version() -> None:
     kms = _kms()
     encrypted = encrypt_secret(kms, "some-credential")

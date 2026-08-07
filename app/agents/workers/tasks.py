@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import uuid
 
-from arq.jobs import Retry
+from arq.worker import Retry
 
 from app.agents import service as agents_service
 from app.core.tenancy import service as tenancy_service

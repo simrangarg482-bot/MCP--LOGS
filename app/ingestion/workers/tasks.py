@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import uuid
 
-from arq.jobs import Retry
+from arq.worker import Retry
 
 from app.database.session import session_scope
 from app.ingestion import repository, service

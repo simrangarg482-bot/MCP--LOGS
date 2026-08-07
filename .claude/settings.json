@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./ekip/Scripts/python.exe -c ' *)"
+    ]
+  }
+}

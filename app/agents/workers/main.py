@@ -35,6 +35,11 @@ class WorkerSettings:
     # into the same open reports for no benefit.
     cron_jobs = [cron(scheduled_knowledge_gap_scan, hour=2, minute=0)]
     redis_settings = RedisSettings.from_dsn(str(get_settings().redis_url))
+    # See `app.ingestion.workers.main.WorkerSettings.queue_name`'s comment --
+    # without an explicit, distinct queue name here too, this worker shares
+    # arq's default queue with the ingestion worker on the same Redis
+    # instance and can steal its jobs, failing them permanently.
+    queue_name = "arq:queue:agents"
     # Same bounded max-attempt count as `app.ingestion.workers.main` -- see
     # that class's own comment on why the backoff itself lives in the task
     # function (`Retry(defer=...)`), not here.
