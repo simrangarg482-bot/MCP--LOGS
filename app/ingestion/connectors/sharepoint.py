@@ -29,14 +29,31 @@ as a client-side filter on `lastModifiedDateTime`, the same fallback
 `TeamsConnector` already uses for the same underlying reason (no
 `$filter`-style query support on this endpoint).
 
-Only plain-text files (`_SUPPORTED_TEXT_EXTENSIONS`) have their content
-fetched and ingested; folders and every other file type (Office documents,
-PDFs, images, ...) are listed by the delta walk but skipped, not erroring --
+Plain-text files, plus Word/PDF/Excel documents (`_EXTRACTORS`), have their
+content fetched and ingested; folders and every other file type (images,
+PowerPoint, ...) are listed by the delta walk but skipped, not erroring --
 the same "skipped, not an error" treatment `GitHubConnector._fetch_file_
-content` already gives binary/undecodable files. Extracting text from
-Office/PDF formats needs a dedicated parsing library (`python-docx`,
-`pypdf`, ...) this codebase does not yet depend on -- a real, disclosed gap,
-not an oversight.
+content` already gives binary/undecodable files. `.pdf`/`.docx`/`.xlsx`
+extraction uses `pypdf`/`python-docx`/`openpyxl` respectively -- each is a
+best-effort text join (PDF: every page's `extract_text()`; DOCX: every
+paragraph; XLSX: every non-empty cell, read-only mode so a large workbook
+isn't fully loaded into memory) with no layout/formatting preserved, since
+this connector's output is ingestible search content, not a faithful
+document rendering. A file that fails to parse (corrupt, password-
+protected, actually a different format than its extension claims, ...) is
+skipped exactly like an undecodable plain-text file already is -- one bad
+file must not fail the whole sync.
+
+Known limitation, flagged rather than silently built around: delta sync is
+*meant* to be driven by a persisted `@odata.deltaLink` token across syncs
+(so a later call only sees what changed) -- this connector does not yet
+persist that token anywhere (the `Connector` protocol's `cursor` only lives
+for one `fetch_batch` sequence, not across separate sync runs), so every
+sync -- full or incremental -- re-walks the entire delta from scratch,
+exactly like `GitHubConnector._list_tree_page`'s equivalent, already-
+documented tradeoff for full-tree syncs. `since` is instead applied as a
+client-side filter on `lastModifiedDateTime`, the same fallback
+`TeamsConnector` uses for its own comparable gap.
 """
 
 from __future__ import annotations
@@ -44,9 +61,13 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from io import BytesIO
 from typing import Any
 
+import docx
 import httpx
+from openpyxl import load_workbook
+from pypdf import PdfReader
 
 from app.ingestion.schemas import FetchResult, RawDocument, ResolvedConnectorConfig
 from app.shared.config.logging import get_logger
@@ -54,7 +75,49 @@ from app.shared.config.logging import get_logger
 logger = get_logger(__name__)
 
 _GRAPH_API_BASE_URL = "https://graph.microsoft.com/v1.0/"
-_SUPPORTED_TEXT_EXTENSIONS = {".txt", ".md", ".markdown"}
+_PLAIN_TEXT_EXTENSIONS = {".txt", ".md", ".markdown"}
+
+
+def _extract_pdf_text(raw_bytes: bytes) -> str:
+    """Join every page's extracted text -- see module docstring's
+    "best-effort text join, no layout preserved" note.
+    """
+    reader = PdfReader(BytesIO(raw_bytes))
+    return "\n\n".join(page.extract_text() or "" for page in reader.pages)
+
+
+def _extract_docx_text(raw_bytes: bytes) -> str:
+    """Join every paragraph's text, in document order."""
+    document = docx.Document(BytesIO(raw_bytes))
+    return "\n\n".join(paragraph.text for paragraph in document.paragraphs if paragraph.text)
+
+
+def _extract_xlsx_text(raw_bytes: bytes) -> str:
+    """Join every non-empty cell's string value, row by row, sheet by
+    sheet -- `read_only=True` so a large workbook streams rather than
+    loading fully into memory (see module docstring).
+    """
+    workbook = load_workbook(BytesIO(raw_bytes), read_only=True, data_only=True)
+    try:
+        lines: list[str] = []
+        for sheet in workbook.worksheets:
+            for row in sheet.iter_rows(values_only=True):
+                cells = [str(value) for value in row if value is not None]
+                if cells:
+                    lines.append("\t".join(cells))
+        return "\n".join(lines)
+    finally:
+        workbook.close()
+
+
+# Extension -> extractor, dispatched by `_fetch_text_content`. Plain-text
+# extensions are handled separately (a plain decode, not one of these
+# binary-format parsers) -- see that method.
+_EXTRACTORS = {
+    ".pdf": _extract_pdf_text,
+    ".docx": _extract_docx_text,
+    ".xlsx": _extract_xlsx_text,
+}
 
 
 @dataclass
@@ -70,9 +133,9 @@ class _SharePointClient:
 
 
 class SharePointConnector:
-    """Fetches plain-text files from a fixed set of SharePoint sites'
-    default document libraries -- see module docstring for the text-only
-    scope.
+    """Fetches plain-text and Office/PDF files from a fixed set of
+    SharePoint sites' default document libraries -- see module docstring
+    for the exact supported-format list.
     """
 
     source_name = "sharepoint"
@@ -189,12 +252,16 @@ class SharePointConnector:
     async def _fetch_text_content(
         self, http: httpx.AsyncClient, entry: dict[str, Any]
     ) -> str | None:
-        """Download and decode one file's content, or `None` if it's not a
-        supported text extension or fails to decode as UTF-8 -- see module
-        docstring's text-only scope.
+        """Download and extract one file's text content, or `None` if it's
+        not a supported extension or fails to decode/parse -- see module
+        docstring's supported-format list and "skipped, not an error" note.
         """
         name = entry.get("name", "")
-        if not any(name.endswith(ext) for ext in _SUPPORTED_TEXT_EXTENSIONS):
+        extension = next(
+            (ext for ext in (*_PLAIN_TEXT_EXTENSIONS, *_EXTRACTORS) if name.endswith(ext)),
+            None,
+        )
+        if extension is None:
             return None
         download_url = entry.get("@microsoft.graph.downloadUrl")
         if not download_url:
@@ -204,13 +271,25 @@ class SharePointConnector:
             response.raise_for_status()
         except Exception:
             return None
+
+        if extension in _PLAIN_TEXT_EXTENSIONS:
+            try:
+                return response.text
+            except Exception:
+                # Any decode failure is treated the same as "not ingestible
+                # text", not a reason to fail the whole batch -- same
+                # "skipped, not an error" treatment `GitHubConnector.
+                # _fetch_file_content` gives its own undecodable files.
+                return None
+
         try:
-            return response.text
+            return _EXTRACTORS[extension](response.content)
         except Exception:
-            # Any decode failure is treated the same as "not ingestible
-            # text", not a reason to fail the whole batch -- same
-            # "skipped, not an error" treatment `GitHubConnector.
-            # _fetch_file_content` gives its own undecodable files.
+            # A corrupt/password-protected/mislabeled file must not fail
+            # the whole batch -- same treatment as an undecodable text file.
+            logger.warning(
+                "sharepoint_content_extraction_failed", name=name, extension=extension
+            )
             return None
 
     @staticmethod

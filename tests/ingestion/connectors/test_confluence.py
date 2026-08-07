@@ -53,9 +53,12 @@ def _page(
     version_number: int = 3,
     author: str | None = "Jane Doe",
     webui: str | None = "/spaces/ENG/pages/12345/Runbook",
+    content_type: str = "page",
+    container_id: str | None = None,
 ) -> dict[str, Any]:
     page: dict[str, Any] = {
         "id": content_id,
+        "type": content_type,
         "title": title,
         "version": {"when": "2026-07-15T10:00:00.000Z", "number": version_number},
     }
@@ -65,6 +68,8 @@ def _page(
         page["version"]["by"] = {"displayName": author}
     if webui is not None:
         page["_links"] = {"webui": webui}
+    if container_id is not None:
+        page["container"] = {"id": container_id}
     return page
 
 
@@ -86,10 +91,45 @@ def test_normalize_full_page() -> None:
     assert doc.source_url == "https://acme.atlassian.net/wiki/spaces/ENG/pages/12345/Runbook"
     assert doc.metadata == {
         "space": "ENG",
+        "kind": "page",
         "updated": "2026-07-15T10:00:00.000Z",
         "version": "3",
         "author": "Jane Doe",
     }
+
+
+def test_normalize_blogpost_sets_kind_metadata() -> None:
+    connector = ConfluenceConnector()
+    raw_item = _page(content_type="blogpost")
+    raw_item["_space_key"] = "ENG"
+    raw_item["_base_url"] = "https://acme.atlassian.net"
+
+    doc = connector.normalize(raw_item)
+
+    assert doc.metadata["kind"] == "blogpost"
+
+
+def test_normalize_comment_sets_kind_and_parent_id() -> None:
+    connector = ConfluenceConnector()
+    raw_item = _page(content_type="comment", container_id="12345")
+    raw_item["_space_key"] = "ENG"
+    raw_item["_base_url"] = "https://acme.atlassian.net"
+
+    doc = connector.normalize(raw_item)
+
+    assert doc.metadata["kind"] == "comment"
+    assert doc.metadata["parent_id"] == "12345"
+
+
+def test_normalize_page_has_no_parent_id() -> None:
+    connector = ConfluenceConnector()
+    raw_item = _page()
+    raw_item["_space_key"] = "ENG"
+    raw_item["_base_url"] = "https://acme.atlassian.net"
+
+    doc = connector.normalize(raw_item)
+
+    assert "parent_id" not in doc.metadata
 
 
 def test_normalize_page_without_webui_link_yields_no_source_url() -> None:
@@ -186,7 +226,7 @@ async def test_fetch_batch_includes_since_in_cql() -> None:
 
     await connector.fetch_batch(client, since=since, cursor=None)
 
-    assert 'space = "ENG" AND type = "page"' in captured["cql"]
+    assert 'space = "ENG" AND type in ("page","blogpost","comment")' in captured["cql"]
     assert 'lastmodified >= "2026/07/01 12:30"' in captured["cql"]
     assert "ORDER BY lastmodified ASC" in captured["cql"]
 

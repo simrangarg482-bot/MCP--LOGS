@@ -1,20 +1,26 @@
 """Tests for `app.ingestion.connectors.sharepoint` -- same `_FakeHttpClient`
-style as `test_teams.py`, with responses that can be either a JSON payload
-(delta listing calls) or a plain string (file-content download calls) --
-`_FakeResponse` serves both via `.json()`/`.text` on the same object, since
-which one a given test cares about depends only on which call it represents.
-Tests construct `_SharePointClient` directly (bypassing `authenticate`,
-which does a real `GET me` network call) since `fetch_batch`/`normalize`
-only ever receive that object back.
+style as `test_teams.py`, with responses that can be a JSON payload (delta
+listing calls), a plain string (plain-text file-content download calls), or
+raw `bytes` (Office/PDF file-content download calls, which `_fetch_text_
+content` reads via `.content`, not `.text`). `_FakeResponse` serves all
+three via `.json()`/`.text`/`.content` on the same object, since which one a
+given test cares about depends only on which call it represents. Tests
+construct `_SharePointClient` directly (bypassing `authenticate`, which
+does a real `GET me` network call) since `fetch_batch`/`normalize` only
+ever receive that object back.
 """
 
 from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from io import BytesIO
 from typing import Any
 
+import docx
 import pytest
+from openpyxl import Workbook
+from pypdf import PdfWriter
 
 from app.ingestion.connectors.sharepoint import SharePointConnector, _SharePointClient
 
@@ -32,6 +38,43 @@ class _FakeResponse:
     @property
     def text(self) -> str:
         return self._payload
+
+    @property
+    def content(self) -> bytes:
+        return self._payload
+
+
+def _pdf_bytes(text: str) -> bytes:
+    writer = PdfWriter()
+    writer.add_blank_page(width=200, height=200)
+    # `pypdf`'s writer has no simple "add a text run" helper -- a blank
+    # page's `extract_text()` legitimately returns "", so these PDF tests
+    # assert the extraction *pipeline* runs and returns a string without
+    # raising, not specific extracted text. A real PDF's text is exercised
+    # by the corrupt-file test's contrast instead.
+    del text
+    buffer = BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()
+
+
+def _docx_bytes(paragraphs: list[str]) -> bytes:
+    document = docx.Document()
+    for paragraph in paragraphs:
+        document.add_paragraph(paragraph)
+    buffer = BytesIO()
+    document.save(buffer)
+    return buffer.getvalue()
+
+
+def _xlsx_bytes(rows: list[list[str]]) -> bytes:
+    workbook = Workbook()
+    sheet = workbook.active
+    for row in rows:
+        sheet.append(row)
+    buffer = BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
 
 
 class _FakeHttpClient:
@@ -118,7 +161,7 @@ async def test_fetch_batch_skips_folders_and_unsupported_extensions() -> None:
     connector = SharePointConnector()
     supported = _file_entry("item-1", name="runbook.md")
     unsupported = _file_entry(
-        "item-2", name="report.docx", download_url="https://download.example.com/report.docx"
+        "item-2", name="photo.jpg", download_url="https://download.example.com/photo.jpg"
     )
     payload = {"value": [_folder_entry("folder-1"), supported, unsupported]}
     client = _client(
@@ -134,6 +177,98 @@ async def test_fetch_batch_skips_folders_and_unsupported_extensions() -> None:
     assert [item["id"] for item in result.items] == ["item-1"]
     assert result.items[0]["_content"] == "Restart the checkout service."
     assert result.items[0]["_site_id"] == "site-1"
+
+
+@pytest.mark.asyncio
+async def test_fetch_batch_extracts_docx_text() -> None:
+    connector = SharePointConnector()
+    entry = _file_entry(
+        "item-1", name="runbook.docx", download_url="https://download.example.com/runbook.docx"
+    )
+    payload = {"value": [entry]}
+    client = _client(
+        ["site-1"],
+        **{
+            "sites/site-1/drive/root/delta": payload,
+            "https://download.example.com/runbook.docx": _docx_bytes(
+                ["Restart the checkout service.", "Then clear the queue."]
+            ),
+        },
+    )
+
+    result = await connector.fetch_batch(client, since=None, cursor=None)
+
+    assert result.items[0]["_content"] == (
+        "Restart the checkout service.\n\nThen clear the queue."
+    )
+
+
+@pytest.mark.asyncio
+async def test_fetch_batch_extracts_xlsx_text() -> None:
+    connector = SharePointConnector()
+    entry = _file_entry(
+        "item-1", name="runbook.xlsx", download_url="https://download.example.com/runbook.xlsx"
+    )
+    payload = {"value": [entry]}
+    client = _client(
+        ["site-1"],
+        **{
+            "sites/site-1/drive/root/delta": payload,
+            "https://download.example.com/runbook.xlsx": _xlsx_bytes(
+                [["Step", "Action"], ["1", "Restart the checkout service."]]
+            ),
+        },
+    )
+
+    result = await connector.fetch_batch(client, since=None, cursor=None)
+
+    assert result.items[0]["_content"] == "Step\tAction\n1\tRestart the checkout service."
+
+
+@pytest.mark.asyncio
+async def test_fetch_batch_extracts_pdf_text_without_raising() -> None:
+    connector = SharePointConnector()
+    entry = _file_entry(
+        "item-1", name="runbook.pdf", download_url="https://download.example.com/runbook.pdf"
+    )
+    payload = {"value": [entry]}
+    client = _client(
+        ["site-1"],
+        **{
+            "sites/site-1/drive/root/delta": payload,
+            "https://download.example.com/runbook.pdf": _pdf_bytes("Restart the checkout service."),
+        },
+    )
+
+    result = await connector.fetch_batch(client, since=None, cursor=None)
+
+    # See `_pdf_bytes`'s own comment -- a blank test page extracts to "",
+    # not the literal text; this asserts the PDF extraction path runs
+    # end-to-end (item survives, `_content` is a string) without raising.
+    assert [item["id"] for item in result.items] == ["item-1"]
+    assert isinstance(result.items[0]["_content"], str)
+
+
+@pytest.mark.asyncio
+async def test_fetch_batch_skips_corrupt_office_file() -> None:
+    connector = SharePointConnector()
+    entry = _file_entry(
+        "item-1", name="runbook.docx", download_url="https://download.example.com/runbook.docx"
+    )
+    payload = {"value": [entry]}
+    client = _client(
+        ["site-1"],
+        **{
+            "sites/site-1/drive/root/delta": payload,
+            # Not a real .docx (zip/XML) file -- python-docx must raise on
+            # this, and that failure must be swallowed, not propagated.
+            "https://download.example.com/runbook.docx": b"not a real docx file",
+        },
+    )
+
+    result = await connector.fetch_batch(client, since=None, cursor=None)
+
+    assert result.items == []
 
 
 @pytest.mark.asyncio

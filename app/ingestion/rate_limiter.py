@@ -54,10 +54,14 @@ class TokenBucketRateLimiter:
     connector_config, one per organization) without a separate object per
     key having to be constructed and threaded through by callers.
 
-    Burst capacity equals `rate` itself (one second's worth of budget) --
-    simple and adequate for this pass; not independently configurable, since
-    no caller has yet needed a burst allowance different from its own
-    steady-state rate.
+    Burst capacity equals `rate` itself (one second's worth of budget), with
+    a floor of 1.0: consuming one token per `acquire()` call means a bucket
+    that could never hold at least 1.0 tokens could never grant one, no
+    matter how long it accrued -- an infinite loop, not a throttle, for any
+    `rate < 1.0` token/second (in this codebase, only `SlackConnector.
+    requests_per_second = 0.5`). The 1.0 floor keeps the *steady-state*
+    rate exactly `rate` (unchanged) while making the burst allowance for a
+    sub-1/s caller "wait long enough to earn one token" instead of "never".
     """
 
     def __init__(self) -> None:
@@ -83,12 +87,13 @@ class TokenBucketRateLimiter:
         if rate <= 0:
             return
 
+        capacity = max(rate, 1.0)
         while True:
             async with self._lock:
                 now = time.monotonic()
-                tokens, last_refill = self._buckets.get(key, (rate, now))
+                tokens, last_refill = self._buckets.get(key, (min(rate, capacity), now))
                 elapsed = now - last_refill
-                tokens = min(rate, tokens + elapsed * rate)
+                tokens = min(capacity, tokens + elapsed * rate)
 
                 if tokens >= 1.0:
                     self._buckets[key] = (tokens - 1.0, now)

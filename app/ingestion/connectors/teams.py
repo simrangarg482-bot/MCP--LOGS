@@ -36,11 +36,24 @@ support for incremental sync the way Slack's `oldest` param or Jira's JQL
 (`/messages/delta`) is the documented mechanism for that, and would be the
 correct long-term answer, but is a meaningfully different pagination model
 (opaque delta tokens persisted *across* syncs, not just across pages of one
-sync) than this first pass implements. For now, `since` is applied as a
-client-side filter per page after fetching -- correct output, but an
-incremental sync still walks a channel's full message history under the
-hood, the same tradeoff `GitHubConnector`'s "Known limitations" note already
-accepts elsewhere in this codebase for a first-pass connector.
+sync) than this first pass implements. `since` is applied as a client-side
+filter per page after fetching, the same fallback this connector always
+used.
+
+This connector does cut most of the wasted work an incremental sync would
+otherwise do, though: Graph returns channel messages newest-first
+(`createdDateTime` descending) by default -- the same reverse-chronological
+order Slack's `conversations.history` uses, which is exactly why applying
+`since` as a client-side filter is even correct here. Once a whole page
+comes back entirely older than `since`, `fetch_batch` stops paging that
+channel rather than continuing to fetch pages of content it would only
+filter out anyway. This is a real, disclosed assumption about Graph's
+default ordering, not a guaranteed contract -- if Graph ever changed that
+default, the failure mode would be an incremental sync missing messages
+newer than the stale ones it stopped on, not a crash, so it is worth
+re-verifying against Graph's own documentation before relying on it in
+production. A **full** sync (`since=None`) is unaffected either way and
+still walks every message, as intended.
 """
 
 from __future__ import annotations
@@ -171,13 +184,23 @@ class TeamsConnector:
         response.raise_for_status()
         payload = response.json()
 
-        messages: list[dict[str, Any]] = payload.get("value", [])
+        raw_messages: list[dict[str, Any]] = payload.get("value", [])
+        messages = raw_messages
         if since is not None:
-            messages = [m for m in messages if self._is_recent_enough(m, since)]
+            messages = [m for m in raw_messages if self._is_recent_enough(m, since)]
         for message in messages:
             message["_channel_id"] = channel_id
 
-        graph_next_link = payload.get("@odata.nextLink")
+        # See module docstring's "Known limitation" note: relies on Graph's
+        # documented newest-first default order for this endpoint. Once an
+        # entire page comes back with nothing recent enough, every
+        # following page for this channel would only be older still, so
+        # stop paging it now rather than fetching (and immediately
+        # discarding) the rest of its history.
+        page_exhausted_by_since = (
+            since is not None and bool(raw_messages) and not messages
+        )
+        graph_next_link = None if page_exhausted_by_since else payload.get("@odata.nextLink")
 
         if graph_next_link:
             next_state = {"channel_index": channel_index, "next_link": graph_next_link}

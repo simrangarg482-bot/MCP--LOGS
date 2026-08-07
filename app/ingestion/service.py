@@ -347,7 +347,19 @@ async def _execute_ingestion_job(
         # persisted -- reporting it would claim documents were processed
         # that the rollback just erased. The job row keeps whatever count it
         # already had (0, from `insert_ingestion_job`'s default).
-        await repository.update_ingestion_job(
+        #
+        # Deliberately NOT re-raised: this whole call runs inside the one
+        # session/transaction the caller's `session_scope()` opened, and
+        # that helper's contract is "commit on normal return, rollback on
+        # any exception that escapes." Re-raising here used to undo this
+        # very `status="failed"` write (and the original `insert_ingestion_
+        # job` row with it) the instant it reached that boundary -- every
+        # failed ingestion job left zero trace in `ingestion_jobs`, despite
+        # this except block's own intent. Returning normally instead lets
+        # the failure record actually commit; `run_ingestion_job_task` (the
+        # caller that decides on arq retries) checks `job.status` for this
+        # reason rather than relying on a caught exception.
+        job_row = await repository.update_ingestion_job(
             session,
             job_row.id,
             status="failed",
@@ -357,7 +369,6 @@ async def _execute_ingestion_job(
         await tenancy_service.update_connector_sync_status(
             session, actor, config_row.organization_id, connector_config_id, status="error"
         )
-        raise
     finally:
         if client is not None:
             await connector.close(client)

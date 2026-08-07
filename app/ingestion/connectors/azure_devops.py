@@ -40,6 +40,12 @@ shape instead of a git tree.
 `since` is applied as a real server-side WIQL filter (`[System.ChangedDate]
 >= '...'`) -- unlike `TeamsConnector`'s Graph API gap, WIQL supports this
 directly, so there is no client-side-filter fallback needed here.
+
+Comments are fetched per work item (`GET .../workItems/{id}/comments`, a
+preview-only endpoint -- see `_COMMENTS_API_VERSION`) and appended to
+`content` after a `"--- Comments ---"` delimiter, the same
+`GitHubConnector`/`JiraConnector` precedent -- skipped when
+`System.CommentCount == 0`.
 """
 
 from __future__ import annotations
@@ -58,6 +64,12 @@ from app.shared.config.logging import get_logger
 logger = get_logger(__name__)
 
 _API_VERSION = "7.1"
+# The work-item-comments REST API is preview-only as of this API version
+# family (unlike every other endpoint this connector calls, which is
+# stable at `_API_VERSION`) -- a separate constant so that distinction
+# stays visible at each call site rather than silently reusing the stable
+# version string for an endpoint that doesn't actually support it.
+_COMMENTS_API_VERSION = "7.1-preview.3"
 _BATCH_SIZE = 200  # Azure DevOps' documented max ids per workitemsbatch call.
 _FIELDS = [
     "System.Title",
@@ -67,6 +79,7 @@ _FIELDS = [
     "System.AssignedTo",
     "System.CreatedDate",
     "System.ChangedDate",
+    "System.CommentCount",
 ]
 
 
@@ -176,6 +189,12 @@ class AzureDevOpsConnector:
             for item in items:
                 item["_project"] = project
                 item["_organization"] = client.organization
+                comment_count = (item.get("fields") or {}).get("System.CommentCount", 0)
+                item["_comments_text"] = (
+                    await self._fetch_comments_text(client.http, project, item["id"])
+                    if comment_count
+                    else ""
+                )
 
         next_batch_start = batch_start + len(batch_ids)
         project_exhausted = next_batch_start >= len(work_item_ids)
@@ -231,6 +250,29 @@ class AzureDevOpsConnector:
         payload = response.json()
         return list(payload.get("value", []))
 
+    async def _fetch_comments_text(
+        self, http: httpx.AsyncClient, project: str, work_item_id: int
+    ) -> str:
+        """Concatenate every comment on work item `work_item_id` into one
+        text block (`"author: text"` per comment, blank-line separated) --
+        appended into `content` by `normalize`. Skipped entirely by the
+        caller when `System.CommentCount == 0`, the same "avoid a wasted
+        call for the common case" gate `JiraConnector._fetch_comments_text`
+        and `GitHubConnector._fetch_issue_comments_text` already use.
+        """
+        response = await http.get(
+            f"{project}/_apis/wit/workItems/{work_item_id}/comments",
+            params={"api-version": _COMMENTS_API_VERSION},
+        )
+        response.raise_for_status()
+        payload = response.json()
+        comments: list[dict[str, Any]] = payload.get("comments", [])
+        return "\n\n".join(
+            f"{(comment.get('createdBy') or {}).get('displayName', 'unknown')}: "
+            f"{comment.get('text', '')}"
+            for comment in comments
+        )
+
     def normalize(self, raw_item: Any) -> RawDocument:
         """Convert one raw Azure DevOps work item dict (with `"_project"`/
         `"_organization"` injected by `fetch_batch`) into a `RawDocument`.
@@ -250,6 +292,9 @@ class AzureDevOpsConnector:
         title = fields.get("System.Title") or ""
         description = fields.get("System.Description") or ""
         content = f"{title}\n\n{description}" if description else title
+        comments_text = raw_item.get("_comments_text") or ""
+        if comments_text:
+            content = f"{content}\n\n--- Comments ---\n\n{comments_text}"
 
         metadata: dict[str, str] = {"project": project}
         work_item_type = fields.get("System.WorkItemType")
@@ -265,6 +310,9 @@ class AzureDevOpsConnector:
             metadata["created"] = fields["System.CreatedDate"]
         if fields.get("System.ChangedDate"):
             metadata["updated"] = fields["System.ChangedDate"]
+        comment_count = fields.get("System.CommentCount")
+        if comment_count is not None:
+            metadata["comments_count"] = str(comment_count)
 
         source_url = f"https://dev.azure.com/{organization}/{project}/_workitems/edit/{work_item_id}"
 

@@ -34,28 +34,50 @@ async def run_ingestion_job_task(ctx: dict, connector_config_id: str) -> None:
     since arq job arguments are serialized -- converted back to a UUID
     here, at the boundary, not inside `ingestion.service`).
 
-    On failure, raises `arq.jobs.Retry` with an exponential defer rather
-    than letting the exception propagate as a bare failure -- `job_row` in
-    `ingestion.service._execute_ingestion_job` has already recorded
-    `status="failed"`/`failed_stage` by the time this re-raise happens, so
-    the *reason* for the failure is durable regardless of how many more
-    times arq retries it.
+    Two distinct failure shapes, handled two different ways:
+
+    1. `service.run_ingestion_job` raises -- only possible today for a
+       setup-phase failure before any `ingestion_jobs` row exists (e.g. the
+       `connector_config_id` was deleted between enqueue and run), so
+       there's nothing in the database to have recorded the failure. Caught
+       below and turned into a `Retry`.
+    2. `service.run_ingestion_job` returns normally with `job.status ==
+       "failed"` -- a failure *inside* the fetch/process loop, which
+       `ingestion.service._execute_ingestion_job` deliberately does not
+       re-raise (see that function's own comment): re-raising would let
+       the exception reach `session_scope()`'s rollback and erase the very
+       `status="failed"`/`failed_stage` write meant to make the failure
+       durable. This branch is what turns that recorded-but-not-exceptional
+       outcome into the same `Retry` behavior.
     """
+    attempt = ctx["job_try"]
     try:
         async with session_scope() as session:
             job = await service.run_ingestion_job(session, uuid.UUID(connector_config_id))
-        logger.info("ingestion_job_task_completed", job_id=str(job.id), status=job.status)
     except Exception as exc:
-        attempt = ctx["job_try"]
-        defer_seconds = min(2**attempt, _MAX_BACKOFF_SECONDS)
-        logger.warning(
-            "ingestion_job_task_retry_scheduled",
-            connector_config_id=connector_config_id,
-            attempt=attempt,
-            defer_seconds=defer_seconds,
-            error=str(exc),
+        _schedule_retry(connector_config_id, attempt, error=str(exc), cause=exc)
+        return
+
+    if job.status == "failed":
+        _schedule_retry(
+            connector_config_id, attempt, error=f"job failed at stage '{job.failed_stage}'"
         )
-        raise Retry(defer=defer_seconds) from exc
+        return
+    logger.info("ingestion_job_task_completed", job_id=str(job.id), status=job.status)
+
+
+def _schedule_retry(
+    connector_config_id: str, attempt: int, *, error: str, cause: BaseException | None = None
+) -> None:
+    defer_seconds = min(2**attempt, _MAX_BACKOFF_SECONDS)
+    logger.warning(
+        "ingestion_job_task_retry_scheduled",
+        connector_config_id=connector_config_id,
+        attempt=attempt,
+        defer_seconds=defer_seconds,
+        error=error,
+    )
+    raise Retry(defer=defer_seconds) from cause
 
 
 async def scheduled_reconciliation(ctx: dict) -> None:

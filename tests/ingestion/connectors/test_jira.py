@@ -35,10 +35,12 @@ class _FakeHttpClient:
     def __init__(self, responses: dict[str, Any]) -> None:
         self._responses = responses
         self.requests: list[tuple[str, dict[str, Any]]] = []
+        self.get_urls: list[str] = []
 
     async def get(self, url: str, params: dict[str, Any] | None = None) -> _FakeResponse:
         params = params or {}
         self.requests.append((url, params))
+        self.get_urls.append(url)
         value = self._responses[url]
         payload = value(params) if callable(value) else value
         return _FakeResponse(payload)
@@ -59,6 +61,7 @@ def _issue(
     status: str = "Open",
     assignee: str | None = "Jane Doe",
     reporter: str | None = "John Roe",
+    comment_total: int | None = None,
 ) -> dict[str, Any]:
     fields: dict[str, Any] = {
         "summary": summary,
@@ -72,6 +75,8 @@ def _issue(
         fields["assignee"] = {"displayName": assignee}
     if reporter is not None:
         fields["reporter"] = {"displayName": reporter}
+    if comment_total is not None:
+        fields["comment"] = {"total": comment_total}
     return {
         "key": key,
         "self": f"https://acme.atlassian.net/rest/api/2/issue/{key}",
@@ -128,6 +133,33 @@ def test_normalize_missing_self_link_yields_no_source_url() -> None:
     doc = connector.normalize(raw_item)
 
     assert doc.source_url is None
+
+
+def test_normalize_issue_appends_comments_after_delimiter() -> None:
+    connector = JiraConnector()
+    raw_item = _issue("OPS-45", comment_total=2)
+    raw_item["_project_key"] = "OPS"
+    raw_item["_comments_text"] = "Jane Doe: Investigating.\n\nJohn Roe: Fixed by restart."
+
+    doc = connector.normalize(raw_item)
+
+    assert doc.content == (
+        "Checkout fails intermittently\n\nUsers report random 500s at checkout."
+        "\n\n--- Comments ---\n\nJane Doe: Investigating.\n\nJohn Roe: Fixed by restart."
+    )
+    assert doc.metadata["comments_count"] == "2"
+
+
+def test_normalize_issue_without_comments_omits_delimiter_and_count() -> None:
+    connector = JiraConnector()
+    raw_item = _issue("OPS-46")
+    raw_item["_project_key"] = "OPS"
+    raw_item["_comments_text"] = ""
+
+    doc = connector.normalize(raw_item)
+
+    assert "--- Comments ---" not in doc.content
+    assert "comments_count" not in doc.metadata
 
 
 # --- fetch_batch ---------------------------------------------------------------
@@ -235,6 +267,40 @@ async def test_fetch_batch_resumes_from_cursor() -> None:
     assert captured["startAt"] == 3
     assert 'project = "ENG"' in captured["jql"]
     assert result.has_more is False
+
+
+@pytest.mark.asyncio
+async def test_fetch_batch_fetches_comments_when_issue_has_any() -> None:
+    connector = JiraConnector()
+    payload = {"issues": [_issue("OPS-1", comment_total=2)], "total": 1, "startAt": 0}
+    comments_payload = {
+        "comments": [
+            {"author": {"displayName": "Jane Doe"}, "body": "Investigating."},
+            {"author": {"displayName": "John Roe"}, "body": "Fixed by restart."},
+        ]
+    }
+    client = _client(
+        ["OPS"], search=payload, **{"issue/OPS-1/comment": comments_payload}
+    )
+
+    result = await connector.fetch_batch(client, since=None, cursor=None)
+
+    assert "issue/OPS-1/comment" in client.http.get_urls
+    assert result.items[0]["_comments_text"] == (
+        "Jane Doe: Investigating.\n\nJohn Roe: Fixed by restart."
+    )
+
+
+@pytest.mark.asyncio
+async def test_fetch_batch_skips_comments_call_when_issue_has_none() -> None:
+    connector = JiraConnector()
+    payload = {"issues": [_issue("OPS-1", comment_total=0)], "total": 1, "startAt": 0}
+    client = _client(["OPS"], search=payload)
+
+    result = await connector.fetch_batch(client, since=None, cursor=None)
+
+    assert "issue/OPS-1/comment" not in client.http.get_urls
+    assert result.items[0]["_comments_text"] == ""
 
 
 def test_decode_cursor_defaults_to_first_project() -> None:

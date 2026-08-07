@@ -47,6 +47,29 @@ async def test_exhausting_the_burst_forces_the_next_acquire_to_wait() -> None:
 
 
 @pytest.mark.asyncio
+async def test_sub_one_rate_eventually_grants_a_token() -> None:
+    """Regression test: a bucket capped at `rate` itself (not floored at
+    1.0) can never reach the `tokens >= 1.0` threshold `acquire()` checks
+    for when `rate < 1.0` -- every call loops forever instead of eventually
+    proceeding. `SlackConnector.requests_per_second = 0.5` is the one real
+    caller this affects; a high `rate` elsewhere in this file would never
+    have caught it. Bounded with `asyncio.wait_for` so a regression fails
+    the test instead of hanging the suite.
+    """
+    limiter = TokenBucketRateLimiter()
+    rate = 0.5  # one token every 2 seconds -- matches SlackConnector
+
+    started = time.monotonic()
+    await asyncio.wait_for(limiter.acquire("connector:slack", rate), timeout=5.0)
+    elapsed = time.monotonic() - started
+
+    # First call starts with `rate` (0.5) tokens, short of the 1.0 needed,
+    # so it must wait roughly (1.0 - rate) / rate = 1s -- but it must
+    # complete at all, which is the actual regression being guarded here.
+    assert elapsed >= 0.5
+
+
+@pytest.mark.asyncio
 async def test_rate_zero_or_negative_never_blocks() -> None:
     limiter = TokenBucketRateLimiter()
 

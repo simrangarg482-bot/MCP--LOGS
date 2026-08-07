@@ -32,12 +32,15 @@ class _FakeResponse:
 class _FakeHttpClient:
     """`responses[url]` is either a fixed JSON payload or a callable taking
     the request's `json` body and returning a JSON payload (for WIQL/batch
-    calls whose response depends on the query/ids sent).
+    calls whose response depends on the query/ids sent). `get_urls` also
+    covers plain `GET`s (the comments endpoint), unlike WIQL/batch which are
+    `POST`s.
     """
 
     def __init__(self, responses: dict[str, Any]) -> None:
         self._responses = responses
         self.requests: list[tuple[str, dict[str, Any] | None]] = []
+        self.get_urls: list[str] = []
 
     async def post(
         self, url: str, params: dict[str, Any] | None = None, json: Any = None
@@ -45,6 +48,12 @@ class _FakeHttpClient:
         self.requests.append((url, json))
         value = self._responses[url]
         payload = value(json) if callable(value) else value
+        return _FakeResponse(payload)
+
+    async def get(self, url: str, params: dict[str, Any] | None = None) -> _FakeResponse:
+        self.get_urls.append(url)
+        value = self._responses[url]
+        payload = value(params or {}) if callable(value) else value
         return _FakeResponse(payload)
 
 
@@ -62,6 +71,7 @@ def _work_item(
     work_item_type: str = "Bug",
     state: str = "Active",
     assigned_to: str | None = "Jane Doe",
+    comment_count: int | None = None,
 ) -> dict[str, Any]:
     fields: dict[str, Any] = {
         "System.Title": title,
@@ -74,6 +84,8 @@ def _work_item(
         fields["System.Description"] = description
     if assigned_to is not None:
         fields["System.AssignedTo"] = {"displayName": assigned_to}
+    if comment_count is not None:
+        fields["System.CommentCount"] = comment_count
     return {
         "id": work_item_id,
         "url": f"https://dev.azure.com/acme-corp/_apis/wit/workItems/{work_item_id}",
@@ -117,6 +129,35 @@ def test_normalize_work_item_without_description_or_assignee() -> None:
 
     assert doc.content == "Checkout fails intermittently"
     assert "assigned_to" not in doc.metadata
+
+
+def test_normalize_work_item_appends_comments_after_delimiter() -> None:
+    connector = AzureDevOpsConnector()
+    raw_item = _work_item(44, comment_count=2)
+    raw_item["_project"] = "ProjA"
+    raw_item["_organization"] = "acme-corp"
+    raw_item["_comments_text"] = "Jane Doe: Investigating.\n\nJohn Roe: Fixed by restart."
+
+    doc = connector.normalize(raw_item)
+
+    assert doc.content == (
+        "Checkout fails intermittently\n\n<div>Users report random 500s.</div>"
+        "\n\n--- Comments ---\n\nJane Doe: Investigating.\n\nJohn Roe: Fixed by restart."
+    )
+    assert doc.metadata["comments_count"] == "2"
+
+
+def test_normalize_work_item_without_comments_omits_delimiter_and_count() -> None:
+    connector = AzureDevOpsConnector()
+    raw_item = _work_item(45)
+    raw_item["_project"] = "ProjA"
+    raw_item["_organization"] = "acme-corp"
+    raw_item["_comments_text"] = ""
+
+    doc = connector.normalize(raw_item)
+
+    assert "--- Comments ---" not in doc.content
+    assert "comments_count" not in doc.metadata
 
 
 # --- fetch_batch ---------------------------------------------------------------
@@ -253,6 +294,50 @@ async def test_fetch_batch_resumes_from_cursor() -> None:
     assert batch_calls == [[3]]
     assert [item["id"] for item in result.items] == [3]
     assert result.has_more is False
+
+
+@pytest.mark.asyncio
+async def test_fetch_batch_fetches_comments_when_work_item_has_any() -> None:
+    connector = AzureDevOpsConnector()
+    wiql_payload = {"workItems": [{"id": 1}]}
+    batch_payload = {"value": [_work_item(1, comment_count=2)]}
+    comments_payload = {
+        "comments": [
+            {"createdBy": {"displayName": "Jane Doe"}, "text": "Investigating."},
+            {"createdBy": {"displayName": "John Roe"}, "text": "Fixed by restart."},
+        ]
+    }
+    client = _client(
+        ["ProjA"],
+        **{
+            "ProjA/_apis/wit/wiql": wiql_payload,
+            "_apis/wit/workitemsbatch": batch_payload,
+            "ProjA/_apis/wit/workItems/1/comments": comments_payload,
+        },
+    )
+
+    result = await connector.fetch_batch(client, since=None, cursor=None)
+
+    assert "ProjA/_apis/wit/workItems/1/comments" in client.http.get_urls
+    assert result.items[0]["_comments_text"] == (
+        "Jane Doe: Investigating.\n\nJohn Roe: Fixed by restart."
+    )
+
+
+@pytest.mark.asyncio
+async def test_fetch_batch_skips_comments_call_when_work_item_has_none() -> None:
+    connector = AzureDevOpsConnector()
+    wiql_payload = {"workItems": [{"id": 1}]}
+    batch_payload = {"value": [_work_item(1, comment_count=0)]}
+    client = _client(
+        ["ProjA"],
+        **{"ProjA/_apis/wit/wiql": wiql_payload, "_apis/wit/workitemsbatch": batch_payload},
+    )
+
+    result = await connector.fetch_batch(client, since=None, cursor=None)
+
+    assert client.http.get_urls == []
+    assert result.items[0]["_comments_text"] == ""
 
 
 def test_decode_cursor_defaults_to_first_project() -> None:

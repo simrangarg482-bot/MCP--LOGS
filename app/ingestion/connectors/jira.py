@@ -31,14 +31,15 @@ Uses Jira's REST API **v2**, not v3, deliberately: v3's `description`/
 plain text), which would need its own ADF-to-text renderer to be usable as
 ingestible content -- out of scope for a first connector pass. v2 returns
 `description` as a plain string, matching every other connector's
-`RawDocument.content` expectation with no extra rendering step. Comments are
-not fetched at all in this first pass (they need a separate paginated
-sub-resource per issue, `/rest/api/2/issue/{key}/comment` -- a second N+1
-API call per issue this connector does not yet make); an issue's summary +
-description is the unit of content ingested. Both gaps are flagged here,
-matching this codebase's convention (`GitHubConnector`'s "Known
-limitations" note) of naming a real gap rather than silently shipping a
-partial connector as if it were complete.
+`RawDocument.content` expectation with no extra rendering step.
+
+Comments are fetched per issue (`GET /rest/api/2/issue/{key}/comment`) and
+appended to `content` after a `"--- Comments ---"` delimiter, the exact
+precedent `GitHubConnector._fetch_issue_comments_text`/`_normalize_issue`
+already establishes for the same "a ticket's discussion is part of its
+searchable content, not a separate document" choice -- skipped per-issue
+when `fields.comment.total == 0`, the same "avoid a wasted call for the
+common case" gate GitHub's own `comments_count` check uses.
 
 `config.credential_ref` is expected to hold `"<email>:<api_token>"` (Jira
 Cloud's own documented Basic-auth credential pair, unencoded) -- this
@@ -65,7 +66,7 @@ from app.shared.config.logging import get_logger
 logger = get_logger(__name__)
 
 _SEARCH_PAGE_SIZE = 50  # Jira's default/typical maxResults page size.
-_FIELDS = "summary,description,issuetype,status,assignee,reporter,created,updated"
+_FIELDS = "summary,description,issuetype,status,assignee,reporter,created,updated,comment"
 
 
 @dataclass
@@ -191,6 +192,10 @@ class JiraConnector:
         issues: list[dict[str, Any]] = payload.get("issues", [])
         for issue in issues:
             issue["_project_key"] = project_key
+            comment_total = ((issue.get("fields") or {}).get("comment") or {}).get("total", 0)
+            issue["_comments_text"] = (
+                await self._fetch_comments_text(client.http, issue["key"]) if comment_total else ""
+            )
 
         total = payload.get("total", 0)
         next_start_at = start_at + len(issues)
@@ -210,9 +215,27 @@ class JiraConnector:
             has_more=has_more,
         )
 
+    async def _fetch_comments_text(self, http: httpx.AsyncClient, issue_key: str) -> str:
+        """Concatenate every comment on issue `issue_key` into one text
+        block (`"author: body"` per comment, blank-line separated) --
+        appended into `content` by `normalize`, the same
+        `GitHubConnector._fetch_issue_comments_text` precedent this
+        connector follows for the same reason: comments are part of a
+        ticket's searchable content, not just a count.
+        """
+        response = await http.get(f"issue/{issue_key}/comment")
+        response.raise_for_status()
+        payload = response.json()
+        comments: list[dict[str, Any]] = payload.get("comments", [])
+        return "\n\n".join(
+            f"{(comment.get('author') or {}).get('displayName', 'unknown')}: "
+            f"{comment.get('body', '')}"
+            for comment in comments
+        )
+
     def normalize(self, raw_item: Any) -> RawDocument:
-        """Convert one raw Jira issue dict (with `_project_key` injected by
-        `fetch_batch`) into a `RawDocument`.
+        """Convert one raw Jira issue dict (with `_project_key`/
+        `_comments_text` injected by `fetch_batch`) into a `RawDocument`.
         """
         project_key = raw_item["_project_key"]
         key = raw_item["key"]
@@ -220,8 +243,14 @@ class JiraConnector:
         summary = fields.get("summary") or ""
         description = fields.get("description") or ""
         content = f"{summary}\n\n{description}" if description else summary
+        comments_text = raw_item.get("_comments_text") or ""
+        if comments_text:
+            content = f"{content}\n\n--- Comments ---\n\n{comments_text}"
 
         metadata: dict[str, str] = {"project": project_key}
+        comment_total = ((fields.get("comment")) or {}).get("total")
+        if comment_total is not None:
+            metadata["comments_count"] = str(comment_total)
         issue_type = (fields.get("issuetype") or {}).get("name")
         if issue_type:
             metadata["issue_type"] = issue_type

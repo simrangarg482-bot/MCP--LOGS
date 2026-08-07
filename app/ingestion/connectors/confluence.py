@@ -32,11 +32,23 @@ Storage-format HTML tags are stripped generically downstream by
 `AzureDevOpsConnector`'s HTML-ish content -- this connector does not strip
 markup itself.
 
-Known limitation, flagged rather than silently built around: only Confluence
-*pages* are fetched (`type = page` in the CQL filter) -- blog posts, comments,
-and attachments are out of scope for this first pass, the same kind of
-deliberate content-type narrowing `SlackConnector` declares for message
-history only (no reactions/files).
+Fetches pages, blog posts, and comments in one CQL query (`type in
+("page","blogpost","comment")` -- CQL's `IN` operator covers all three
+without a second call per space). Each item's `metadata["kind"]` records
+which of the three it is, reusing the exact `"kind"` metadata-key
+convention `GitHubConnector` already established for its own commit/
+pull_request/issue distinction (see that module's `_normalize_commit`/
+`_normalize_pull_request`/`_normalize_issue`) -- one consistent place for
+downstream code to ask "what kind of item is this" across sources. A
+comment's parent content id is threaded through as `metadata["parent_id"]`
+when Confluence's response includes a `container` reference for it.
+
+Known limitation, flagged rather than silently built around: attachments
+are still out of scope. Extracting attachment *content* needs the same
+binary-format parsing infrastructure `SharePointConnector`'s own "Office/PDF"
+gap needs (`pypdf`, `python-docx`, ...) -- closing it only here, and not
+there, would be an inconsistent, source-specific fix to what is really one
+shared missing capability.
 """
 
 from __future__ import annotations
@@ -55,7 +67,10 @@ from app.shared.config.logging import get_logger
 logger = get_logger(__name__)
 
 _SEARCH_PAGE_SIZE = 25  # Confluence's content search default page size.
-_EXPAND = "body.storage,version"
+# `container` is only meaningful for comment-type content (a comment's
+# parent page/blog post) -- requesting it for every item is harmless no-op
+# expansion for pages/blog posts, which have no `container` of their own.
+_EXPAND = "body.storage,version,container"
 
 
 @dataclass
@@ -72,8 +87,8 @@ class _ConfluenceClient:
 
 
 class ConfluenceConnector:
-    """Fetches pages from a fixed set of Confluence spaces on one Confluence
-    Cloud instance per `connector_config`.
+    """Fetches pages, blog posts, and comments from a fixed set of
+    Confluence spaces on one Confluence Cloud instance per `connector_config`.
     """
 
     source_name = "confluence"
@@ -153,7 +168,7 @@ class ConfluenceConnector:
             return FetchResult(items=[], next_cursor=None, has_more=False)
 
         space_key = client.spaces[space_index]
-        cql = f'space = "{space_key}" AND type = "page"'
+        cql = f'space = "{space_key}" AND type in ("page","blogpost","comment")'
         if since is not None:
             since_str = since.astimezone(timezone.utc).strftime("%Y/%m/%d %H:%M")
             cql += f' AND lastmodified >= "{since_str}"'
@@ -207,7 +222,7 @@ class ConfluenceConnector:
         title = raw_item.get("title") or ""
         body_value = ((raw_item.get("body") or {}).get("storage") or {}).get("value") or ""
 
-        metadata: dict[str, str] = {"space": space_key}
+        metadata: dict[str, str] = {"space": space_key, "kind": raw_item.get("type", "page")}
         version = raw_item.get("version") or {}
         if version.get("when"):
             metadata["updated"] = version["when"]
@@ -216,6 +231,9 @@ class ConfluenceConnector:
         author = (version.get("by") or {}).get("displayName")
         if author:
             metadata["author"] = author
+        parent_id = (raw_item.get("container") or {}).get("id")
+        if parent_id:
+            metadata["parent_id"] = str(parent_id)
 
         webui_path = ((raw_item.get("_links") or {}).get("webui")) or ""
         source_url = f"{base_url}/wiki{webui_path}" if webui_path else None

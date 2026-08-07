@@ -205,6 +205,71 @@ async def test_fetch_batch_filters_out_messages_older_than_since() -> None:
 
 
 @pytest.mark.asyncio
+async def test_fetch_batch_stops_paging_once_page_entirely_older_than_since() -> None:
+    connector = TeamsConnector()
+    stale_1 = _message("msg-stale-1", created="2026-07-01T00:00:00Z")
+    stale_2 = _message("msg-stale-2", created="2026-06-01T00:00:00Z")
+    next_link = "https://graph.microsoft.com/v1.0/teams/team-1/channels/19:channel-1/messages?$skiptoken=abc"
+    payload = {"value": [stale_1, stale_2], "@odata.nextLink": next_link}
+    client = _client(
+        ["19:channel-1", "19:channel-2"],
+        **{"teams/team-1/channels/19:channel-1/messages": payload},
+    )
+    since = datetime(2026, 7, 15, tzinfo=timezone.utc)
+
+    result = await connector.fetch_batch(client, since=since, cursor=None)
+
+    assert result.items == []
+    # The page had messages but every one was older than `since` -- stop
+    # paging this channel (never follow `next_link`) and advance to the
+    # next one, rather than walking the rest of its history for nothing.
+    assert result.has_more is True
+    next_state = json.loads(result.next_cursor)
+    assert next_state == {"channel_index": 1, "next_link": None}
+
+
+@pytest.mark.asyncio
+async def test_fetch_batch_mixed_page_still_follows_next_link() -> None:
+    connector = TeamsConnector()
+    fresh = _message("msg-fresh", created="2026-07-20T00:00:00Z")
+    stale = _message("msg-stale", created="2026-07-01T00:00:00Z")
+    next_link = "https://graph.microsoft.com/v1.0/teams/team-1/channels/19:channel-1/messages?$skiptoken=abc"
+    payload = {"value": [fresh, stale], "@odata.nextLink": next_link}
+    client = _client(
+        ["19:channel-1"], **{"teams/team-1/channels/19:channel-1/messages": payload}
+    )
+    since = datetime(2026, 7, 15, tzinfo=timezone.utc)
+
+    result = await connector.fetch_batch(client, since=since, cursor=None)
+
+    # At least one message in the page was recent enough -- a real
+    # incremental sync boundary hasn't necessarily been crossed yet, so
+    # this channel keeps paging rather than stopping early.
+    assert [item["id"] for item in result.items] == ["msg-fresh"]
+    assert result.has_more is True
+    next_state = json.loads(result.next_cursor)
+    assert next_state == {"channel_index": 0, "next_link": next_link}
+
+
+@pytest.mark.asyncio
+async def test_fetch_batch_full_sync_ignores_since_entirely() -> None:
+    connector = TeamsConnector()
+    stale = _message("msg-stale", created="2026-01-01T00:00:00Z")
+    next_link = "https://graph.microsoft.com/v1.0/teams/team-1/channels/19:channel-1/messages?$skiptoken=abc"
+    payload = {"value": [stale], "@odata.nextLink": next_link}
+    client = _client(
+        ["19:channel-1"], **{"teams/team-1/channels/19:channel-1/messages": payload}
+    )
+
+    result = await connector.fetch_batch(client, since=None, cursor=None)
+
+    assert [item["id"] for item in result.items] == ["msg-stale"]
+    assert result.has_more is True
+    next_state = json.loads(result.next_cursor)
+    assert next_state == {"channel_index": 0, "next_link": next_link}
+
+
+@pytest.mark.asyncio
 async def test_fetch_batch_keeps_messages_with_unparseable_timestamp() -> None:
     connector = TeamsConnector()
     no_timestamp = _message("msg-no-ts", created="")

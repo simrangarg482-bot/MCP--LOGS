@@ -52,3 +52,12 @@ class WorkerSettings:
     # `max_tries` alone would satisfy only the "bounded" half of section
     # 4.5's requirement, not the "exponential backoff" half.
     max_tries = 3
+    # arq's own default (300s) is tight for a first *full* sync: each
+    # `fetch_batch` call is throttled by the per-connector token bucket in
+    # `app.ingestion.rate_limiter` (e.g. Slack's own declared
+    # `requests_per_second = 0.5`), and a channel/repo with real history
+    # can need enough pages that the wait time alone exceeds 300s -- arq
+    # then cancels the job mid-page rather than the connector or the app
+    # failing outright. 30 minutes gives a real first sync room to finish
+    # under that throttle instead of being treated as stuck.
+    job_timeout = 1800
