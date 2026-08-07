@@ -440,11 +440,19 @@ async def update_connector_sync_status(
     *,
     status: str,
     last_synced_at: datetime | None = None,
+    config_patch: dict | None = None,
 ) -> ConnectorConfig:
     """Record a connector's sync outcome (PROJECT_PLAN.md section 4.5:
     "job status is tracked explicitly since the caller and worker no longer
     share a call stack") -- ingestion's new consumer of this module
     (app/ingestion/service.py, task #12).
+
+    `config_patch`, when given, is shallow-merged into the connector's
+    existing `config` JSONB rather than replacing it -- ingestion's own
+    caller uses this to persist a cross-sync resume token (`FetchResult.
+    resume_token`, see that field's docstring) under a reserved `
+    "_resume_token"` key without disturbing the admin-supplied keys
+    (`site_ids`/`channels`/...) already living in the same JSONB blob.
 
     Deliberately NOT gated by `require_permission(_MANAGE_PERMISSION)`,
     unlike `register_connector`/`configure_sso`: this is a system-triggered
@@ -469,7 +477,11 @@ async def update_connector_sync_status(
         )
 
     row = await repository.update_connector_config_sync_status(
-        session, connector_config_id, status=status, last_synced_at=last_synced_at
+        session,
+        connector_config_id,
+        status=status,
+        last_synced_at=last_synced_at,
+        config_patch=config_patch,
     )
     if row is None:
         raise RuntimeError("Connector configuration disappeared mid-update.")  # unreachable: fetched above

@@ -17,58 +17,40 @@ Uses Graph's drive **delta** endpoint (`/sites/{id}/drive/root/delta`) to
 list a site's default document library recursively in one flat, paginated
 walk -- unlike a plain `/children` listing, which only returns one folder
 level at a time and would need this connector to walk the folder tree
-itself. Known limitation, flagged rather than silently built around: delta
-sync is *meant* to be driven by a persisted `@odata.deltaLink` token across
-syncs (so a later call only sees what changed) -- this connector does not
-yet persist that token anywhere (the `Connector` protocol's `cursor` only
-lives for one `fetch_batch` sequence, not across separate sync runs), so
-every sync -- full or incremental -- re-walks the entire delta from
-scratch, exactly like `GitHubConnector._list_tree_page`'s equivalent,
-already-documented tradeoff for full-tree syncs. `since` is instead applied
-as a client-side filter on `lastModifiedDateTime`, the same fallback
-`TeamsConnector` already uses for the same underlying reason (no
-`$filter`-style query support on this endpoint).
+itself. `supports_resume_token = True`: each site's `@odata.deltaLink` is
+persisted across separate sync runs (`_execute_ingestion_job` writes
+`FetchResult.resume_token` into `connector_configs.config["_resume_token"]`
+on success), so an incremental sync resumes each site directly from its
+own saved deltaLink instead of re-walking that site's whole tree from
+scratch every time -- see `_SharePointClient.resume_state` and
+`fetch_batch`'s own docstring for the mechanics. `since` is still applied
+as a client-side filter on `lastModifiedDateTime` on top of this (Graph's
+delta response itself carries no `$filter`-style query support), the same
+fallback `TeamsConnector` uses for its own comparable gap.
 
-Plain-text files, plus Word/PDF/Excel documents (`_EXTRACTORS`), have their
-content fetched and ingested; folders and every other file type (images,
+Plain-text files, plus Word/PDF/Excel documents, have their content
+fetched and ingested; folders and every other file type (images,
 PowerPoint, ...) are listed by the delta walk but skipped, not erroring --
 the same "skipped, not an error" treatment `GitHubConnector._fetch_file_
 content` already gives binary/undecodable files. `.pdf`/`.docx`/`.xlsx`
-extraction uses `pypdf`/`python-docx`/`openpyxl` respectively -- each is a
-best-effort text join (PDF: every page's `extract_text()`; DOCX: every
-paragraph; XLSX: every non-empty cell, read-only mode so a large workbook
-isn't fully loaded into memory) with no layout/formatting preserved, since
-this connector's output is ingestible search content, not a faithful
-document rendering. A file that fails to parse (corrupt, password-
-protected, actually a different format than its extension claims, ...) is
-skipped exactly like an undecodable plain-text file already is -- one bad
-file must not fail the whole sync.
-
-Known limitation, flagged rather than silently built around: delta sync is
-*meant* to be driven by a persisted `@odata.deltaLink` token across syncs
-(so a later call only sees what changed) -- this connector does not yet
-persist that token anywhere (the `Connector` protocol's `cursor` only lives
-for one `fetch_batch` sequence, not across separate sync runs), so every
-sync -- full or incremental -- re-walks the entire delta from scratch,
-exactly like `GitHubConnector._list_tree_page`'s equivalent, already-
-documented tradeoff for full-tree syncs. `since` is instead applied as a
-client-side filter on `lastModifiedDateTime`, the same fallback
-`TeamsConnector` uses for its own comparable gap.
+extraction itself lives in `app.ingestion.office_extraction` (`pypdf`/
+`python-docx`/`openpyxl` respectively), a shared module rather than
+connector-local code once `ConfluenceConnector`'s own attachment-content
+gap needed the exact same capability -- see that module's docstring for
+the extraction details and its own "skipped, not an error" contract on
+parse failures.
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from io import BytesIO
 from typing import Any
 
-import docx
 import httpx
-from openpyxl import load_workbook
-from pypdf import PdfReader
 
+from app.ingestion.office_extraction import extract_text
 from app.ingestion.schemas import FetchResult, RawDocument, ResolvedConnectorConfig
 from app.shared.config.logging import get_logger
 
@@ -76,48 +58,12 @@ logger = get_logger(__name__)
 
 _GRAPH_API_BASE_URL = "https://graph.microsoft.com/v1.0/"
 _PLAIN_TEXT_EXTENSIONS = {".txt", ".md", ".markdown"}
-
-
-def _extract_pdf_text(raw_bytes: bytes) -> str:
-    """Join every page's extracted text -- see module docstring's
-    "best-effort text join, no layout preserved" note.
-    """
-    reader = PdfReader(BytesIO(raw_bytes))
-    return "\n\n".join(page.extract_text() or "" for page in reader.pages)
-
-
-def _extract_docx_text(raw_bytes: bytes) -> str:
-    """Join every paragraph's text, in document order."""
-    document = docx.Document(BytesIO(raw_bytes))
-    return "\n\n".join(paragraph.text for paragraph in document.paragraphs if paragraph.text)
-
-
-def _extract_xlsx_text(raw_bytes: bytes) -> str:
-    """Join every non-empty cell's string value, row by row, sheet by
-    sheet -- `read_only=True` so a large workbook streams rather than
-    loading fully into memory (see module docstring).
-    """
-    workbook = load_workbook(BytesIO(raw_bytes), read_only=True, data_only=True)
-    try:
-        lines: list[str] = []
-        for sheet in workbook.worksheets:
-            for row in sheet.iter_rows(values_only=True):
-                cells = [str(value) for value in row if value is not None]
-                if cells:
-                    lines.append("\t".join(cells))
-        return "\n".join(lines)
-    finally:
-        workbook.close()
-
-
-# Extension -> extractor, dispatched by `_fetch_text_content`. Plain-text
-# extensions are handled separately (a plain decode, not one of these
-# binary-format parsers) -- see that method.
-_EXTRACTORS = {
-    ".pdf": _extract_pdf_text,
-    ".docx": _extract_docx_text,
-    ".xlsx": _extract_xlsx_text,
-}
+# Office/PDF extensions `office_extraction.extract_text` knows how to parse
+# -- kept in sync with that module's own `_EXTRACTORS`, duplicated here only
+# as an extension *name* set (not the parsing logic itself) so
+# `_fetch_text_content` can decide "is this even worth downloading" before
+# making the network call.
+_OFFICE_EXTENSIONS = {".pdf", ".docx", ".xlsx"}
 
 
 @dataclass
@@ -126,10 +72,19 @@ class _SharePointClient:
     `AuthenticatedClient`. Bundles the authenticated HTTP client with the
     fixed site-ID list -- `fetch_batch` only receives this object back, not
     the original config, same reasoning as `_TeamsClient`.
+
+    `resume_state` (`{site_id: deltaLink}`) accumulates across every
+    `fetch_batch` call within one sync -- seeded once from the incoming
+    `resume_token` on the first call, updated each time a site's own delta
+    walk completes. It has to live here, on the one object every call this
+    sync shares, rather than being recomputed per call, because a later
+    call has no other way to know what an *earlier* call in the same sync
+    already learned about a different site.
     """
 
     http: httpx.AsyncClient
     site_ids: list[str]
+    resume_state: dict[str, str] = field(default_factory=dict)
 
 
 class SharePointConnector:
@@ -144,6 +99,7 @@ class SharePointConnector:
     # steady-state budget for the delta-listing + per-file content-download
     # calls this connector makes.
     requests_per_second = 1.0
+    supports_resume_token = True
 
     async def authenticate(self, config: ResolvedConnectorConfig) -> _SharePointClient:
         """Build an authenticated Graph client from `config`.
@@ -184,6 +140,7 @@ class SharePointConnector:
         *,
         since: datetime | None,
         cursor: str | None,
+        resume_token: str | None = None,
     ) -> FetchResult:
         """Fetch one page of raw SharePoint drive items from
         `client.site_ids`.
@@ -194,6 +151,19 @@ class SharePointConnector:
         via Graph's own opaque absolute URL" shape `TeamsConnector`'s cursor
         already uses.
 
+        `resume_token` (only ever non-`None` because `supports_resume_token
+        = True`) is this sync's persisted `{site_id: deltaLink}` map from
+        the *previous* sync -- decoded once, into `client.resume_state`, the
+        first time this method runs this sync. When a site's walk is about
+        to start fresh (`next_link is None` for it) and `client.resume_state`
+        already has a saved deltaLink for that site, that deltaLink is
+        requested directly instead of the bare `/delta` root -- Graph's own
+        documented mechanism for "only what changed since last time,"
+        closing the "every sync re-walks everything from scratch" gap this
+        module's docstring used to carry. `_execute_ingestion_job` (the only
+        caller) persists whatever `FetchResult.resume_token` this returns on
+        the sync's last page as the next sync's input.
+
         Only file-type items with a supported text extension and a fetched
         content body end up in the returned page -- folders, unsupported
         file types, and content-download failures are filtered out here,
@@ -203,6 +173,12 @@ class SharePointConnector:
         shape `GitHubConnector._list_file_items_page` already uses for its
         own per-file content fetch).
         """
+        if resume_token is not None and not client.resume_state:
+            try:
+                client.resume_state = json.loads(resume_token)
+            except (json.JSONDecodeError, TypeError):
+                client.resume_state = {}
+
         site_index, next_link = self._decode_cursor(cursor)
 
         if site_index >= len(client.site_ids):
@@ -213,7 +189,9 @@ class SharePointConnector:
         if next_link is not None:
             response = await client.http.get(next_link)
         else:
-            response = await client.http.get(f"sites/{site_id}/drive/root/delta")
+            saved_delta_link = client.resume_state.get(site_id)
+            start_url = saved_delta_link or f"sites/{site_id}/drive/root/delta"
+            response = await client.http.get(start_url)
         response.raise_for_status()
         payload = response.json()
 
@@ -232,6 +210,7 @@ class SharePointConnector:
             items.append(entry)
 
         graph_next_link = payload.get("@odata.nextLink")
+        resume_token_out: str | None = None
 
         if graph_next_link:
             next_state = {"site_index": site_index, "next_link": graph_next_link}
@@ -239,6 +218,10 @@ class SharePointConnector:
         else:
             # No `@odata.nextLink` means Graph returned `@odata.deltaLink`
             # instead -- this site's delta walk is complete for this sync.
+            graph_delta_link = payload.get("@odata.deltaLink")
+            if graph_delta_link:
+                client.resume_state[site_id] = graph_delta_link
+                resume_token_out = json.dumps(client.resume_state)
             next_site_index = site_index + 1
             next_state = {"site_index": next_site_index, "next_link": None}
             has_more = next_site_index < len(client.site_ids)
@@ -247,6 +230,7 @@ class SharePointConnector:
             items=items,
             next_cursor=json.dumps(next_state) if has_more else None,
             has_more=has_more,
+            resume_token=resume_token_out,
         )
 
     async def _fetch_text_content(
@@ -258,7 +242,7 @@ class SharePointConnector:
         """
         name = entry.get("name", "")
         extension = next(
-            (ext for ext in (*_PLAIN_TEXT_EXTENSIONS, *_EXTRACTORS) if name.endswith(ext)),
+            (ext for ext in (*_PLAIN_TEXT_EXTENSIONS, *_OFFICE_EXTENSIONS) if name.endswith(ext)),
             None,
         )
         if extension is None:
@@ -282,15 +266,9 @@ class SharePointConnector:
                 # _fetch_file_content` gives its own undecodable files.
                 return None
 
-        try:
-            return _EXTRACTORS[extension](response.content)
-        except Exception:
-            # A corrupt/password-protected/mislabeled file must not fail
-            # the whole batch -- same treatment as an undecodable text file.
-            logger.warning(
-                "sharepoint_content_extraction_failed", name=name, extension=extension
-            )
-            return None
+        # `office_extraction.extract_text` already swallows parse failures
+        # and returns None -- no separate try/except needed here.
+        return extract_text(name, response.content)
 
     @staticmethod
     def _is_recent_enough(entry: dict[str, Any], since: datetime) -> bool:

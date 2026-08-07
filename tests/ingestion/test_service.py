@@ -326,6 +326,167 @@ async def test_reindex_sets_tenant_context_before_reading_full_document(monkeypa
     ]
 
 
+class _ResumeTokenConnector:
+    """A fake connector with `supports_resume_token = True` -- records the
+    `resume_token` it was actually called with, and returns a fixed one on
+    its single page, so this test can assert both directions of the wiring
+    `_execute_ingestion_job` owns: reading the persisted token in, and
+    persisting whatever came back out.
+    """
+
+    source_name = "fake_resume_source"
+    requests_per_second = 10.0
+    supports_resume_token = True
+
+    def __init__(self, *, resume_token_out: str | None) -> None:
+        self.received_resume_token: str | None = "not called"
+        self.resume_token_out = resume_token_out
+
+    async def authenticate(self, config: ResolvedConnectorConfig):
+        return object()
+
+    async def fetch_batch(self, client, *, since, cursor, resume_token=None):
+        self.received_resume_token = resume_token
+        return FetchResult(items=[], next_cursor=None, has_more=False, resume_token=self.resume_token_out)
+
+    def normalize(self, raw_item):  # pragma: no cover - never called in this test
+        raise AssertionError("normalize should not be called with zero fetched items")
+
+    async def close(self, client) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_execute_ingestion_job_reads_and_persists_resume_token(monkeypatch) -> None:
+    organization_id = uuid.uuid4()
+    encrypted_credential_ref = encrypt_secret(get_kms(), "irrelevant-for-this-test")
+    config_row = _FakeConnectorConfigRow(
+        organization_id=organization_id,
+        source="fake_resume_source",
+        credential_ref=encrypted_credential_ref,
+    )
+    config_row.config = {"_resume_token": '{"site-1": "https://example.com/old-delta"}'}
+    fake_connector = _ResumeTokenConnector(
+        resume_token_out='{"site-1": "https://example.com/new-delta"}'
+    )
+    captured_sync_status: dict[str, object] = {}
+
+    async def fake_resolve_connector_config_organization_id(session, connector_config_id):
+        return organization_id
+
+    async def fake_get_connector_config(session, connector_config_id):
+        return config_row
+
+    async def fake_insert_ingestion_job(session, *, organization_id, connector_config_id):
+        return _FakeJobRow(organization_id, connector_config_id)
+
+    async def fake_update_ingestion_job(session, job_id, **fields):
+        row = _FakeJobRow(organization_id, config_row.id)
+        row.id = job_id
+        for key, value in fields.items():
+            setattr(row, key, value)
+        return row
+
+    async def fake_update_connector_sync_status(session, actor, org_id, connector_config_id, **kwargs):
+        captured_sync_status.update(kwargs)
+        return None
+
+    async def fake_set_tenant_context(session, org_id) -> None:
+        return None
+
+    monkeypatch.setitem(ingestion_service._CONNECTOR_REGISTRY, "fake_resume_source", fake_connector)
+    monkeypatch.setattr(
+        ingestion_service.repository,
+        "resolve_connector_config_organization_id",
+        fake_resolve_connector_config_organization_id,
+    )
+    monkeypatch.setattr(ingestion_service.repository, "get_connector_config", fake_get_connector_config)
+    monkeypatch.setattr(ingestion_service.repository, "insert_ingestion_job", fake_insert_ingestion_job)
+    monkeypatch.setattr(ingestion_service.repository, "update_ingestion_job", fake_update_ingestion_job)
+    monkeypatch.setattr(
+        ingestion_service.tenancy_service,
+        "update_connector_sync_status",
+        fake_update_connector_sync_status,
+    )
+    monkeypatch.setattr(ingestion_service, "set_tenant_context", fake_set_tenant_context)
+
+    await ingestion_service._execute_ingestion_job(
+        _FakeSession(), config_row.id, force_full_sync=True
+    )
+
+    # The persisted token from *last* sync was read and handed to
+    # fetch_batch...
+    assert fake_connector.received_resume_token == '{"site-1": "https://example.com/old-delta"}'
+    # ...and whatever fetch_batch returned this time is what gets persisted
+    # for *next* time.
+    assert captured_sync_status["config_patch"] == {
+        "_resume_token": '{"site-1": "https://example.com/new-delta"}'
+    }
+
+
+@pytest.mark.asyncio
+async def test_execute_ingestion_job_ignores_resume_token_for_unsupporting_connector(
+    monkeypatch,
+) -> None:
+    """`_RecordingConnector` (used throughout this file) declares no
+    `supports_resume_token` attribute at all -- confirms `getattr(...,
+    False)` is used, not direct attribute access, so every connector
+    written before this feature existed keeps working unchanged.
+    """
+    organization_id = uuid.uuid4()
+    encrypted_credential_ref = encrypt_secret(get_kms(), "irrelevant-for-this-test")
+    config_row = _FakeConnectorConfigRow(
+        organization_id=organization_id,
+        source="fake_source",
+        credential_ref=encrypted_credential_ref,
+    )
+    fake_connector = _RecordingConnector()
+
+    async def fake_resolve_connector_config_organization_id(session, connector_config_id):
+        return organization_id
+
+    async def fake_get_connector_config(session, connector_config_id):
+        return config_row
+
+    async def fake_insert_ingestion_job(session, *, organization_id, connector_config_id):
+        return _FakeJobRow(organization_id, connector_config_id)
+
+    async def fake_update_ingestion_job(session, job_id, **fields):
+        row = _FakeJobRow(organization_id, config_row.id)
+        row.id = job_id
+        for key, value in fields.items():
+            setattr(row, key, value)
+        return row
+
+    async def fake_update_connector_sync_status(session, actor, org_id, connector_config_id, **kwargs):
+        return None
+
+    async def fake_set_tenant_context(session, org_id) -> None:
+        return None
+
+    monkeypatch.setitem(ingestion_service._CONNECTOR_REGISTRY, "fake_source", fake_connector)
+    monkeypatch.setattr(
+        ingestion_service.repository,
+        "resolve_connector_config_organization_id",
+        fake_resolve_connector_config_organization_id,
+    )
+    monkeypatch.setattr(ingestion_service.repository, "get_connector_config", fake_get_connector_config)
+    monkeypatch.setattr(ingestion_service.repository, "insert_ingestion_job", fake_insert_ingestion_job)
+    monkeypatch.setattr(ingestion_service.repository, "update_ingestion_job", fake_update_ingestion_job)
+    monkeypatch.setattr(
+        ingestion_service.tenancy_service,
+        "update_connector_sync_status",
+        fake_update_connector_sync_status,
+    )
+    monkeypatch.setattr(ingestion_service, "set_tenant_context", fake_set_tenant_context)
+
+    # Must not raise -- `_RecordingConnector` has no `supports_resume_token`
+    # attribute, `fetch_batch` accepts no `resume_token` kwarg either.
+    await ingestion_service._execute_ingestion_job(
+        _FakeSession(), config_row.id, force_full_sync=True
+    )
+
+
 @pytest.mark.asyncio
 async def test_execute_ingestion_job_acquires_both_rate_limit_buckets(monkeypatch) -> None:
     organization_id = uuid.uuid4()

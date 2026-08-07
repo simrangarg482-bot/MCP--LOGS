@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -271,6 +272,13 @@ async def _execute_ingestion_job(
     documents_processed = 0
     stage = "authenticate"
     client = None
+    # Fixed for the whole sync (not threaded through `cursor`, which is
+    # purely intra-sync pagination) -- see `FetchResult.resume_token`'s own
+    # docstring on why a connector re-decodes this same value on every call
+    # rather than the caller updating it mid-sync.
+    connector_supports_resume_token = getattr(connector, "supports_resume_token", False)
+    resume_token_in = config_row.config.get("_resume_token") if connector_supports_resume_token else None
+    latest_resume_token: str | None = None
     try:
         # The fetch/normalize/process/persist loop runs inside a savepoint
         # (a nested transaction), not the outer transaction directly. This
@@ -301,7 +309,12 @@ async def _execute_ingestion_job(
                     f"org:{config_row.organization_id}",
                     get_settings().ingestion_org_max_requests_per_second,
                 )
-                fetch_result = await connector.fetch_batch(client, since=since, cursor=cursor)
+                fetch_kwargs: dict[str, Any] = {"since": since, "cursor": cursor}
+                if connector_supports_resume_token:
+                    fetch_kwargs["resume_token"] = resume_token_in
+                fetch_result = await connector.fetch_batch(client, **fetch_kwargs)
+                if fetch_result.resume_token is not None:
+                    latest_resume_token = fetch_result.resume_token
 
                 stage = "process_item"
                 for raw_item in fetch_result.items:
@@ -332,6 +345,9 @@ async def _execute_ingestion_job(
             connector_config_id,
             status="active",
             last_synced_at=completed_at,
+            config_patch={"_resume_token": latest_resume_token}
+            if latest_resume_token is not None
+            else None,
         )
     except Exception as exc:
         logger.warning(
@@ -367,7 +383,18 @@ async def _execute_ingestion_job(
             completed_at=datetime.now(timezone.utc),
         )
         await tenancy_service.update_connector_sync_status(
-            session, actor, config_row.organization_id, connector_config_id, status="error"
+            session,
+            actor,
+            config_row.organization_id,
+            connector_config_id,
+            status="error",
+            # Safe even on failure: a site/channel whose walk didn't reach
+            # completion this run simply keeps whatever token it already
+            # had (never overwritten), which is still valid to resume from
+            # next time -- only sites that *did* complete get a fresher one.
+            config_patch={"_resume_token": latest_resume_token}
+            if latest_resume_token is not None
+            else None,
         )
     finally:
         if client is not None:

@@ -100,11 +100,23 @@ class FetchResult(BaseModel):
     it (cursor-based pagination, so a partial fetch can resume without
     re-processing everything already seen). `has_more=False` with
     `next_cursor=None` marks the end of this sync.
+
+    `resume_token` is a second, independent opaque envelope -- only set by
+    connectors that declare `Connector.supports_resume_token = True`
+    (`SharePointConnector`, `TeamsConnector`) -- carrying state meant to
+    survive *across* separate sync runs, not just across pages of one sync
+    the way `next_cursor` does. Unlike `next_cursor`, a connector returns
+    its *complete* current cross-sync state on every page it emits (e.g.
+    `{"site-1": "<deltaLink>", ...}`), not an incremental delta of it, so
+    `ingestion.service._execute_ingestion_job` can simply persist whichever
+    `FetchResult` happens to be the sync's last one without needing to
+    merge anything itself.
     """
 
     items: list[Any] = Field(default_factory=list)
     next_cursor: str | None = None
     has_more: bool = False
+    resume_token: str | None = None
 
 
 # --- Ingestion jobs ----------------------------------------------------------

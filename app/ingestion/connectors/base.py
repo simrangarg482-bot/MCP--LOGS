@@ -49,6 +49,16 @@ class Connector(Protocol):
     #: tenant's -- the connector only declares the ceiling, it does not
     #: enforce it itself.
     requests_per_second: float
+    #: Opt-in: whether this connector accepts/returns a `FetchResult.
+    #: resume_token` that `ingestion.service._execute_ingestion_job`
+    #: persists across separate sync runs (not just across pages of one
+    #: sync, the way `cursor` already does). Defaults to `False` so every
+    #: connector written before this flag existed needs zero change --
+    #: the caller only ever passes `resume_token=` to `fetch_batch` when
+    #: this is `True`. `SharePointConnector`/`TeamsConnector` set it `True`
+    #: to resume their Graph delta walks from where the last sync left off
+    #: instead of re-walking from scratch every time.
+    supports_resume_token: bool = False
 
     async def authenticate(self, config: ResolvedConnectorConfig) -> AuthenticatedClient:
         """Build an authenticated client for this source from `config`.
@@ -75,6 +85,13 @@ class Connector(Protocol):
         beginning"; `since=last_successful_sync_at` with `cursor=None` means
         "incremental sync, from the top"; a non-None `cursor` resumes a
         specific in-progress page sequence (PROJECT_PLAN.md sections 4.2/4.4).
+
+        A connector with `supports_resume_token = True` additionally accepts
+        a keyword-only `resume_token: str | None = None` param (the caller
+        only ever passes it when that flag is set, so every other
+        connector's signature is unaffected) and may set `FetchResult.
+        resume_token` on its return value -- see that field's own docstring
+        in `app.ingestion.schemas.FetchResult`.
         """
         ...
 

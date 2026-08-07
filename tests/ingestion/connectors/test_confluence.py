@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from app.ingestion.connectors import confluence as confluence_module
 from app.ingestion.connectors.confluence import ConfluenceConnector, _ConfluenceClient
 
 
@@ -25,15 +26,26 @@ class _FakeResponse:
     def json(self) -> Any:
         return self._payload
 
+    @property
+    def content(self) -> bytes:
+        return self._payload
+
 
 class _FakeHttpClient:
     def __init__(self, responses: dict[str, Any]) -> None:
         self._responses = responses
         self.requests: list[tuple[str, dict[str, Any]]] = []
+        self.get_urls: list[str] = []
 
-    async def get(self, url: str, params: dict[str, Any] | None = None) -> _FakeResponse:
+    async def get(
+        self,
+        url: str,
+        params: dict[str, Any] | None = None,
+        follow_redirects: bool = False,
+    ) -> _FakeResponse:
         params = params or {}
         self.requests.append((url, params))
+        self.get_urls.append(url)
         value = self._responses[url]
         payload = value(params) if callable(value) else value
         return _FakeResponse(payload)
@@ -71,6 +83,18 @@ def _page(
     if container_id is not None:
         page["container"] = {"id": container_id}
     return page
+
+
+def _attachment(
+    content_id: str = "att-1",
+    *,
+    title: str = "runbook.pdf",
+    download: str | None = "/download/attachments/12345/runbook.pdf",
+) -> dict[str, Any]:
+    attachment: dict[str, Any] = {"id": content_id, "type": "attachment", "title": title}
+    if download is not None:
+        attachment["_links"] = {"download": download}
+    return attachment
 
 
 # --- normalize ---------------------------------------------------------------
@@ -154,6 +178,20 @@ def test_normalize_page_without_body_yields_empty_content() -> None:
     assert doc.content == ""
 
 
+def test_normalize_attachment_uses_extracted_content_over_body() -> None:
+    connector = ConfluenceConnector()
+    raw_item = _attachment()
+    raw_item["_space_key"] = "ENG"
+    raw_item["_base_url"] = "https://acme.atlassian.net"
+    raw_item["_attachment_content"] = "Restart the checkout service."
+
+    doc = connector.normalize(raw_item)
+
+    assert doc.content == "Restart the checkout service."
+    assert doc.metadata["kind"] == "attachment"
+    assert doc.title == "runbook.pdf"
+
+
 # --- fetch_batch ---------------------------------------------------------------
 
 
@@ -226,7 +264,7 @@ async def test_fetch_batch_includes_since_in_cql() -> None:
 
     await connector.fetch_batch(client, since=since, cursor=None)
 
-    assert 'space = "ENG" AND type in ("page","blogpost","comment")' in captured["cql"]
+    assert 'space = "ENG" AND type in ("page","blogpost","comment","attachment")' in captured["cql"]
     assert 'lastmodified >= "2026/07/01 12:30"' in captured["cql"]
     assert "ORDER BY lastmodified ASC" in captured["cql"]
 
@@ -248,6 +286,83 @@ async def test_fetch_batch_resumes_from_cursor() -> None:
     assert captured["start"] == 25
     assert 'space = "OPS"' in captured["cql"]
     assert result.has_more is False
+
+
+# --- fetch_batch: attachments --------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fetch_batch_downloads_and_extracts_attachment_content(monkeypatch) -> None:
+    connector = ConfluenceConnector()
+    attachment = _attachment()
+    payload = {"results": [attachment]}
+    download_url = "https://acme.atlassian.net/wiki/download/attachments/12345/runbook.pdf"
+    client = _client(
+        ["ENG"], **{"content/search": payload, download_url: b"%PDF-fake-bytes"}
+    )
+    captured: dict[str, Any] = {}
+
+    def fake_extract_text(filename: str, raw_bytes: bytes) -> str | None:
+        captured["filename"] = filename
+        captured["raw_bytes"] = raw_bytes
+        return "Restart the checkout service."
+
+    monkeypatch.setattr(confluence_module, "extract_text", fake_extract_text)
+
+    result = await connector.fetch_batch(client, since=None, cursor=None)
+
+    assert download_url in client.http.get_urls
+    assert captured["filename"] == "runbook.pdf"
+    assert captured["raw_bytes"] == b"%PDF-fake-bytes"
+    assert result.items[0]["_attachment_content"] == "Restart the checkout service."
+
+
+@pytest.mark.asyncio
+async def test_fetch_batch_skips_attachment_without_download_link() -> None:
+    connector = ConfluenceConnector()
+    attachment = _attachment(download=None)
+    payload = {"results": [attachment]}
+    client = _client(["ENG"], **{"content/search": payload})
+
+    result = await connector.fetch_batch(client, since=None, cursor=None)
+
+    assert result.items == []
+
+
+@pytest.mark.asyncio
+async def test_fetch_batch_skips_attachment_when_extraction_fails(monkeypatch) -> None:
+    connector = ConfluenceConnector()
+    attachment = _attachment()
+    payload = {"results": [attachment]}
+    download_url = "https://acme.atlassian.net/wiki/download/attachments/12345/runbook.pdf"
+    client = _client(
+        ["ENG"], **{"content/search": payload, download_url: b"not-a-real-pdf"}
+    )
+    monkeypatch.setattr(confluence_module, "extract_text", lambda filename, raw_bytes: None)
+
+    result = await connector.fetch_batch(client, since=None, cursor=None)
+
+    assert result.items == []
+
+
+@pytest.mark.asyncio
+async def test_fetch_batch_pagination_uses_raw_count_not_filtered_count() -> None:
+    """Regression test: an attachment skipped for lacking a download link
+    must not shrink the exhaustion/`start`-advancement math -- both are
+    offsets into Confluence's own (unfiltered) result set.
+    """
+    connector = ConfluenceConnector()
+    page_items = [_page(str(i)) for i in range(24)] + [_attachment(download=None)]
+    assert len(page_items) == 25  # a full page, per _SEARCH_PAGE_SIZE
+    payload = {"results": page_items}
+    client = _client(["ENG"], **{"content/search": payload})
+
+    result = await connector.fetch_batch(client, since=None, cursor=None)
+
+    assert len(result.items) == 24  # the download-link-less attachment was skipped
+    assert result.has_more is True
+    next_state = json.loads(result.next_cursor)
+    assert next_state == {"space_index": 0, "start": 25}
 
 
 def test_decode_cursor_defaults_to_first_space() -> None:

@@ -88,6 +88,59 @@ async def test_register_connector_encrypts_credential_before_storing(monkeypatch
     assert result.credential_ref == stored_credential_ref
 
 
+@pytest.mark.asyncio
+async def test_update_connector_sync_status_threads_config_patch_through(monkeypatch) -> None:
+    """`config_patch` (ingestion's persisted cross-sync resume token, see
+    `app.ingestion.service._execute_ingestion_job`) must reach `repository.
+    update_connector_config_sync_status` unchanged -- the actual JSONB
+    shallow-merge is a one-line operation inside that repository function
+    itself (no test infra for direct repository calls exists in this test
+    file; every test here monkeypatches at the `repository.*` boundary).
+    """
+    organization_id = uuid.uuid4()
+    actor = _admin(organization_id)
+    connector_config_id = uuid.uuid4()
+    existing_row = _FakeConnectorConfigRow(
+        organization_id=organization_id, source="sharepoint", credential_ref="encrypted-ref"
+    )
+    existing_row.id = connector_config_id
+    captured: dict[str, object] = {}
+
+    async def fake_get_connector_config_by_id(session, config_id):
+        assert config_id == connector_config_id
+        return existing_row
+
+    async def fake_update_connector_config_sync_status(session, config_id, **kwargs):
+        captured.update(kwargs)
+        return existing_row
+
+    async def fake_record_audit_event(session, actor, **kwargs):
+        return None
+
+    monkeypatch.setattr(
+        tenancy_service.repository,
+        "get_connector_config_by_id",
+        fake_get_connector_config_by_id,
+    )
+    monkeypatch.setattr(
+        tenancy_service.repository,
+        "update_connector_config_sync_status",
+        fake_update_connector_config_sync_status,
+    )
+    monkeypatch.setattr(tenancy_service, "record_audit_event", fake_record_audit_event)
+
+    await tenancy_service.update_connector_sync_status(
+        None,
+        actor,
+        organization_id,
+        connector_config_id,
+        status="active",
+        config_patch={"_resume_token": '{"site-1": "https://example.com/delta"}'},
+    )
+
+    assert captured["config_patch"] == {"_resume_token": '{"site-1": "https://example.com/delta"}'}
+
+
 class _FakeOrganizationRow:
     def __init__(self, organization_id: uuid.UUID) -> None:
         self.id = organization_id

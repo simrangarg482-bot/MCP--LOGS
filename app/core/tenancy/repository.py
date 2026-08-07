@@ -245,9 +245,17 @@ async def update_connector_config_sync_status(
     *,
     status: str,
     last_synced_at: datetime | None = None,
+    config_patch: dict | None = None,
 ) -> ConnectorConfig | None:
-    """Update a connector's `status` (and optionally `last_synced_at`) after a
-    sync attempt, returning the updated row or None if it doesn't exist.
+    """Update a connector's `status` (and optionally `last_synced_at`/
+    `config`) after a sync attempt, returning the updated row or None if it
+    doesn't exist.
+
+    `config_patch`, when given, is shallow-merged into the existing `config`
+    JSONB (`row.config = {**row.config, **config_patch}`) rather than
+    replacing it outright -- see `service.update_connector_sync_status`'s
+    own docstring for why (persisting a cross-sync resume token without
+    disturbing admin-supplied config keys).
 
     A narrow, explicit mutation rather than a generic update-by-dict: ingestion
     reporting "this connector's sync just succeeded/failed" is the only
@@ -261,6 +269,8 @@ async def update_connector_config_sync_status(
     row.status = status
     if last_synced_at is not None:
         row.last_synced_at = last_synced_at
+    if config_patch is not None:
+        row.config = {**row.config, **config_patch}
     await session.flush()
     await session.refresh(row)
     return row

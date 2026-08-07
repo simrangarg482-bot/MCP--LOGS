@@ -189,100 +189,131 @@ async def test_fetch_batch_no_more_channels_returns_empty() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fetch_batch_filters_out_messages_older_than_since() -> None:
+async def test_fetch_batch_full_sync_ignores_since_and_uses_plain_listing() -> None:
     connector = TeamsConnector()
-    fresh = _message("msg-fresh", created="2026-07-20T00:00:00Z")
-    stale = _message("msg-stale", created="2026-07-01T00:00:00Z")
-    payload = {"value": [fresh, stale]}
-    client = _client(
-        ["19:channel-1"], **{"teams/team-1/channels/19:channel-1/messages": payload}
-    )
-    since = datetime(2026, 7, 15, tzinfo=timezone.utc)
-
-    result = await connector.fetch_batch(client, since=since, cursor=None)
-
-    assert [item["id"] for item in result.items] == ["msg-fresh"]
-
-
-@pytest.mark.asyncio
-async def test_fetch_batch_stops_paging_once_page_entirely_older_than_since() -> None:
-    connector = TeamsConnector()
-    stale_1 = _message("msg-stale-1", created="2026-07-01T00:00:00Z")
-    stale_2 = _message("msg-stale-2", created="2026-06-01T00:00:00Z")
+    old = _message("msg-old", created="2026-01-01T00:00:00Z")
     next_link = "https://graph.microsoft.com/v1.0/teams/team-1/channels/19:channel-1/messages?$skiptoken=abc"
-    payload = {"value": [stale_1, stale_2], "@odata.nextLink": next_link}
-    client = _client(
-        ["19:channel-1", "19:channel-2"],
-        **{"teams/team-1/channels/19:channel-1/messages": payload},
-    )
-    since = datetime(2026, 7, 15, tzinfo=timezone.utc)
-
-    result = await connector.fetch_batch(client, since=since, cursor=None)
-
-    assert result.items == []
-    # The page had messages but every one was older than `since` -- stop
-    # paging this channel (never follow `next_link`) and advance to the
-    # next one, rather than walking the rest of its history for nothing.
-    assert result.has_more is True
-    next_state = json.loads(result.next_cursor)
-    assert next_state == {"channel_index": 1, "next_link": None}
-
-
-@pytest.mark.asyncio
-async def test_fetch_batch_mixed_page_still_follows_next_link() -> None:
-    connector = TeamsConnector()
-    fresh = _message("msg-fresh", created="2026-07-20T00:00:00Z")
-    stale = _message("msg-stale", created="2026-07-01T00:00:00Z")
-    next_link = "https://graph.microsoft.com/v1.0/teams/team-1/channels/19:channel-1/messages?$skiptoken=abc"
-    payload = {"value": [fresh, stale], "@odata.nextLink": next_link}
-    client = _client(
-        ["19:channel-1"], **{"teams/team-1/channels/19:channel-1/messages": payload}
-    )
-    since = datetime(2026, 7, 15, tzinfo=timezone.utc)
-
-    result = await connector.fetch_batch(client, since=since, cursor=None)
-
-    # At least one message in the page was recent enough -- a real
-    # incremental sync boundary hasn't necessarily been crossed yet, so
-    # this channel keeps paging rather than stopping early.
-    assert [item["id"] for item in result.items] == ["msg-fresh"]
-    assert result.has_more is True
-    next_state = json.loads(result.next_cursor)
-    assert next_state == {"channel_index": 0, "next_link": next_link}
-
-
-@pytest.mark.asyncio
-async def test_fetch_batch_full_sync_ignores_since_entirely() -> None:
-    connector = TeamsConnector()
-    stale = _message("msg-stale", created="2026-01-01T00:00:00Z")
-    next_link = "https://graph.microsoft.com/v1.0/teams/team-1/channels/19:channel-1/messages?$skiptoken=abc"
-    payload = {"value": [stale], "@odata.nextLink": next_link}
+    payload = {"value": [old], "@odata.nextLink": next_link}
     client = _client(
         ["19:channel-1"], **{"teams/team-1/channels/19:channel-1/messages": payload}
     )
 
     result = await connector.fetch_batch(client, since=None, cursor=None)
 
-    assert [item["id"] for item in result.items] == ["msg-stale"]
+    assert [item["id"] for item in result.items] == ["msg-old"]
     assert result.has_more is True
     next_state = json.loads(result.next_cursor)
     assert next_state == {"channel_index": 0, "next_link": next_link}
 
 
+# --- fetch_batch: incremental sync (delta query) --------------------------
+
+
 @pytest.mark.asyncio
-async def test_fetch_batch_keeps_messages_with_unparseable_timestamp() -> None:
+async def test_fetch_batch_incremental_starts_fresh_delta_with_filter() -> None:
     connector = TeamsConnector()
-    no_timestamp = _message("msg-no-ts", created="")
-    del no_timestamp["createdDateTime"]
-    payload = {"value": [no_timestamp]}
+    captured: dict[str, Any] = {}
+
+    def fake_delta(params: dict[str, Any]) -> dict[str, Any]:
+        captured.update(params)
+        return {"value": [_message("msg-1")], "@odata.deltaLink": "https://graph.microsoft.com/delta-token-1"}
+
     client = _client(
-        ["19:channel-1"], **{"teams/team-1/channels/19:channel-1/messages": payload}
+        ["19:channel-1"],
+        **{"teams/team-1/channels/19:channel-1/messages/delta": fake_delta},
     )
     since = datetime(2026, 7, 15, tzinfo=timezone.utc)
 
     result = await connector.fetch_batch(client, since=since, cursor=None)
 
-    assert [item["id"] for item in result.items] == ["msg-no-ts"]
+    assert captured["$filter"] == "lastModifiedDateTime gt 2026-07-15T00:00:00Z"
+    assert [item["id"] for item in result.items] == ["msg-1"]
+    assert result.has_more is False
+
+
+@pytest.mark.asyncio
+async def test_fetch_batch_incremental_resumes_from_saved_delta_link_without_filter() -> None:
+    connector = TeamsConnector()
+    saved_delta_link = "https://graph.microsoft.com/delta-token-old"
+    payload = {"value": [_message("msg-2")], "@odata.deltaLink": "https://graph.microsoft.com/delta-token-new"}
+    client = _client(["19:channel-1"], **{saved_delta_link: payload})
+    resume_token = json.dumps({"19:channel-1": saved_delta_link})
+    since = datetime(2026, 7, 15, tzinfo=timezone.utc)
+
+    result = await connector.fetch_batch(client, since=since, cursor=None, resume_token=resume_token)
+
+    # Resuming from a saved deltaLink means calling that URL directly --
+    # no separate `messages/delta` call with a `$filter` should happen.
+    assert client.http.requests[0] == (saved_delta_link, {})
+    assert [item["id"] for item in result.items] == ["msg-2"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_batch_incremental_captures_new_delta_link_as_resume_token() -> None:
+    connector = TeamsConnector()
+    new_delta_link = "https://graph.microsoft.com/delta-token-new"
+    payload = {"value": [_message("msg-1")], "@odata.deltaLink": new_delta_link}
+    client = _client(
+        ["19:channel-1"],
+        **{"teams/team-1/channels/19:channel-1/messages/delta": payload},
+    )
+    since = datetime(2026, 7, 15, tzinfo=timezone.utc)
+
+    result = await connector.fetch_batch(client, since=since, cursor=None)
+
+    assert result.resume_token is not None
+    assert json.loads(result.resume_token) == {"19:channel-1": new_delta_link}
+
+
+@pytest.mark.asyncio
+async def test_fetch_batch_incremental_follows_delta_next_link_mid_walk() -> None:
+    connector = TeamsConnector()
+    next_link = "https://graph.microsoft.com/v1.0/teams/team-1/channels/19:channel-1/messages/delta?$skiptoken=abc"
+    payload = {"value": [_message("msg-1")], "@odata.nextLink": next_link}
+    client = _client(
+        ["19:channel-1"],
+        **{"teams/team-1/channels/19:channel-1/messages/delta": payload},
+    )
+    since = datetime(2026, 7, 15, tzinfo=timezone.utc)
+
+    result = await connector.fetch_batch(client, since=since, cursor=None)
+
+    assert result.has_more is True
+    next_state = json.loads(result.next_cursor)
+    assert next_state == {"channel_index": 0, "next_link": next_link}
+    # Still mid-walk (Graph gave `@odata.nextLink`, not `@odata.deltaLink`
+    # yet) -- nothing to persist as a resume token yet.
+    assert result.resume_token is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_batch_incremental_resume_state_survives_across_channels() -> None:
+    connector = TeamsConnector()
+    delta_link_1 = "https://graph.microsoft.com/delta-token-1"
+    payload_1 = {"value": [_message("msg-1")], "@odata.deltaLink": delta_link_1}
+    delta_link_2 = "https://graph.microsoft.com/delta-token-2"
+    payload_2 = {"value": [_message("msg-2")], "@odata.deltaLink": delta_link_2}
+    client = _client(
+        ["19:channel-1", "19:channel-2"],
+        **{
+            "teams/team-1/channels/19:channel-1/messages/delta": payload_1,
+            "teams/team-1/channels/19:channel-2/messages/delta": payload_2,
+        },
+    )
+    since = datetime(2026, 7, 15, tzinfo=timezone.utc)
+
+    first = await connector.fetch_batch(client, since=since, cursor=None)
+    next_state = json.loads(first.next_cursor)
+    assert next_state == {"channel_index": 1, "next_link": None}
+
+    second = await connector.fetch_batch(client, since=since, cursor=first.next_cursor)
+
+    # Channel 1's entry (learned on the first call) must still be present
+    # even though this call only just learned channel 2's.
+    assert json.loads(second.resume_token) == {
+        "19:channel-1": delta_link_1,
+        "19:channel-2": delta_link_2,
+    }
 
 
 def test_decode_cursor_defaults_to_first_channel() -> None:

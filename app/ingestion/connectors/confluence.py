@@ -32,23 +32,30 @@ Storage-format HTML tags are stripped generically downstream by
 `AzureDevOpsConnector`'s HTML-ish content -- this connector does not strip
 markup itself.
 
-Fetches pages, blog posts, and comments in one CQL query (`type in
-("page","blogpost","comment")` -- CQL's `IN` operator covers all three
-without a second call per space). Each item's `metadata["kind"]` records
-which of the three it is, reusing the exact `"kind"` metadata-key
-convention `GitHubConnector` already established for its own commit/
-pull_request/issue distinction (see that module's `_normalize_commit`/
-`_normalize_pull_request`/`_normalize_issue`) -- one consistent place for
-downstream code to ask "what kind of item is this" across sources. A
-comment's parent content id is threaded through as `metadata["parent_id"]`
-when Confluence's response includes a `container` reference for it.
+Fetches pages, blog posts, comments, and attachments in one CQL query
+(`type in ("page","blogpost","comment","attachment")` -- CQL's `IN`
+operator covers all four without a second call per space). Each item's
+`metadata["kind"]` records which of the four it is, reusing the exact
+`"kind"` metadata-key convention `GitHubConnector` already established for
+its own commit/pull_request/issue distinction (see that module's
+`_normalize_commit`/`_normalize_pull_request`/`_normalize_issue`) -- one
+consistent place for downstream code to ask "what kind of item is this"
+across sources. A comment's parent content id is threaded through as
+`metadata["parent_id"]` when Confluence's response includes a `container`
+reference for it.
 
-Known limitation, flagged rather than silently built around: attachments
-are still out of scope. Extracting attachment *content* needs the same
-binary-format parsing infrastructure `SharePointConnector`'s own "Office/PDF"
-gap needs (`pypdf`, `python-docx`, ...) -- closing it only here, and not
-there, would be an inconsistent, source-specific fix to what is really one
-shared missing capability.
+Attachment *content* is downloaded via the attachment's own `_links.
+download` path (resolved against `base_url` the same way `_links.webui`
+already is for `source_url`) and extracted through the shared
+`app.ingestion.office_extraction.extract_text` -- the exact module
+`SharePointConnector`'s own Office/PDF/Excel support already uses, pulled
+out specifically so this connector didn't have to duplicate that parsing
+logic to close its own attachment-content gap. Only the same `.pdf`/
+`.docx`/`.xlsx` set `office_extraction` supports gets real content; an
+attachment with no download link, an unsupported extension, or a parse
+failure is skipped (not erroring the whole batch), same "skipped, not an
+error" contract every other per-item I/O step in this codebase already
+follows.
 """
 
 from __future__ import annotations
@@ -61,6 +68,7 @@ from typing import Any
 
 import httpx
 
+from app.ingestion.office_extraction import extract_text
 from app.ingestion.schemas import FetchResult, RawDocument, ResolvedConnectorConfig
 from app.shared.config.logging import get_logger
 
@@ -168,7 +176,7 @@ class ConfluenceConnector:
             return FetchResult(items=[], next_cursor=None, has_more=False)
 
         space_key = client.spaces[space_index]
-        cql = f'space = "{space_key}" AND type in ("page","blogpost","comment")'
+        cql = f'space = "{space_key}" AND type in ("page","blogpost","comment","attachment")'
         if since is not None:
             since_str = since.astimezone(timezone.utc).strftime("%Y/%m/%d %H:%M")
             cql += f' AND lastmodified >= "{since_str}"'
@@ -186,20 +194,32 @@ class ConfluenceConnector:
         response.raise_for_status()
         payload = response.json()
 
-        results: list[dict[str, Any]] = payload.get("results", [])
-        for item in results:
+        raw_results: list[dict[str, Any]] = payload.get("results", [])
+        results: list[dict[str, Any]] = []
+        for item in raw_results:
             item["_space_key"] = space_key
             item["_base_url"] = client.base_url
+            if item.get("type") == "attachment":
+                content = await self._fetch_attachment_content(client, item)
+                if content is None:
+                    continue  # no download link, unsupported extension, or parse failure
+                item["_attachment_content"] = content
+            results.append(item)
 
         # Length-based heuristic, not a total-count field -- CQL search
         # responses don't reliably return a `totalSize`, the same
         # "Length-based heuristic, not GitHub's Link header" reasoning
         # `GitHubConnector._list_changed_paths_page` already documents for
-        # its own paginated endpoint.
-        space_exhausted = len(results) < _SEARCH_PAGE_SIZE
+        # its own paginated endpoint. Deliberately `len(raw_results)`, not
+        # `len(results)`: `start` is an offset into Confluence's *own*
+        # result set, and the exhaustion check needs to know how many raw
+        # items this page actually had -- an attachment skipped for lacking
+        # a download link (or failing to parse) must not shrink either of
+        # those, or the next page would re-request already-seen items.
+        space_exhausted = len(raw_results) < _SEARCH_PAGE_SIZE
 
         if not space_exhausted:
-            next_state = {"space_index": space_index, "start": start + len(results)}
+            next_state = {"space_index": space_index, "start": start + len(raw_results)}
             has_more = True
         else:
             next_space_index = space_index + 1
@@ -212,15 +232,41 @@ class ConfluenceConnector:
             has_more=has_more,
         )
 
+    async def _fetch_attachment_content(
+        self, client: _ConfluenceClient, item: dict[str, Any]
+    ) -> str | None:
+        """Download and extract one attachment's text content via its own
+        `_links.download` path, or `None` if there's no download link or
+        `office_extraction.extract_text` can't parse it -- see module
+        docstring's "skipped, not an error" note. `follow_redirects=True`
+        because Atlassian's own attachment-download endpoints are
+        documented to 302-redirect to the actual file.
+        """
+        download_path = (item.get("_links") or {}).get("download")
+        if not download_path:
+            return None
+        download_url = f"{client.base_url}/wiki{download_path}"
+        response = await client.http.get(download_url, follow_redirects=True)
+        try:
+            response.raise_for_status()
+        except Exception:
+            return None
+        return extract_text(item.get("title") or "", response.content)
+
     def normalize(self, raw_item: Any) -> RawDocument:
         """Convert one raw Confluence content dict (with `"_space_key"`/
-        `"_base_url"` injected by `fetch_batch`) into a `RawDocument`.
+        `"_base_url"`/possibly `"_attachment_content"` injected by
+        `fetch_batch`) into a `RawDocument`.
         """
         space_key = raw_item["_space_key"]
         base_url = raw_item["_base_url"]
         content_id = raw_item["id"]
         title = raw_item.get("title") or ""
-        body_value = ((raw_item.get("body") or {}).get("storage") or {}).get("value") or ""
+        attachment_content = raw_item.get("_attachment_content")
+        if attachment_content is not None:
+            body_value = attachment_content
+        else:
+            body_value = ((raw_item.get("body") or {}).get("storage") or {}).get("value") or ""
 
         metadata: dict[str, str] = {"space": space_key, "kind": raw_item.get("type", "page")}
         version = raw_item.get("version") or {}

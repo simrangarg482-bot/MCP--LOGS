@@ -28,38 +28,49 @@ something this connector performs itself) -- same flagged "literal value
 until `shared/security` exists" placeholder every other connector's
 docstring already carries.
 
-Known limitation, flagged rather than silently built around: Graph's
-"list channel messages" endpoint (`GET
-/teams/{id}/channels/{id}/messages`) has no server-side `since`/`$filter`
-support for incremental sync the way Slack's `oldest` param or Jira's JQL
-`updated >=` clause do -- Graph's *delta query* API
-(`/messages/delta`) is the documented mechanism for that, and would be the
-correct long-term answer, but is a meaningfully different pagination model
-(opaque delta tokens persisted *across* syncs, not just across pages of one
-sync) than this first pass implements. `since` is applied as a client-side
-filter per page after fetching, the same fallback this connector always
-used.
+Two different Graph endpoints, chosen by sync type:
 
-This connector does cut most of the wasted work an incremental sync would
-otherwise do, though: Graph returns channel messages newest-first
-(`createdDateTime` descending) by default -- the same reverse-chronological
-order Slack's `conversations.history` uses, which is exactly why applying
-`since` as a client-side filter is even correct here. Once a whole page
-comes back entirely older than `since`, `fetch_batch` stops paging that
-channel rather than continuing to fetch pages of content it would only
-filter out anyway. This is a real, disclosed assumption about Graph's
-default ordering, not a guaranteed contract -- if Graph ever changed that
-default, the failure mode would be an incremental sync missing messages
-newer than the stale ones it stopped on, not a crash, so it is worth
-re-verifying against Graph's own documentation before relying on it in
-production. A **full** sync (`since=None`) is unaffected either way and
-still walks every message, as intended.
+- **Full sync** (`since=None`): the plain `GET /teams/{id}/channels/{id}/
+  messages` listing, walked in full -- unchanged from this connector's
+  first pass.
+- **Incremental sync** (`since` set): Graph's *delta query* API (`GET
+  /teams/{id}/channels/{id}/messages/delta`), which is what genuinely
+  closes the "no server-side incremental filter" gap a plain listing has.
+  `supports_resume_token = True`: each channel's `@odata.deltaLink` is
+  persisted across separate sync runs the same way `SharePointConnector`
+  persists one per site (`_execute_ingestion_job` writes `FetchResult.
+  resume_token` into `connector_configs.config["_resume_token"]` on
+  success) -- see `_TeamsClient.resume_state` and `_fetch_incremental_page`
+  for the mechanics. A channel with no saved deltaLink yet starts a fresh
+  delta walk filtered by `$filter=lastModifiedDateTime gt <since>` (the
+  *only* filter operator/property this endpoint documents support for);
+  once resuming from a saved deltaLink, no filter is needed at all --
+  Graph already knows what changed. No client-side re-filtering is applied
+  on top of either: `lastModifiedDateTime` (what delta filters on) and
+  `createdDateTime` (what an earlier version of this connector's own
+  client-side filter checked) are different fields -- an edited-but-not-
+  recreated message would have an old `createdDateTime` yet a fresh
+  `lastModifiedDateTime`, so re-filtering on the wrong field here would
+  silently drop content delta correctly identified as changed.
+
+Two disclosed, real limitations of the delta endpoint itself, verified
+against Microsoft's own documentation and public Q&A threads before
+relying on it (not assumed): delta only covers the **last 8 months** of a
+channel's history (older content needs the plain listing above, which is
+exactly what the full-sync path already uses), and some tenants have
+reported the delta endpoint returning HTTP 400 on subsequent calls in
+production (see e.g. Microsoft Q&A "Teams channel messages delta API
+returns HTTP 400 BadRequest"). A delta call failing surfaces as an
+ordinary exception, caught by `_execute_ingestion_job` the same as any
+other connector failure -- no special-cased fallback to the plain listing
+is attempted here, since that would silently mask a real, worth-noticing
+API problem rather than surfacing it.
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
@@ -82,11 +93,18 @@ class _TeamsClient:
     channel-ID list from `ResolvedConnectorConfig.config` -- `fetch_batch`
     only receives this object back, not the original config, same reasoning
     as `_SlackClient`/`_GitHubClient`/`_JiraClient`.
+
+    `resume_state` (`{channel_id: deltaLink}`) accumulates across every
+    `fetch_batch` call within one incremental sync -- same "seeded once
+    from the incoming `resume_token`, updated as each channel's own delta
+    walk completes, lives on the one shared object across calls" mechanism
+    `_SharePointClient.resume_state` already uses for the same reason.
     """
 
     http: httpx.AsyncClient
     team_id: str
     channels: list[str]
+    resume_state: dict[str, str] = field(default_factory=dict)
 
 
 class TeamsConnector:
@@ -106,6 +124,7 @@ class TeamsConnector:
     # specifically, matching section 4.5's "a conservative constant is fine"
     # allowance.
     requests_per_second = 1.0
+    supports_resume_token = True
 
     async def authenticate(self, config: ResolvedConnectorConfig) -> _TeamsClient:
         """Build an authenticated Graph client from `config`.
@@ -152,6 +171,7 @@ class TeamsConnector:
         *,
         since: datetime | None,
         cursor: str | None,
+        resume_token: str | None = None,
     ) -> FetchResult:
         """Fetch one page of raw Teams messages from `client.channels`.
 
@@ -160,13 +180,24 @@ class TeamsConnector:
         Graph's own full `@odata.nextLink` URL (an opaque, absolute URL
         Graph expects to be requested as-is, unlike Slack's/Jira's own
         smaller native cursor tokens), the same "resume mid-list, not just
-        mid-page" shape every other connector's cursor uses.
+        mid-page" shape every other connector's cursor uses. `since is None`
+        (full sync) dispatches to `_fetch_full_sync_page` (the plain message
+        listing); `since` set (incremental sync) dispatches to
+        `_fetch_incremental_page` (Graph's delta query) -- see module
+        docstring for why these need genuinely different endpoints, not
+        just a different filter on the same one.
 
         Each raw item is Graph's message dict with `"_channel_id"` injected
         (needed by `normalize`, which only ever sees one self-contained
         `raw_item` at a time; Graph's own message payload has no channel
         field, same gap `SlackConnector.fetch_batch` fills for Slack).
         """
+        if resume_token is not None and not client.resume_state:
+            try:
+                client.resume_state = json.loads(resume_token)
+            except (json.JSONDecodeError, TypeError):
+                client.resume_state = {}
+
         channel_index, next_link = self._decode_cursor(cursor)
 
         if channel_index >= len(client.channels):
@@ -174,6 +205,20 @@ class TeamsConnector:
 
         channel_id = client.channels[channel_index]
 
+        if since is None:
+            return await self._fetch_full_sync_page(client, channel_index, channel_id, next_link)
+        return await self._fetch_incremental_page(
+            client, channel_index, channel_id, next_link, since
+        )
+
+    async def _fetch_full_sync_page(
+        self, client: _TeamsClient, channel_index: int, channel_id: str, next_link: str | None
+    ) -> FetchResult:
+        """A full sync's page: the plain, unfiltered message listing,
+        walked entirely -- delta's 8-month lookback cap (see module
+        docstring) would silently under-cover a full sync, so this path
+        never uses it.
+        """
         if next_link is not None:
             response = await client.http.get(next_link)
         else:
@@ -184,36 +229,88 @@ class TeamsConnector:
         response.raise_for_status()
         payload = response.json()
 
-        raw_messages: list[dict[str, Any]] = payload.get("value", [])
-        messages = raw_messages
-        if since is not None:
-            messages = [m for m in raw_messages if self._is_recent_enough(m, since)]
+        messages: list[dict[str, Any]] = payload.get("value", [])
         for message in messages:
             message["_channel_id"] = channel_id
 
-        # See module docstring's "Known limitation" note: relies on Graph's
-        # documented newest-first default order for this endpoint. Once an
-        # entire page comes back with nothing recent enough, every
-        # following page for this channel would only be older still, so
-        # stop paging it now rather than fetching (and immediately
-        # discarding) the rest of its history.
-        page_exhausted_by_since = (
-            since is not None and bool(raw_messages) and not messages
+        next_state, has_more = self._advance_channel_cursor(
+            channel_index, len(client.channels), payload.get("@odata.nextLink")
         )
-        graph_next_link = None if page_exhausted_by_since else payload.get("@odata.nextLink")
-
-        if graph_next_link:
-            next_state = {"channel_index": channel_index, "next_link": graph_next_link}
-            has_more = True
-        else:
-            next_channel_index = channel_index + 1
-            next_state = {"channel_index": next_channel_index, "next_link": None}
-            has_more = next_channel_index < len(client.channels)
-
         return FetchResult(
             items=messages,
             next_cursor=json.dumps(next_state) if has_more else None,
             has_more=has_more,
+        )
+
+    async def _fetch_incremental_page(
+        self,
+        client: _TeamsClient,
+        channel_index: int,
+        channel_id: str,
+        next_link: str | None,
+        since: datetime,
+    ) -> FetchResult:
+        """An incremental sync's page: Graph's delta query, resumed from
+        `client.resume_state[channel_id]`'s saved deltaLink when one
+        exists, or started fresh with a server-side `lastModifiedDateTime`
+        filter otherwise -- see module docstring for why no client-side
+        re-filtering is layered on top of either.
+        """
+        if next_link is not None:
+            response = await client.http.get(next_link)
+        else:
+            saved_delta_link = client.resume_state.get(channel_id)
+            if saved_delta_link:
+                response = await client.http.get(saved_delta_link)
+            else:
+                since_str = since.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                response = await client.http.get(
+                    f"teams/{client.team_id}/channels/{channel_id}/messages/delta",
+                    params={
+                        "$top": _MESSAGES_PAGE_SIZE,
+                        "$filter": f"lastModifiedDateTime gt {since_str}",
+                    },
+                )
+        response.raise_for_status()
+        payload = response.json()
+
+        messages: list[dict[str, Any]] = payload.get("value", [])
+        for message in messages:
+            message["_channel_id"] = channel_id
+
+        graph_next_link = payload.get("@odata.nextLink")
+        resume_token_out: str | None = None
+        if not graph_next_link:
+            graph_delta_link = payload.get("@odata.deltaLink")
+            if graph_delta_link:
+                client.resume_state[channel_id] = graph_delta_link
+                resume_token_out = json.dumps(client.resume_state)
+
+        next_state, has_more = self._advance_channel_cursor(
+            channel_index, len(client.channels), graph_next_link
+        )
+        return FetchResult(
+            items=messages,
+            next_cursor=json.dumps(next_state) if has_more else None,
+            has_more=has_more,
+            resume_token=resume_token_out,
+        )
+
+    @staticmethod
+    def _advance_channel_cursor(
+        channel_index: int, channel_count: int, graph_next_link: str | None
+    ) -> tuple[dict[str, Any], bool]:
+        """Shared "stay on this channel or move to the next one" cursor
+        transition both `_fetch_full_sync_page` and `_fetch_incremental_page`
+        need identically -- the only difference between them is which Graph
+        endpoint/query produced `graph_next_link`, not how to react to it.
+        """
+        if graph_next_link:
+            return {"channel_index": channel_index, "next_link": graph_next_link}, True
+        next_channel_index = channel_index + 1
+        return (
+            {"channel_index": next_channel_index, "next_link": None},
+            next_channel_index < channel_count,
         )
 
     def normalize(self, raw_item: Any) -> RawDocument:
@@ -247,26 +344,6 @@ class TeamsConnector:
     async def close(self, client: _TeamsClient) -> None:
         """Close the underlying `httpx.AsyncClient` opened by `authenticate`."""
         await client.http.aclose()
-
-    @staticmethod
-    def _is_recent_enough(message: dict[str, Any], since: datetime) -> bool:
-        """Client-side `since` filter -- see module docstring's "Known
-        limitations" note on why this isn't a server-side query parameter.
-        Messages with an unparseable/missing `createdDateTime` are kept
-        (same "absence of a timestamp isn't evidence of staleness" reasoning
-        `agents.service._passes_recency_filter` already uses elsewhere in
-        this codebase), not silently dropped.
-        """
-        raw_timestamp = message.get("createdDateTime")
-        if not raw_timestamp:
-            return True
-        try:
-            created_at = datetime.fromisoformat(raw_timestamp.replace("Z", "+00:00"))
-        except ValueError:
-            return True
-        if created_at.tzinfo is None:
-            created_at = created_at.replace(tzinfo=timezone.utc)
-        return created_at >= since
 
     @staticmethod
     def _decode_cursor(cursor: str | None) -> tuple[int, str | None]:
