@@ -1,0 +1,13 @@
+# Dependencies for this test harness ONLY. Install into the SAME virtualenv
+# as the main project (`pip install -r requirements.txt` at the repo root)
+# so that common/bootstrap.py and common/jwt_tools.py can import `app.*`
+# successfully -- this file does not duplicate the project's own
+# dependencies (SQLAlchemy, FastAPI, python-jose, etc.), it only adds the
+# couple of things unique to this harness's role as an HTTP client.
+#
+# Install:
+#   pip install -r requirements.txt                          (repo root, first)
+#   pip install -r scripts/realworld_onboarding/requirements.txt
+
+httpx>=0.27          # this harness's own HTTP client (common/http.py)
+python-dotenv>=1.0   # loads scripts/realworld_onboarding/.env (common/config.py)

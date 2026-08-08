@@ -1,0 +1,42 @@
+[
+  {
+    "question": "Where is the authentication configuration documented?",
+    "expected_sources": ["documentation", "code"]
+  },
+  {
+    "question": "What was the latest incident related to payments?",
+    "expected_sources": ["runbooks"]
+  },
+  {
+    "question": "Which engineer changed the database schema?",
+    "expected_sources": ["github"]
+  },
+  {
+    "question": "Show me the deployment process.",
+    "expected_sources": ["documentation"]
+  },
+  {
+    "question": "What are the required environment variables?",
+    "expected_sources": ["documentation", "code"]
+  },
+  {
+    "question": "How does authentication work?",
+    "expected_sources": ["documentation", "code"]
+  },
+  {
+    "question": "Who modified the ingestion pipeline?",
+    "expected_sources": ["github"]
+  },
+  {
+    "question": "What is the SSO configuration process for a new organization?",
+    "expected_sources": ["documentation"]
+  },
+  {
+    "question": "What are the open action items from the most recent postmortem?",
+    "expected_sources": ["runbooks"]
+  },
+  {
+    "question": "What was discussed in the most recent incident channel conversation?",
+    "expected_sources": ["conversations"]
+  }
+]
