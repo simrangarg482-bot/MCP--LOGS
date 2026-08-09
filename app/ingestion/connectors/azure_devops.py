@@ -69,7 +69,14 @@ _API_VERSION = "7.1"
 # stable at `_API_VERSION`) -- a separate constant so that distinction
 # stays visible at each call site rather than silently reusing the stable
 # version string for an endpoint that doesn't actually support it.
-_COMMENTS_API_VERSION = "7.1-preview.3"
+#
+# Pinned to `preview.4`, the version Microsoft currently documents for
+# `wit/comments`. This was `preview.3`, which is superseded: preview API
+# revisions carry no stability guarantee and older ones can be withdrawn
+# without the notice a GA version gets, so a superseded preview pin is a
+# standing outage risk. Re-check this constant against Microsoft's own
+# `wit/comments` reference whenever this connector is touched.
+_COMMENTS_API_VERSION = "7.1-preview.4"
 _BATCH_SIZE = 200  # Azure DevOps' documented max ids per workitemsbatch call.
 _FIELDS = [
     "System.Title",
@@ -219,16 +226,42 @@ class AzureDevOpsConnector:
         """Run a WIQL query scoped to `project`, returning matching work item
         IDs in `System.ChangedDate` order (oldest first, so pagination is
         stable across the batches within one sync run).
+
+        `timePrecision=true` is required whenever `since` contributes a
+        datetime literal to the query. WIQL defaults to *date* precision and
+        rejects a literal carrying a time component outright, with:
+
+            VssPropertyValidationException -- "You cannot supply a time with
+            the date when running a query using date precision."
+
+        That is an HTTP 400, and `since` is non-None for every sync after
+        the first (`_execute_ingestion_job` passes `last_synced_at`), so
+        without this parameter every incremental Azure DevOps sync failed
+        while only the initial full sync succeeded. Confirmed against the
+        live API: identical query 400s without the flag and returns 200
+        with it.
+
+        Sent only when `since` is set. A full sync builds no datetime
+        literal, so the flag would be meaningless there -- and keeping the
+        unfiltered query on default date precision leaves the first sync's
+        behavior exactly as it was.
+
+        Truncating the literal to a date instead was the other option that
+        the live API accepts, and was rejected: it would silently widen
+        every incremental sync to a whole day, re-fetching and re-processing
+        up to 24 hours of already-ingested work items on each run.
         """
         wiql = "SELECT [System.Id] FROM WorkItems"
+        params: dict[str, Any] = {"api-version": _API_VERSION}
         if since is not None:
             since_str = since.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             wiql += f" WHERE [System.ChangedDate] >= '{since_str}'"
+            params["timePrecision"] = "true"
         wiql += " ORDER BY [System.ChangedDate] ASC"
 
         response = await http.post(
             f"{project}/_apis/wit/wiql",
-            params={"api-version": _API_VERSION},
+            params=params,
             json={"query": wiql},
         )
         response.raise_for_status()

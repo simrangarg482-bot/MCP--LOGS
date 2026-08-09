@@ -130,11 +130,24 @@ class TeamsConnector:
         """Build an authenticated Graph client from `config`.
 
         `config.credential_ref` is treated as a literal, already-issued
-        bearer access token -- see module docstring. Calls `GET /me` once so
-        an invalid/expired token fails loudly here rather than on the first
-        real fetch, matching `SlackConnector.authenticate`'s `auth.test`
-        precedent (Graph has no dedicated "verify this token" endpoint, but
-        `/me` is a cheap, always-available call for any valid token).
+        bearer access token -- see module docstring. Probes `GET
+        /teams/{team_id}` once so an invalid/expired token, or a wrong
+        `team_id`, fails loudly here rather than on the first real fetch,
+        matching `SlackConnector.authenticate`'s `auth.test` precedent.
+
+        NOT `GET /me`, which this connector used originally: `/me` resolves
+        the *signed-in user* and is only valid for delegated authentication.
+        An application-permission (client-credentials) token has no user
+        context at all, so Graph rejects `/me` outright with
+        `NoPermissionsInAccessToken` -- and client-credentials is exactly
+        what this module's own docstring tells operators to configure. The
+        old probe therefore failed for the recommended credential type
+        before a single message was ever fetched.
+
+        `/teams/{team_id}` is a better probe on its own merits regardless of
+        token type: it validates the token AND that the configured team
+        actually exists and is reachable, in one call, and works for both
+        delegated and application-permission tokens.
         """
         team_id = config.config.get("team_id", "")
         if not team_id:
@@ -146,7 +159,7 @@ class TeamsConnector:
             timeout=30.0,
         )
         try:
-            response = await http.get("me")
+            response = await http.get(f"teams/{team_id}")
             response.raise_for_status()
         except Exception:
             await http.aclose()

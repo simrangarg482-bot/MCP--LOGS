@@ -487,6 +487,173 @@ async def test_execute_ingestion_job_ignores_resume_token_for_unsupporting_conne
     )
 
 
+class _ExplodingConnector(_RecordingConnector):
+    """Authenticates fine, then fails inside the fetch loop -- the shape of
+    a real mid-sync failure (API 500, expired token, rate-limit rejection).
+    """
+
+    source_name = "exploding_source"
+
+    async def fetch_batch(self, client, *, since, cursor):
+        raise RuntimeError("simulated upstream API failure during fetch")
+
+
+@pytest.mark.asyncio
+async def test_failed_ingestion_job_leaves_a_durable_failure_record(monkeypatch) -> None:
+    """Regression test for a real production bug: a failed job used to erase
+    its own failure record.
+
+    `_execute_ingestion_job` writes `status="failed"` and then used to
+    re-raise. The whole call runs inside the single transaction the
+    caller's `session_scope()` opened, and that helper's contract is
+    "commit on normal return, roll back on any escaping exception" -- so the
+    re-raise rolled back the very `status="failed"` write (and the original
+    `insert_ingestion_job` row with it). Every failed ingestion job left
+    ZERO trace in `ingestion_jobs`: operators saw no failed jobs, not
+    because none failed, but because each one deleted its own evidence.
+
+    The fix is that the failure path returns normally instead of raising.
+    This test therefore asserts BOTH halves:
+      - the failure is fully recorded (status/stage/timestamp/job id), and
+      - nothing propagates out, so `session_scope()` reaches its commit.
+    """
+    organization_id = uuid.uuid4()
+    config_row = _FakeConnectorConfigRow(
+        organization_id=organization_id,
+        source="exploding_source",
+        credential_ref=encrypt_secret(get_kms(), "irrelevant-for-this-test"),
+    )
+    fake_connector = _ExplodingConnector()
+    job_updates: list[dict] = []
+    sync_status_updates: list[dict] = []
+    inserted_job_id: uuid.UUID | None = None
+
+    async def fake_resolve_connector_config_organization_id(session, connector_config_id):
+        return organization_id
+
+    async def fake_get_connector_config(session, connector_config_id):
+        return config_row
+
+    async def fake_insert_ingestion_job(session, *, organization_id, connector_config_id):
+        nonlocal inserted_job_id
+        row = _FakeJobRow(organization_id, connector_config_id)
+        inserted_job_id = row.id
+        return row
+
+    async def fake_update_ingestion_job(session, job_id, **fields):
+        job_updates.append({"job_id": job_id, **fields})
+        row = _FakeJobRow(organization_id, config_row.id)
+        row.id = job_id
+        for key, value in fields.items():
+            setattr(row, key, value)
+        return row
+
+    async def fake_update_connector_sync_status(session, actor, org_id, connector_config_id, **kwargs):
+        sync_status_updates.append(kwargs)
+        return None
+
+    async def fake_set_tenant_context(session, org_id) -> None:
+        return None
+
+    monkeypatch.setitem(ingestion_service._CONNECTOR_REGISTRY, "exploding_source", fake_connector)
+    monkeypatch.setattr(
+        ingestion_service.repository,
+        "resolve_connector_config_organization_id",
+        fake_resolve_connector_config_organization_id,
+    )
+    monkeypatch.setattr(ingestion_service.repository, "get_connector_config", fake_get_connector_config)
+    monkeypatch.setattr(ingestion_service.repository, "insert_ingestion_job", fake_insert_ingestion_job)
+    monkeypatch.setattr(ingestion_service.repository, "update_ingestion_job", fake_update_ingestion_job)
+    monkeypatch.setattr(
+        ingestion_service.tenancy_service,
+        "update_connector_sync_status",
+        fake_update_connector_sync_status,
+    )
+    monkeypatch.setattr(ingestion_service, "set_tenant_context", fake_set_tenant_context)
+
+    # Must NOT raise -- an escaping exception is exactly what used to reach
+    # `session_scope()` and roll the failure record back.
+    job = await ingestion_service._execute_ingestion_job(
+        _FakeSession(), config_row.id, force_full_sync=True
+    )
+
+    assert job.status == "failed"
+    assert job.failed_stage == "fetch", "the stage that actually failed must be recorded"
+    assert job.id == inserted_job_id, "the failure must be recorded against the original job row"
+    assert job.completed_at is not None, "a failed job must carry a completion timestamp"
+
+    failure_writes = [u for u in job_updates if u.get("status") == "failed"]
+    assert len(failure_writes) == 1, f"expected exactly one failure write, got {job_updates}"
+    assert failure_writes[0]["job_id"] == inserted_job_id
+
+    assert sync_status_updates and sync_status_updates[-1]["status"] == "error", (
+        "the connector itself must be marked errored so operators can see it in tenancy"
+    )
+    assert fake_connector.closed is True, "the connector client must still be closed on failure"
+
+
+@pytest.mark.asyncio
+async def test_failed_ingestion_job_does_not_report_documents_processed(monkeypatch) -> None:
+    """The savepoint rolls back every document written by the failed attempt,
+    so reporting a non-zero count would claim documents that no longer
+    exist.
+    """
+    organization_id = uuid.uuid4()
+    config_row = _FakeConnectorConfigRow(
+        organization_id=organization_id,
+        source="exploding_source",
+        credential_ref=encrypt_secret(get_kms(), "irrelevant-for-this-test"),
+    )
+    job_updates: list[dict] = []
+
+    async def fake_update_ingestion_job(session, job_id, **fields):
+        job_updates.append(fields)
+        row = _FakeJobRow(organization_id, config_row.id)
+        row.id = job_id
+        for key, value in fields.items():
+            setattr(row, key, value)
+        return row
+
+    async def _noop_sync_status(session, actor, org_id, connector_config_id, **kwargs):
+        return None
+
+    monkeypatch.setitem(ingestion_service._CONNECTOR_REGISTRY, "exploding_source", _ExplodingConnector())
+    monkeypatch.setattr(
+        ingestion_service.repository,
+        "resolve_connector_config_organization_id",
+        lambda session, cid: _async_return(organization_id),
+    )
+    monkeypatch.setattr(
+        ingestion_service.repository, "get_connector_config", lambda s, c: _async_return(config_row)
+    )
+    monkeypatch.setattr(
+        ingestion_service.repository,
+        "insert_ingestion_job",
+        lambda session, *, organization_id, connector_config_id: _async_return(
+            _FakeJobRow(organization_id, connector_config_id)
+        ),
+    )
+    monkeypatch.setattr(ingestion_service.repository, "update_ingestion_job", fake_update_ingestion_job)
+    monkeypatch.setattr(
+        ingestion_service.tenancy_service, "update_connector_sync_status", _noop_sync_status
+    )
+    monkeypatch.setattr(
+        ingestion_service, "set_tenant_context", lambda session, org: _async_return(None)
+    )
+
+    await ingestion_service._execute_ingestion_job(
+        _FakeSession(), config_row.id, force_full_sync=True
+    )
+
+    failure_writes = [u for u in job_updates if u.get("status") == "failed"]
+    assert failure_writes, "no failure write recorded"
+    assert "documents_processed" not in failure_writes[0]
+
+
+async def _async_return(value):
+    return value
+
+
 @pytest.mark.asyncio
 async def test_execute_ingestion_job_acquires_both_rate_limit_buckets(monkeypatch) -> None:
     organization_id = uuid.uuid4()

@@ -8,12 +8,15 @@ object back.
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
 import pytest
 
+from app.ingestion.connectors import teams as teams_module
 from app.ingestion.connectors.teams import TeamsConnector, _TeamsClient
+from app.ingestion.schemas import ResolvedConnectorConfig
 
 
 class _FakeResponse:
@@ -314,6 +317,90 @@ async def test_fetch_batch_incremental_resume_state_survives_across_channels() -
         "19:channel-1": delta_link_1,
         "19:channel-2": delta_link_2,
     }
+
+
+# --- authenticate: the credential probe ----------------------------------
+#
+# These are unit tests of WHICH endpoint the probe calls, with httpx faked --
+# they do NOT contact Microsoft Graph and are NOT evidence that a real token
+# works. Live verification requires a real Graph token; see
+# scripts/live_connector_tests/.
+
+
+class _FakeAsyncClient:
+    """Records every URL requested, so a test can assert which endpoint the
+    credential probe actually hit."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        self.kwargs = kwargs
+        self.requested: list[str] = []
+        self.closed = False
+
+    async def get(self, url: str, params: dict[str, Any] | None = None) -> _FakeResponse:
+        self.requested.append(url)
+        return _FakeResponse({})
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+def _install_fake_httpx(monkeypatch) -> list[_FakeAsyncClient]:
+    created: list[_FakeAsyncClient] = []
+
+    def _factory(**kwargs: Any) -> _FakeAsyncClient:
+        client = _FakeAsyncClient(**kwargs)
+        created.append(client)
+        return client
+
+    monkeypatch.setattr(teams_module.httpx, "AsyncClient", _factory)
+    return created
+
+
+def _resolved_config(**config: Any) -> ResolvedConnectorConfig:
+    return ResolvedConnectorConfig(
+        connector_config_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        project_id=None,
+        source="teams",
+        credential_ref="fake-graph-token",
+        config=config,
+    )
+
+
+@pytest.mark.asyncio
+async def test_authenticate_probes_configured_team_and_never_me(monkeypatch) -> None:
+    """`/me` only resolves a signed-in user and is invalid for
+    application-permission (client-credentials) tokens -- the credential
+    type this connector's own docstring recommends. The probe must target
+    the configured team instead.
+    """
+    created = _install_fake_httpx(monkeypatch)
+
+    await TeamsConnector().authenticate(
+        _resolved_config(team_id="team-1", channels=["19:channel-1"])
+    )
+
+    assert created[0].requested == ["teams/team-1"]
+    assert "me" not in created[0].requested
+
+
+@pytest.mark.asyncio
+async def test_authenticate_uses_the_configured_team_id_verbatim(monkeypatch) -> None:
+    created = _install_fake_httpx(monkeypatch)
+
+    await TeamsConnector().authenticate(
+        _resolved_config(team_id="19:some-other-team-guid", channels=[])
+    )
+
+    assert created[0].requested == ["teams/19:some-other-team-guid"]
+
+
+@pytest.mark.asyncio
+async def test_authenticate_still_requires_team_id(monkeypatch) -> None:
+    _install_fake_httpx(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="team_id"):
+        await TeamsConnector().authenticate(_resolved_config(channels=["19:channel-1"]))
 
 
 def test_decode_cursor_defaults_to_first_channel() -> None:

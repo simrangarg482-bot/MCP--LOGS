@@ -106,17 +106,37 @@ class SharePointConnector:
 
         `config.credential_ref` is treated as a literal, already-issued
         bearer access token -- same flagged placeholder as
-        `TeamsConnector.authenticate`. Calls `GET /me` once so an invalid/
-        expired token fails loudly here rather than on the first real
+        `TeamsConnector.authenticate`. Probes `GET /sites/{site_id}` against
+        the first configured site once, so an invalid/expired token, or an
+        unreachable site id, fails loudly here rather than on the first real
         fetch.
+
+        NOT `GET /me`, which this connector used originally: `/me` resolves
+        the *signed-in user* and is only valid for delegated authentication.
+        An application-permission (client-credentials) token has no user
+        context, so Graph rejects `/me` with `NoPermissionsInAccessToken` --
+        and client-credentials is exactly what this module's own docstring
+        tells operators to configure. See `TeamsConnector.authenticate`,
+        which had the identical defect and is fixed the same way.
+
+        `site_ids` is now read *before* the probe (it was read after), since
+        the probe needs a site to call. A config with no `site_ids` at all
+        raises rather than authenticating: there is nothing to probe, and
+        nothing this connector could ever fetch -- the same "missing
+        required config fails loudly at authenticate()" treatment
+        `TeamsConnector` already gives a missing `team_id`.
         """
+        site_ids = list(config.config.get("site_ids", []))
+        if not site_ids:
+            raise RuntimeError("SharePoint connector config is missing required 'site_ids'")
+
         http = httpx.AsyncClient(
             base_url=_GRAPH_API_BASE_URL,
             headers={"Authorization": f"Bearer {config.credential_ref}"},
             timeout=30.0,
         )
         try:
-            response = await http.get("me")
+            response = await http.get(f"sites/{site_ids[0]}")
             response.raise_for_status()
         except Exception:
             await http.aclose()
@@ -126,7 +146,6 @@ class SharePointConnector:
             )
             raise
 
-        site_ids = list(config.config.get("site_ids", []))
         logger.info(
             "sharepoint_authenticate_succeeded",
             connector_config_id=str(config.connector_config_id),

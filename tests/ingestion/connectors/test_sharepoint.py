@@ -19,6 +19,7 @@ the result, without re-verifying the parsing.
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
@@ -26,6 +27,7 @@ import pytest
 
 from app.ingestion.connectors import sharepoint as sharepoint_module
 from app.ingestion.connectors.sharepoint import SharePointConnector, _SharePointClient
+from app.ingestion.schemas import ResolvedConnectorConfig
 
 
 class _FakeResponse:
@@ -374,6 +376,89 @@ async def test_fetch_batch_resumes_from_next_link_cursor() -> None:
     result = await connector.fetch_batch(client, since=None, cursor=cursor)
 
     assert [item["id"] for item in result.items] == ["item-2"]
+
+
+# --- authenticate: the credential probe ----------------------------------
+#
+# Unit tests of WHICH endpoint the probe calls, with httpx faked -- they do
+# NOT contact Microsoft Graph and are NOT evidence that a real token works.
+# Live verification requires a real Graph token; see
+# scripts/live_connector_tests/.
+
+
+class _FakeAsyncClient:
+    def __init__(self, **kwargs: Any) -> None:
+        self.kwargs = kwargs
+        self.requested: list[str] = []
+        self.closed = False
+
+    async def get(self, url: str, params: dict[str, Any] | None = None) -> _FakeResponse:
+        self.requested.append(url)
+        return _FakeResponse({})
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+def _install_fake_httpx(monkeypatch) -> list[_FakeAsyncClient]:
+    created: list[_FakeAsyncClient] = []
+
+    def _factory(**kwargs: Any) -> _FakeAsyncClient:
+        client = _FakeAsyncClient(**kwargs)
+        created.append(client)
+        return client
+
+    monkeypatch.setattr(sharepoint_module.httpx, "AsyncClient", _factory)
+    return created
+
+
+def _resolved_config(**config: Any) -> ResolvedConnectorConfig:
+    return ResolvedConnectorConfig(
+        connector_config_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        project_id=None,
+        source="sharepoint",
+        credential_ref="fake-graph-token",
+        config=config,
+    )
+
+
+@pytest.mark.asyncio
+async def test_authenticate_probes_first_configured_site_and_never_me(monkeypatch) -> None:
+    """`/me` only resolves a signed-in user and is invalid for
+    application-permission (client-credentials) tokens -- the credential
+    type this connector's own docstring recommends. The probe must target a
+    configured site instead.
+    """
+    created = _install_fake_httpx(monkeypatch)
+
+    await SharePointConnector().authenticate(_resolved_config(site_ids=["site-1", "site-2"]))
+
+    assert created[0].requested == ["sites/site-1"]
+    assert "me" not in created[0].requested
+
+
+@pytest.mark.asyncio
+async def test_authenticate_uses_the_configured_site_id_verbatim(monkeypatch) -> None:
+    created = _install_fake_httpx(monkeypatch)
+
+    await SharePointConnector().authenticate(
+        _resolved_config(site_ids=["contoso.sharepoint.com,guid-a,guid-b"])
+    )
+
+    assert created[0].requested == ["sites/contoso.sharepoint.com,guid-a,guid-b"]
+
+
+@pytest.mark.asyncio
+async def test_authenticate_requires_site_ids(monkeypatch) -> None:
+    """With no sites configured there is nothing to probe and nothing this
+    connector could ever fetch -- same treatment `TeamsConnector` gives a
+    missing `team_id`.
+    """
+    _install_fake_httpx(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="site_ids"):
+        await SharePointConnector().authenticate(_resolved_config())
 
 
 def test_decode_cursor_defaults_to_first_site() -> None:

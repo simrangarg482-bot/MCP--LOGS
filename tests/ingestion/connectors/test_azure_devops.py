@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 
+from app.ingestion.connectors import azure_devops as azure_devops_module
 from app.ingestion.connectors.azure_devops import AzureDevOpsConnector, _AzureDevOpsClient
 
 
@@ -41,17 +42,21 @@ class _FakeHttpClient:
         self._responses = responses
         self.requests: list[tuple[str, dict[str, Any] | None]] = []
         self.get_urls: list[str] = []
+        self.get_calls: list[tuple[str, dict[str, Any]]] = []
+        self.post_calls: list[tuple[str, dict[str, Any], Any]] = []
 
     async def post(
         self, url: str, params: dict[str, Any] | None = None, json: Any = None
     ) -> _FakeResponse:
         self.requests.append((url, json))
+        self.post_calls.append((url, params or {}, json))
         value = self._responses[url]
         payload = value(json) if callable(value) else value
         return _FakeResponse(payload)
 
     async def get(self, url: str, params: dict[str, Any] | None = None) -> _FakeResponse:
         self.get_urls.append(url)
+        self.get_calls.append((url, params or {}))
         value = self._responses[url]
         payload = value(params or {}) if callable(value) else value
         return _FakeResponse(payload)
@@ -338,6 +343,87 @@ async def test_fetch_batch_skips_comments_call_when_work_item_has_none() -> None
 
     assert client.http.get_urls == []
     assert result.items[0]["_comments_text"] == ""
+
+
+# --- WIQL date precision --------------------------------------------------
+
+
+def _wiql_params(client) -> dict[str, Any]:
+    return next(params for url, params, _body in client.http.post_calls if url.endswith("/wiql"))
+
+
+@pytest.mark.asyncio
+async def test_incremental_query_sends_time_precision() -> None:
+    """Regression test for a real, live-reproduced HTTP 400. WIQL defaults to
+    date precision and rejects a datetime literal outright
+    ("You cannot supply a time with the date when running a query using date
+    precision"). `since` is non-None for every sync after the first, so
+    without `timePrecision=true` every incremental Azure DevOps sync failed
+    while only the initial full sync worked.
+    """
+    connector = AzureDevOpsConnector()
+    client = _client(["ProjA"], **{"ProjA/_apis/wit/wiql": {"workItems": []}})
+    since = datetime(2026, 7, 1, 12, 30, tzinfo=timezone.utc)
+
+    await connector.fetch_batch(client, since=since, cursor=None)
+
+    params = _wiql_params(client)
+    assert params["timePrecision"] == "true"
+    assert params["api-version"] == "7.1"
+
+
+@pytest.mark.asyncio
+async def test_full_sync_query_omits_time_precision() -> None:
+    """A full sync builds no datetime literal, so the flag would be
+    meaningless -- and omitting it keeps the first sync's request byte-for-
+    byte as it was before the incremental fix.
+    """
+    connector = AzureDevOpsConnector()
+    client = _client(["ProjA"], **{"ProjA/_apis/wit/wiql": {"workItems": []}})
+
+    await connector.fetch_batch(client, since=None, cursor=None)
+
+    assert "timePrecision" not in _wiql_params(client)
+
+
+# --- API version pinning --------------------------------------------------
+
+
+def test_comments_endpoint_pinned_to_currently_documented_preview_version() -> None:
+    """`wit/comments` is preview-only, and preview revisions can be
+    withdrawn without the notice a GA version gets -- so a superseded pin is
+    a standing outage risk. `preview.4` is what Microsoft currently
+    documents; this previously pinned the superseded `preview.3`.
+    """
+    assert azure_devops_module._COMMENTS_API_VERSION == "7.1-preview.4"
+    # The stable endpoints must NOT have been dragged onto a preview version.
+    assert azure_devops_module._API_VERSION == "7.1"
+
+
+@pytest.mark.asyncio
+async def test_comments_call_sends_the_preview_api_version() -> None:
+    """Asserts the version actually reaches the wire, not just that the
+    constant holds the right string.
+    """
+    wiql_payload = {"workItems": [{"id": 1}]}
+    batch_payload = {"value": [_work_item(1, comment_count=1)]}
+    comments_payload = {"comments": [{"createdBy": {"displayName": "Jane"}, "text": "hi"}]}
+    client = _client(
+        ["ProjA"],
+        **{
+            "ProjA/_apis/wit/wiql": wiql_payload,
+            "_apis/wit/workitemsbatch": batch_payload,
+            "ProjA/_apis/wit/workItems/1/comments": comments_payload,
+        },
+    )
+
+    await AzureDevOpsConnector().fetch_batch(client, since=None, cursor=None)
+
+    comment_calls = [
+        params for url, params in client.http.get_calls if url.endswith("/comments")
+    ]
+    assert comment_calls, "the comments endpoint was never called"
+    assert comment_calls[0]["api-version"] == "7.1-preview.4"
 
 
 def test_decode_cursor_defaults_to_first_project() -> None:

@@ -115,6 +115,31 @@ class ConfluenceConnector:
         /wiki/rest/api/space` (limit 1) once so a misconfigured/revoked
         token or wrong `base_url` fails loudly here rather than on the first
         real fetch.
+
+        DELIBERATELY STILL ON v1 -- reviewed, not overlooked. Confluence
+        Cloud's v1 REST API (`/wiki/rest/api`) is broadly deprecated in
+        favour of v2 (`/wiki/api/v2`), and this probe's v1 `space` endpoint
+        does have a v2 replacement (`/wiki/api/v2/spaces`). It was left
+        unchanged anyway, for three reasons:
+
+        1. This connector cannot leave v1 regardless. CQL content search --
+           what `fetch_batch` is built on -- exists ONLY in v1; v2 has no
+           equivalent, and Atlassian has stated it does not plan to
+           deprecate the search endpoint for that reason. Moving just the
+           probe to v2 would make this a two-API-version connector while
+           the far larger v1 dependency stayed exactly where it is.
+        2. There are no Confluence credentials configured in this project,
+           so a change here could not be verified against a real instance.
+           Swapping a working auth probe for an unverified one is precisely
+           the failure mode that left `TeamsConnector`/`SharePointConnector`
+           calling `/me` -- an endpoint that cannot work with the
+           credentials their own docstrings recommend -- undetected.
+        3. The v1 sunset has been extended repeatedly and this endpoint
+           still works today, so there is no forced deadline to act on.
+
+        Revisit if either changes: Atlassian setting a firm v1 removal
+        date, or real Confluence credentials becoming available to verify a
+        v2 probe against.
         """
         base_url = config.config.get("base_url", "").rstrip("/")
         if not base_url:
