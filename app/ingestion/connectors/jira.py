@@ -31,7 +31,35 @@ Uses Jira's REST API **v2**, not v3, deliberately: v3's `description`/
 plain text), which would need its own ADF-to-text renderer to be usable as
 ingestible content -- out of scope for a first connector pass. v2 returns
 `description` as a plain string, matching every other connector's
-`RawDocument.content` expectation with no extra rendering step.
+`RawDocument.content` expectation with no extra rendering step. Atlassian's
+own migration guidance for the endpoint below names the v3 path, but
+`search/jql` exists under v2 as well, so this connector stays on v2 and
+keeps its plain-text bodies rather than taking on an ADF renderer purely as
+a side effect of an endpoint migration.
+
+Searches via `GET /rest/api/2/search/jql`. The endpoint this connector
+originally used, `GET /rest/api/2/search`, no longer exists: Atlassian
+deprecated it in May 2025, progressively shut it down between August and
+October 2025, and it now returns **HTTP 410 Gone** for every request
+(changelog CHANGE-2046). This was not a theoretical migration -- Jira
+ingestion was failing outright against live Atlassian Cloud, with zero Jira
+documents ever reaching the database despite valid credentials, until this
+change.
+
+The replacement is not a drop-in rename; it changes the pagination model:
+
+- **Offsets are gone.** The old endpoint took `startAt` and returned
+  `total`, so a page's position and the end of the result set were both
+  computable. `search/jql` instead returns an opaque `nextPageToken` which
+  must be echoed back verbatim, and returns **no `total` at all** -- so
+  neither "where am I" nor "how many are left" is knowable, and this
+  connector's cursor envelope carries that token instead of an offset.
+- **`isLast` is not trusted alone.** Jira documents `isLast` as the
+  end-of-results signal, with `nextPageToken` absent once it is true. In
+  practice this endpoint has a well-reported history of `isLast` never
+  flipping and `nextPageToken` chaining endlessly, which would spin
+  `_execute_ingestion_job`'s fetch loop forever. `fetch_batch` therefore
+  treats an empty page as terminal too -- see its own comment.
 
 Comments are fetched per issue (`GET /rest/api/2/issue/{key}/comment`) and
 appended to `content` after a `"--- Comments ---"` delimiter, the exact
@@ -66,6 +94,11 @@ from app.shared.config.logging import get_logger
 logger = get_logger(__name__)
 
 _SEARCH_PAGE_SIZE = 50  # Jira's default/typical maxResults page size.
+# The JQL search endpoint, relative to this connector's `/rest/api/2/` base
+# URL. NOT the bare `search` this connector originally called: Atlassian
+# removed `GET /rest/api/2/search` outright (it now returns HTTP 410 Gone --
+# see the module docstring), and `search/jql` is its documented replacement.
+_SEARCH_PATH = "search/jql"
 _FIELDS = "summary,description,issuetype,status,assignee,reporter,created,updated,comment"
 
 
@@ -155,17 +188,19 @@ class JiraConnector:
         """Fetch one page of raw Jira issues from `client.projects`.
 
         A `connector_config` can list multiple project keys, but Jira's
-        `search` endpoint only ever searches one JQL query's results at a
+        search endpoint only ever searches one JQL query's results at a
         time -- `cursor` here is this connector's own opaque JSON envelope
-        `{"project_index": int, "start_at": int}`, the same "resume
+        `{"project_index": int, "page_token": str | None}`, the same "resume
         mid-list, not just mid-page" shape `SlackConnector`'s
-        `{"channel_index", "slack_cursor"}` cursor uses.
+        `{"channel_index", "slack_cursor"}` cursor uses. `page_token` is
+        Jira's own opaque `nextPageToken`, echoed back verbatim -- see the
+        module docstring for why this is a token and not an offset.
 
         Each raw item is Jira's issue dict with `"_project_key"` injected
         (needed by `normalize`, which only ever sees one self-contained
         `raw_item` at a time).
         """
-        project_index, start_at = self._decode_cursor(cursor)
+        project_index, page_token = self._decode_cursor(cursor)
 
         if project_index >= len(client.projects):
             return FetchResult(items=[], next_cursor=None, has_more=False)
@@ -177,15 +212,15 @@ class JiraConnector:
             jql += f' AND updated >= "{since_str}"'
         jql += " ORDER BY updated ASC"
 
-        response = await client.http.get(
-            "search",
-            params={
-                "jql": jql,
-                "startAt": start_at,
-                "maxResults": _SEARCH_PAGE_SIZE,
-                "fields": _FIELDS,
-            },
-        )
+        params: dict[str, Any] = {
+            "jql": jql,
+            "maxResults": _SEARCH_PAGE_SIZE,
+            "fields": _FIELDS,
+        }
+        if page_token:
+            params["nextPageToken"] = page_token
+
+        response = await client.http.get(_SEARCH_PATH, params=params)
         response.raise_for_status()
         payload = response.json()
 
@@ -197,16 +232,23 @@ class JiraConnector:
                 await self._fetch_comments_text(client.http, issue["key"]) if comment_total else ""
             )
 
-        total = payload.get("total", 0)
-        next_start_at = start_at + len(issues)
-        project_exhausted = next_start_at >= total or not issues
+        # Three independent end-of-project signals, any one of which stops
+        # this project: Jira's own `isLast`, the absence of a
+        # `nextPageToken`, and an empty page. Jira documents `isLast` as
+        # authoritative and `nextPageToken` as absent once it is true, but
+        # this endpoint has a well-reported field history of `isLast` never
+        # flipping and `nextPageToken` chaining forever -- so the empty-page
+        # check is a real termination guard against an infinite fetch loop,
+        # not defensive boilerplate. See the module docstring.
+        next_page_token = payload.get("nextPageToken")
+        project_exhausted = bool(payload.get("isLast")) or not next_page_token or not issues
 
         if not project_exhausted:
-            next_state = {"project_index": project_index, "start_at": next_start_at}
+            next_state = {"project_index": project_index, "page_token": next_page_token}
             has_more = True
         else:
             next_project_index = project_index + 1
-            next_state = {"project_index": next_project_index, "start_at": 0}
+            next_state = {"project_index": next_project_index, "page_token": None}
             has_more = next_project_index < len(client.projects)
 
         return FetchResult(
@@ -294,13 +336,20 @@ class JiraConnector:
         await client.http.aclose()
 
     @staticmethod
-    def _decode_cursor(cursor: str | None) -> tuple[int, int]:
+    def _decode_cursor(cursor: str | None) -> tuple[int, str | None]:
         """Parse this connector's opaque cursor envelope back into
-        `(project_index, start_at)`, defaulting to the first project at
-        `startAt=0` when `cursor` is None (a full sync's first page, or an
+        `(project_index, page_token)`, defaulting to the first project with
+        no page token when `cursor` is None (a full sync's first page, or an
         incremental sync's first page for this run).
+
+        `state.get("page_token")`, not `state["page_token"]`: a cursor
+        written by the previous, offset-based version of this connector
+        carries `start_at` instead, and a job resuming across that upgrade
+        must restart the project cleanly rather than raising `KeyError` --
+        Jira's page tokens are opaque and not derivable from an offset, so
+        restarting is the only correct interpretation of an old cursor.
         """
         if cursor is None:
-            return 0, 0
+            return 0, None
         state = json.loads(cursor)
-        return int(state["project_index"]), int(state["start_at"])
+        return int(state["project_index"]), state.get("page_token")

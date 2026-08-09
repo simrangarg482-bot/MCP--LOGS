@@ -1,0 +1,143 @@
+{
+  "_comment": [
+    "Real end-to-end RAG validation dataset for EKIP.",
+    "",
+    "Every `grounded` question below is answerable ONLY from content actually",
+    "ingested into the target organization by the real GitHub and Slack",
+    "connectors (plus one human-published knowledge document). The",
+    "`must_retrieve_any` / `expected_fact_groups` strings are taken verbatim",
+    "from that ingested content -- they are not invented, and they are not",
+    "paraphrases of what the model 'should probably say'. See README.md for how",
+    "each field is used as a pass/fail criterion.",
+    "",
+    "`negative` questions are deliberately NOT answerable from the corpus. Two",
+    "of them (k8s-autoscaling, aws-spend) are domain-adjacent and",
+    "plausible-sounding on purpose: those are the ones a weak RAG system",
+    "confabulates a confident answer for, which is exactly the failure mode",
+    "these controls exist to catch."
+  ],
+  "questions": [
+    {
+      "id": "sso-login-failure",
+      "kind": "grounded",
+      "question": "Why were users unable to log in through Google Workspace SSO, and what fixed it?",
+      "must_retrieve_any": ["OIDC", "Google Workspace", "redirect URI", "callback URL"],
+      "expected_fact_groups": [
+        ["redirect URI", "callback URL", "OIDC"],
+        ["updated", "corrected", "reconfigured", "fixed", "changed"]
+      ],
+      "expected_sources": ["github", "slack"]
+    },
+    {
+      "id": "embedding-worker-memory",
+      "kind": "grounded",
+      "question": "What caused the application containers to restart due to embedding worker memory usage, and what configuration change resolved it?",
+      "must_retrieve_any": ["embedding", "memory", "concurrency"],
+      "expected_fact_groups": [
+        ["concurrency", "worker"],
+        ["10 to 4", "from 10", "to 4"]
+      ],
+      "expected_sources": ["github", "slack"]
+    },
+    {
+      "id": "incidents-api-500",
+      "kind": "grounded",
+      "question": "Why does the incidents API return an HTTP 500 error when filtering by date range?",
+      "must_retrieve_any": ["500", "date filter", "date range", "incidents"],
+      "expected_fact_groups": [
+        ["SQL", "query builder", "query validation"],
+        ["empty date", "date filter", "validation", "invalid"]
+      ],
+      "expected_sources": ["github", "slack"]
+    },
+    {
+      "id": "brute-force-login",
+      "kind": "grounded",
+      "question": "What happened during the suspicious login attempts incident, and what mitigation was applied?",
+      "must_retrieve_any": ["failed login", "failed authentication", "brute", "rate limiting"],
+      "expected_fact_groups": [
+        ["rate limit"],
+        ["brute force", "failed", "locked"]
+      ],
+      "expected_sources": ["github", "slack"]
+    },
+    {
+      "id": "alembic-lock-timeout",
+      "kind": "grounded",
+      "question": "Why did the Alembic database migration fail with a lock timeout, and what solution was recommended?",
+      "must_retrieve_any": ["lock timeout", "migration"],
+      "expected_fact_groups": [
+        ["large table", "high traffic", "peak traffic"],
+        ["maintenance window", "low traffic", "batch"]
+      ],
+      "expected_sources": ["github", "slack"]
+    },
+    {
+      "id": "api-latency-analytics",
+      "kind": "grounded",
+      "question": "What caused the API latency increase after the analytics deployment, and how was it resolved?",
+      "must_retrieve_any": ["latency", "analytics", "index"],
+      "expected_fact_groups": [
+        ["index"],
+        ["user_activity", "user activity", "database"]
+      ],
+      "expected_sources": ["github", "slack"]
+    },
+    {
+      "id": "rag-retrieval-quality",
+      "kind": "grounded",
+      "question": "What changes were made to improve retrieval accuracy when the RAG system was returning irrelevant documents?",
+      "must_retrieve_any": ["retrieval", "chunk", "rerank"],
+      "expected_fact_groups": [
+        ["chunk size", "smaller chunk", "reduced chunk", "chunk"],
+        ["rerank", "cross encoder", "cross-encoder"]
+      ],
+      "expected_sources": ["github", "slack"]
+    },
+    {
+      "id": "checkout-500-runbook",
+      "kind": "grounded",
+      "question": "According to the runbook, what should be checked first when checkout returns a 500 error?",
+      "must_retrieve_any": ["payment adapter", "checkout"],
+      "expected_fact_groups": [
+        ["payment adapter"],
+        ["null"]
+      ],
+      "expected_sources": ["manual"]
+    },
+    {
+      "id": "deployment-version",
+      "kind": "grounded",
+      "question": "Which application version was deployed to production when the API latency problem began?",
+      "must_retrieve_any": ["2.4.0", "deployment", "latency"],
+      "expected_fact_groups": [
+        ["2.4.0"]
+      ],
+      "expected_sources": ["github", "slack"]
+    },
+    {
+      "id": "neg-parental-leave",
+      "kind": "negative",
+      "question": "What is our company's parental leave policy and how many weeks are paid?",
+      "why_unanswerable": "No HR/benefits content of any kind was ingested into this organization."
+    },
+    {
+      "id": "neg-world-cup",
+      "kind": "negative",
+      "question": "Who won the 2022 FIFA World Cup final and what was the score?",
+      "why_unanswerable": "Completely out of domain; answerable only from the LLM's parametric memory, never from retrieved evidence."
+    },
+    {
+      "id": "neg-k8s-autoscaling",
+      "kind": "negative",
+      "question": "What are the Kubernetes horizontal pod autoscaler CPU thresholds configured for the checkout service?",
+      "why_unanswerable": "Domain-adjacent and plausible-sounding, but there is no Kubernetes or autoscaling content in the corpus. A weak RAG system confabulates specific thresholds here."
+    },
+    {
+      "id": "neg-aws-spend",
+      "kind": "negative",
+      "question": "How much did we spend on AWS infrastructure in Q3 2025, and which service cost the most?",
+      "why_unanswerable": "Domain-adjacent and plausible-sounding, but no billing, cost, or cloud-spend data was ingested. A weak RAG system invents a dollar figure here."
+    }
+  ]
+}

@@ -46,6 +46,49 @@ import config as harness_config  # noqa: E402  (tests/ingestion_retrieval/config
 import utils as harness_utils  # noqa: E402  (tests/ingestion_retrieval/utils.py)
 
 
+@pytest.fixture(autouse=True)
+async def _fresh_engine_pool_per_event_loop():
+    """Drop the app engine's pooled connections before each async test.
+
+    WHY THIS EXISTS
+        `app.database.session.engine` is a module-level singleton with a
+        normal connection pool, and an asyncpg connection is permanently
+        bound to the event loop that opened it. Two things in this suite run
+        on *different* loops:
+
+          1. the session-scoped `organization_id` fixture below, which
+             bootstraps via `harness_utils.run_async` -> that harness's own
+             persistent `_shared_loop`; and
+          2. every `async def test_`, which `pytest-asyncio` (auto mode, per
+             `pyproject.toml`) runs on a fresh loop of its own.
+
+        So the bootstrap fills the pool with connections bound to the
+        harness loop, and the first database-touching test then borrows one
+        of those from a different loop -- `RuntimeError: Task got Future
+        attached to a different loop`, followed by `Event loop is closed`
+        during teardown. Only the runbooks connector hit this, because it is
+        the only connector that talks to the database at all; Slack/GitHub/
+        Jira use httpx, which opens a fresh connection per loop and is
+        therefore immune.
+
+        Disposing here (an async autouse fixture, so it runs *inside* the
+        same loop as the test that follows it) guarantees the test opens its
+        own connections on its own loop. The cost is one new connection per
+        test, which is irrelevant for a suite that is already making real
+        network calls to external APIs.
+
+    WHY NOT FIX IT IN THE APP INSTEAD
+        Nothing is wrong with the application here. A single long-lived
+        engine on a single loop is exactly right for the API server and the
+        arq workers. The mismatch is created purely by this suite running
+        two different loops in one process, so the fix belongs here.
+    """
+    from app.database.session import engine
+
+    await engine.dispose()
+    yield
+
+
 @pytest.fixture(scope="session")
 def cfg() -> harness_config.Config:
     return harness_config.load_config()

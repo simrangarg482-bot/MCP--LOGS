@@ -15,6 +15,11 @@ import pytest
 
 from app.ingestion.connectors.jira import JiraConnector, _JiraClient
 
+# The real search path. Not a valid Python identifier, so it cannot be passed
+# to `_client(...)` as a bare keyword the way `search=` used to be -- these
+# tests use `**{_SEARCH: payload}` instead.
+_SEARCH = "search/jql"
+
 
 class _FakeResponse:
     def __init__(self, payload: Any) -> None:
@@ -168,8 +173,8 @@ def test_normalize_issue_without_comments_omits_delimiter_and_count() -> None:
 @pytest.mark.asyncio
 async def test_fetch_batch_single_page_exhausts_project() -> None:
     connector = JiraConnector()
-    payload = {"issues": [_issue("OPS-1"), _issue("OPS-2")], "total": 2, "startAt": 0}
-    client = _client(["OPS"], search=payload)
+    payload = {"issues": [_issue("OPS-1"), _issue("OPS-2")], "isLast": True}
+    client = _client(["OPS"], **{_SEARCH: payload})
 
     result = await connector.fetch_batch(client, since=None, cursor=None)
 
@@ -180,36 +185,70 @@ async def test_fetch_batch_single_page_exhausts_project() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fetch_batch_more_results_than_page_advances_start_at() -> None:
+async def test_fetch_batch_more_results_carries_next_page_token() -> None:
     connector = JiraConnector()
-    payload = {"issues": [_issue("OPS-1")], "total": 5, "startAt": 0}
-    client = _client(["OPS"], search=payload)
+    payload = {"issues": [_issue("OPS-1")], "nextPageToken": "tok-2", "isLast": False}
+    client = _client(["OPS"], **{_SEARCH: payload})
 
     result = await connector.fetch_batch(client, since=None, cursor=None)
 
     assert result.has_more is True
     next_state = json.loads(result.next_cursor)
-    assert next_state == {"project_index": 0, "start_at": 1}
+    assert next_state == {"project_index": 0, "page_token": "tok-2"}
 
 
 @pytest.mark.asyncio
-async def test_fetch_batch_project_exhausted_advances_to_next_project() -> None:
+async def test_fetch_batch_is_last_advances_to_next_project_even_with_token() -> None:
+    """`isLast` wins over a still-present `nextPageToken` -- Jira documents
+    the token as absent once `isLast` is true, but this asserts the
+    connector does not keep paging if it is sent anyway.
+    """
     connector = JiraConnector()
-    payload = {"issues": [_issue("OPS-1")], "total": 1, "startAt": 0}
-    client = _client(["OPS", "ENG"], search=payload)
+    payload = {"issues": [_issue("OPS-1")], "nextPageToken": "tok-2", "isLast": True}
+    client = _client(["OPS", "ENG"], **{_SEARCH: payload})
 
     result = await connector.fetch_batch(client, since=None, cursor=None)
 
     assert result.has_more is True
     next_state = json.loads(result.next_cursor)
-    assert next_state == {"project_index": 1, "start_at": 0}
+    assert next_state == {"project_index": 1, "page_token": None}
+
+
+@pytest.mark.asyncio
+async def test_fetch_batch_missing_next_page_token_exhausts_project() -> None:
+    connector = JiraConnector()
+    payload = {"issues": [_issue("OPS-1")]}  # neither isLast nor nextPageToken
+    client = _client(["OPS", "ENG"], **{_SEARCH: payload})
+
+    result = await connector.fetch_batch(client, since=None, cursor=None)
+
+    assert result.has_more is True
+    next_state = json.loads(result.next_cursor)
+    assert next_state == {"project_index": 1, "page_token": None}
+
+
+@pytest.mark.asyncio
+async def test_fetch_batch_empty_page_terminates_even_if_jira_keeps_sending_tokens() -> None:
+    """Regression guard for the reported Jira behaviour where `isLast` never
+    flips and `nextPageToken` chains forever: an empty page must still end
+    the project, or `_execute_ingestion_job`'s fetch loop would never stop.
+    """
+    connector = JiraConnector()
+    payload = {"issues": [], "nextPageToken": "tok-endless", "isLast": False}
+    client = _client(["OPS"], **{_SEARCH: payload})
+
+    result = await connector.fetch_batch(client, since=None, cursor=None)
+
+    assert result.items == []
+    assert result.has_more is False
+    assert result.next_cursor is None
 
 
 @pytest.mark.asyncio
 async def test_fetch_batch_last_project_exhausted_ends_sync() -> None:
     connector = JiraConnector()
-    payload = {"issues": [_issue("ENG-1")], "total": 1, "startAt": 0}
-    client = _client(["ENG"], search=payload)
+    payload = {"issues": [_issue("ENG-1")], "isLast": True}
+    client = _client(["ENG"], **{_SEARCH: payload})
 
     result = await connector.fetch_batch(client, since=None, cursor=None)
 
@@ -238,9 +277,9 @@ async def test_fetch_batch_includes_since_in_jql() -> None:
 
     def fake_search(params: dict[str, Any]) -> dict[str, Any]:
         captured.update(params)
-        return {"issues": [], "total": 0, "startAt": 0}
+        return {"issues": [], "isLast": True}
 
-    client = _client(["OPS"], search=fake_search)
+    client = _client(["OPS"], **{_SEARCH: fake_search})
     since = datetime(2026, 7, 1, 12, 30, tzinfo=timezone.utc)
 
     await connector.fetch_batch(client, since=since, cursor=None)
@@ -248,31 +287,49 @@ async def test_fetch_batch_includes_since_in_jql() -> None:
     assert 'project = "OPS"' in captured["jql"]
     assert 'updated >= "2026-07-01 12:30"' in captured["jql"]
     assert "ORDER BY updated ASC" in captured["jql"]
+    # The removed endpoint's offset parameter must not be sent at all.
+    assert "startAt" not in captured
 
 
 @pytest.mark.asyncio
-async def test_fetch_batch_resumes_from_cursor() -> None:
+async def test_fetch_batch_resumes_from_page_token_cursor() -> None:
     connector = JiraConnector()
     captured: dict[str, Any] = {}
 
     def fake_search(params: dict[str, Any]) -> dict[str, Any]:
         captured.update(params)
-        return {"issues": [], "total": 3, "startAt": 3}
+        return {"issues": [], "isLast": True}
 
-    client = _client(["OPS", "ENG"], search=fake_search)
-    cursor = json.dumps({"project_index": 1, "start_at": 3})
+    client = _client(["OPS", "ENG"], **{_SEARCH: fake_search})
+    cursor = json.dumps({"project_index": 1, "page_token": "tok-3"})
 
     result = await connector.fetch_batch(client, since=None, cursor=cursor)
 
-    assert captured["startAt"] == 3
+    assert captured["nextPageToken"] == "tok-3"
     assert 'project = "ENG"' in captured["jql"]
     assert result.has_more is False
 
 
 @pytest.mark.asyncio
+async def test_fetch_batch_first_page_sends_no_page_token() -> None:
+    connector = JiraConnector()
+    captured: dict[str, Any] = {}
+
+    def fake_search(params: dict[str, Any]) -> dict[str, Any]:
+        captured.update(params)
+        return {"issues": [], "isLast": True}
+
+    client = _client(["OPS"], **{_SEARCH: fake_search})
+
+    await connector.fetch_batch(client, since=None, cursor=None)
+
+    assert "nextPageToken" not in captured
+
+
+@pytest.mark.asyncio
 async def test_fetch_batch_fetches_comments_when_issue_has_any() -> None:
     connector = JiraConnector()
-    payload = {"issues": [_issue("OPS-1", comment_total=2)], "total": 1, "startAt": 0}
+    payload = {"issues": [_issue("OPS-1", comment_total=2)], "isLast": True}
     comments_payload = {
         "comments": [
             {"author": {"displayName": "Jane Doe"}, "body": "Investigating."},
@@ -280,7 +337,7 @@ async def test_fetch_batch_fetches_comments_when_issue_has_any() -> None:
         ]
     }
     client = _client(
-        ["OPS"], search=payload, **{"issue/OPS-1/comment": comments_payload}
+        ["OPS"], **{_SEARCH: payload, "issue/OPS-1/comment": comments_payload}
     )
 
     result = await connector.fetch_batch(client, since=None, cursor=None)
@@ -294,8 +351,8 @@ async def test_fetch_batch_fetches_comments_when_issue_has_any() -> None:
 @pytest.mark.asyncio
 async def test_fetch_batch_skips_comments_call_when_issue_has_none() -> None:
     connector = JiraConnector()
-    payload = {"issues": [_issue("OPS-1", comment_total=0)], "total": 1, "startAt": 0}
-    client = _client(["OPS"], search=payload)
+    payload = {"issues": [_issue("OPS-1", comment_total=0)], "isLast": True}
+    client = _client(["OPS"], **{_SEARCH: payload})
 
     result = await connector.fetch_batch(client, since=None, cursor=None)
 
@@ -304,9 +361,18 @@ async def test_fetch_batch_skips_comments_call_when_issue_has_none() -> None:
 
 
 def test_decode_cursor_defaults_to_first_project() -> None:
-    assert JiraConnector._decode_cursor(None) == (0, 0)
+    assert JiraConnector._decode_cursor(None) == (0, None)
 
 
 def test_decode_cursor_parses_envelope() -> None:
-    cursor = json.dumps({"project_index": 2, "start_at": 50})
-    assert JiraConnector._decode_cursor(cursor) == (2, 50)
+    cursor = json.dumps({"project_index": 2, "page_token": "tok-9"})
+    assert JiraConnector._decode_cursor(cursor) == (2, "tok-9")
+
+
+def test_decode_cursor_tolerates_stale_offset_cursor_from_previous_version() -> None:
+    """A job resuming across this connector's offset->token migration must
+    restart the project cleanly rather than raising KeyError -- Jira's page
+    tokens are opaque and cannot be derived from an old `start_at` offset.
+    """
+    cursor = json.dumps({"project_index": 1, "start_at": 50})
+    assert JiraConnector._decode_cursor(cursor) == (1, None)
