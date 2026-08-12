@@ -62,8 +62,20 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     Built from the same `Settings.redis_url` that worker already reads, so
     there is one source of truth for the connection string, not a second one
     hand-maintained here.
+
+    `default_queue_name` must match `app.ingestion.workers.main.WorkerSettings
+    .queue_name` ("arq:queue:ingestion"), the only worker that registers
+    `run_ingestion_job_task` -- the sole function this pool ever enqueues.
+    Without it, `create_pool` falls back to arq's own hardcoded default
+    ("arq:queue"), which no worker polls (both workers opted out of that
+    default for the queue-collision reason documented on their own
+    `queue_name` attributes), so every job enqueued here would sit in Redis
+    forever and connector syncs would silently never run.
     """
-    app.state.arq_pool = await create_pool(RedisSettings.from_dsn(str(get_settings().redis_url)))
+    app.state.arq_pool = await create_pool(
+        RedisSettings.from_dsn(str(get_settings().redis_url)),
+        default_queue_name="arq:queue:ingestion",
+    )
     try:
         yield
     finally:
