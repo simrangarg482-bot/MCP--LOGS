@@ -13,7 +13,7 @@ from functools import lru_cache
 from typing import Literal
 from typing import ClassVar
 
-from pydantic import Field, PostgresDsn, RedisDsn
+from pydantic import Field, PostgresDsn, RedisDsn, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -96,6 +96,56 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_expiry_minutes: int = 60
     REFRESH_TOKEN_EXPIRY_DAYS: ClassVar[int] = 30
+
+    # --- MCP server (scripts/run_mcp_server.py) -----------------------------
+    mcp_port: int = Field(
+        default=8001,
+        description=(
+            "Local TCP port `scripts/run_mcp_server.py` binds the streamable-"
+            "HTTP MCP transport to. Override via MCP_PORT -- e.g. if 8001 is "
+            "already in use (a stale server process from a previous run is "
+            "the usual cause; check `netstat`/`Get-NetTCPConnection` before "
+            "assuming a real conflict) or you deliberately want a different "
+            "port. `scripts/live_mcp_tests/conftest.py`'s default MCP URL and "
+            "this module's `mcp_public_base_url` default both derive from "
+            "this value, so changing it here keeps them in sync -- but if "
+            "you front this server with ngrok, its LOCAL target "
+            "(`ngrok http <port>`) must still be updated to match by hand; "
+            "nothing here can reach into your ngrok config."
+        ),
+    )
+
+    # --- MCP OAuth bridge (app/mcp/oauth) -- Claude's remote-connector OAuth
+    # flow needs a real, publicly-reachable HTTPS base URL to advertise as its
+    # `issuer_url`/`resource_server_url` (OAuth server/resource metadata is
+    # discovered from this URL) -- it cannot be `localhost`, since Claude
+    # connects from Anthropic's cloud, not the machine running this server.
+    mcp_public_base_url: str = Field(
+        default="http://localhost:8001",
+        description=(
+            "Public HTTPS base URL this MCP server is reachable at (e.g. the "
+            "ngrok URL fronting it) -- used as the OAuth issuer_url/"
+            "resource_server_url so Claude's remote-connector OAuth flow can "
+            "discover this server's /authorize, /token, and registration "
+            "endpoints. Override via MCP_PUBLIC_BASE_URL; the localhost "
+            "default only works for same-machine MCP clients, not Claude. "
+            "If MCP_PUBLIC_BASE_URL is left unset, its port is kept in sync "
+            "with `mcp_port` automatically (see `_sync_local_public_base_url_port`) "
+            "-- an explicit override (e.g. a real ngrok hostname, which has "
+            "no port of its own) always wins outright."
+        ),
+    )
+
+    # --- CORS (browser-based frontends, e.g. frontend/) ---------------------
+    cors_allowed_origins: list[str] = Field(
+        default_factory=lambda: ["http://localhost:5173", "http://127.0.0.1:5173"],
+        description=(
+            "Origins allowed to call this API from a browser. Defaults to "
+            "the EKIP frontend's Vite dev server; override via the "
+            "CORS_ALLOWED_ORIGINS env var (comma-separated) for any other "
+            "deployed frontend origin."
+        ),
+    )
 
     # --- Investigation Agent live evidence (AGENT_WORKFLOWS.md 2.4's hybrid
     # evidence-gathering extension -- agents/investigation/live/) -----------
@@ -187,6 +237,35 @@ class Settings(BaseSettings):
             "(the `KeyManagementService` protocol, not any caller)."
         ),
     )
+
+    @field_validator("cors_allowed_origins", mode="before")
+    @classmethod
+    def _split_cors_origins(cls, value: object) -> object:
+        """Accepts a comma-separated CORS_ALLOWED_ORIGINS env var string, not
+        just a JSON array -- pydantic-settings only auto-parses list-typed
+        env vars as JSON, which is an awkward way to set a simple origin list
+        in a .env file or shell export.
+        """
+        if isinstance(value, str):
+            return [origin.strip() for origin in value.split(",") if origin.strip()]
+        return value
+
+    _DEFAULT_LOCAL_PUBLIC_BASE_URL: ClassVar[str] = "http://localhost:8001"
+
+    @model_validator(mode="after")
+    def _sync_local_public_base_url_port(self) -> "Settings":
+        """If `mcp_public_base_url` is still exactly its own static
+        localhost default, rewrite its port to match `mcp_port` -- so
+        setting only `MCP_PORT` (the common case: 8001 was already taken by
+        something else) doesn't leave the two settings pointing at different
+        ports for pure-local, no-ngrok use. A real deployment always sets
+        `MCP_PUBLIC_BASE_URL` explicitly to its actual ngrok/public hostname
+        (which has no port of its own to keep in sync with anything), so
+        this never touches that case.
+        """
+        if self.mcp_public_base_url == self._DEFAULT_LOCAL_PUBLIC_BASE_URL and self.mcp_port != 8001:
+            self.mcp_public_base_url = f"http://localhost:{self.mcp_port}"
+        return self
 
 
 @lru_cache

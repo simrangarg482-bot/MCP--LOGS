@@ -98,8 +98,8 @@ from app.agents.knowledge_gap import repository as knowledge_gap_repository
 from app.agents.knowledge_gap.pipeline import detect_knowledge_gaps as _run_knowledge_gap_pipeline
 from app.agents.llm import get_llm
 from app.agents.postmortem.pipeline import run_postmortem_pipeline
-from app.agents.schemas import AgentExecutionStats
-from app.core.exceptions import EKIPError
+from app.agents.schemas import AgentExecution, AgentExecutionStats
+from app.core.exceptions import EKIPError, PermissionDeniedError
 from app.core.incidents import service as incidents_service
 from app.core.incidents.schemas import ActionItem
 from app.core.users.service import require_permission
@@ -318,6 +318,7 @@ async def search_recent_changes(
     since: datetime | None = None,
     top_k: int = 10,
     collection: CollectionName = "code",
+    repository: str | None = None,
 ) -> list[ScoredChunk]:
     """Search for recent code/documentation changes matching `query`
     (API_DESIGN.md section 3's `search_recent_changes` MCP tool:
@@ -334,8 +335,18 @@ async def search_recent_changes(
     chunk whose metadata carries none of those keys is kept rather than
     dropped, since "no timestamp available" is not the same claim as "not
     recent."
+
+    `repository`, if given, restricts results to one GitHub repo (e.g.
+    `"owner/name"`) via `SearchFilters.repository` -- valid for `collection
+    == "code"` (the default here) or `"documentation"` (most real GitHub
+    connector output -- issues, PRs, commit messages, READMEs -- lands
+    there, not in `"code"`); `PgVectorStore` raises for `"conversations"`,
+    which carries no `repo_full_name` to filter on. A repo with no source
+    files (nothing in `code_chunks`) needs an explicit `collection=
+    "documentation"` call to be found at all -- this function's own
+    `collection="code"` default won't surface it.
     """
-    filters = SearchFilters(organization_id=actor.organization_id)
+    filters = SearchFilters(organization_id=actor.organization_id, repository=repository)
     results = await retrieval_service.search(
         session, query, filters, top_k, collection, include_metadata=True
     )
@@ -358,6 +369,35 @@ def _passes_recency_filter(chunk: ScoredChunk, since: datetime) -> bool:
             timestamp = timestamp.replace(tzinfo=timezone.utc)
         return timestamp >= since
     return True
+
+
+async def get_question_history(
+    session: AsyncSession,
+    actor: Identity,
+    *,
+    limit: int = 20,
+    offset: int = 0,
+) -> list[AgentExecution]:
+    """Return `actor`'s own past `agent_executions` rows, newest first --
+    backs `GET /ask/history`. Requires `actor.user_id` (populated only for
+    `kind == USER` identities, per `Identity`'s own docstring): an MCP or
+    service caller has no per-user history to return, so that case is a hard
+    `PermissionDeniedError` rather than a silently empty list, which would
+    look identical to "you really have asked nothing yet."
+    """
+    if actor.user_id is None:
+        raise PermissionDeniedError(
+            "Question history is only available to authenticated users.",
+            error_code="agents.history_requires_user",
+        )
+    rows = await repository.list_agent_executions_for_user(
+        session,
+        user_id=actor.user_id,
+        organization_id=actor.organization_id,
+        limit=limit,
+        offset=offset,
+    )
+    return [AgentExecution.model_validate(row) for row in rows]
 
 
 def _gap_report_to_schema(row: KnowledgeGapReport) -> GapReport:
@@ -522,6 +562,7 @@ async def _run_graph_and_record(
         organization_id=initial_state.actor.organization_id,
         agent_name=agent_name,
         trigger_source=trigger_source,
+        user_id=initial_state.actor.user_id,
         input_summary=input_summary,
     )
 

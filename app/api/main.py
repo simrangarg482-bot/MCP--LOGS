@@ -27,7 +27,13 @@ revocation counterpart to `/auth/logout-all`).
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
+from arq import create_pool
+from arq.connections import RedisSettings
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.errors import ekip_error_handler
 from app.api.routers import (
@@ -41,10 +47,39 @@ from app.api.routers import (
     users,
 )
 from app.core.exceptions import EKIPError
+from app.shared.config.settings import get_settings
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Owns the one `arq` Redis pool this process uses to *enqueue* jobs
+    (`POST /tenancy/connectors/{id}/sync`, `app.api.deps.get_arq_pool`) --
+    not to run them. Running jobs is `scripts/ingestion_worker.py`'s /
+    `app.ingestion.workers.main.WorkerSettings`'s job, a separate process,
+    exactly as `app.ingestion.workers.main`'s own docstring already
+    establishes (ENGINEERING_DECISIONS.md #002: API server and worker are
+    separate processes sharing one Redis queue, not one process doing both).
+    Built from the same `Settings.redis_url` that worker already reads, so
+    there is one source of truth for the connection string, not a second one
+    hand-maintained here.
+    """
+    app.state.arq_pool = await create_pool(RedisSettings.from_dsn(str(get_settings().redis_url)))
+    try:
+        yield
+    finally:
+        await app.state.arq_pool.close()
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="EKIP API", version="0.1.0")
+    app = FastAPI(title="EKIP API", version="0.1.0", lifespan=_lifespan)
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=get_settings().cors_allowed_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     app.add_exception_handler(EKIPError, ekip_error_handler)
 

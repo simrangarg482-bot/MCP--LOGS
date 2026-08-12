@@ -49,8 +49,14 @@ import pytest  # noqa: E402
 import config as harness_config  # noqa: E402  (tests/ingestion_retrieval/config.py)
 import utils as harness_utils  # noqa: E402  (tests/ingestion_retrieval/utils.py)
 
-#: Where `scripts/run_mcp_server.py` binds by default.
-DEFAULT_MCP_URL = "http://127.0.0.1:8001/mcp"
+from app.shared.config.settings import get_settings  # noqa: E402
+
+#: Where `scripts/run_mcp_server.py` binds by default -- derived from the
+#: same `Settings.mcp_port` (`MCP_PORT` env var) it reads, so the two never
+#: drift out of sync. `EKIP_MCP_URL` (the `mcp_url` fixture below) still
+#: overrides this outright for pointing the suite at a non-default host/URL
+#: entirely (e.g. a remote/ngrok-fronted server).
+DEFAULT_MCP_URL = f"http://127.0.0.1:{get_settings().mcp_port}/mcp"
 
 
 @pytest.fixture(autouse=True)
