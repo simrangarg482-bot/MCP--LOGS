@@ -85,6 +85,31 @@ class Settings(BaseSettings):
     )
 
     # --- Agent behavior (AGENT_WORKFLOWS.md 2.2) ---------------------------
+    # `default=0.6` kept, not changed, per a real `scripts/eval_confidence.py`
+    # run against `test-org`'s live corpus (2026-08-13, 36 questions: 14
+    # clear-answer / 12 ambiguous / 10 no-information; full report in
+    # scripts/eval_confidence_report.json). Findings:
+    #   - Sweeping 0.40-0.80 found 0.40 scores marginally higher on F1 (0.700
+    #     vs 0.6's 0.667) -- a 0.033 margin on 36 questions, i.e. well within
+    #     one question flipping category by chance. Not treated as evidence
+    #     for a change; the harness itself flags margins this small.
+    #   - More importantly: clear-answer confidence (0.422-1.000) and
+    #     ambiguous confidence (0.572-1.000) ranges overlap substantially --
+    #     an "ambiguous" question (topically relevant chunk retrieved, but
+    #     missing the specific fact asked) scores nearly as high as a
+    #     genuinely answerable one, because `top_similarity`/`rerank_score`
+    #     (app/agents/confidence.py) measure topical relevance, not whether
+    #     the specific fact is present. No threshold in this sweep -- or any
+    #     other -- can cleanly separate them; that is a signal-quality gap in
+    #     the confidence formula itself, not a threshold-tuning one.
+    #   - no-information confidence clustered tightly at ~0.389, well
+    #     separated from both other categories -- the gate reliably catches
+    #     fully-out-of-domain questions regardless of where the threshold
+    #     sits in this range.
+    # Re-run scripts/eval_confidence.py against a larger/refreshed dataset
+    # (and/or after improving the confidence signals themselves) before
+    # revisiting this default -- update this comment with that run's date
+    # and findings if it ever changes.
     confidence_threshold: float = Field(
         default=0.6,
         ge=0.0,
