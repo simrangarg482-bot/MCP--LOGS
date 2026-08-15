@@ -65,7 +65,7 @@ export function IncidentDetailPage() {
   return (
     <div className="flex flex-col gap-5">
       <PageHeader
-        breadcrumbs={[{ label: "Incidents", path: "/incidents" }, { label: incident.displayId }]}
+        breadcrumbs={[{ label: "Incidents", path: "/incidents" }, { label: incident.id.slice(0, 8) }]}
         title={incident.title}
         description={incident.description}
         actions={
@@ -78,14 +78,16 @@ export function IncidentDetailPage() {
 
       <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-ink-muted">
         <span>
-          Service: <span className="font-medium text-ink">{incident.service}</span>
+          Owner team: <span className="font-medium text-ink">{incident.ownerTeam ?? "Unassigned"}</span>
         </span>
         <span title={formatDateTime(incident.createdAt)}>
           Created: <span className="font-medium text-ink">{formatRelativeTime(incident.createdAt)}</span>
         </span>
-        <span>
-          Assigned to: <span className="font-medium text-ink">{incident.assignee?.name ?? "Unassigned"}</span>
-        </span>
+        {incident.resolvedAt && (
+          <span title={formatDateTime(incident.resolvedAt)}>
+            Resolved: <span className="font-medium text-ink">{formatRelativeTime(incident.resolvedAt)}</span>
+          </span>
+        )}
       </div>
 
       <Tabs items={TABS} activeKey={activeTab} onChange={setActiveTab} />
@@ -146,7 +148,7 @@ export function IncidentDetailPage() {
                     >
                       <div>
                         <div className="flex items-center gap-2">
-                          <span className="text-xs font-medium text-ink-muted">{similar.displayId}</span>
+                          <span className="text-xs font-medium text-ink-muted">{similar.id.slice(0, 8)}</span>
                           <SeverityBadge severity={similar.severity} />
                         </div>
                         <p className="mt-0.5 text-sm text-ink">{similar.title}</p>

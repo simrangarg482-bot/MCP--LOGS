@@ -1,18 +1,92 @@
-import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { UserPlus } from "lucide-react";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
+import { Modal } from "@/components/ui/Modal";
+import { Input } from "@/components/ui/Input";
+import { Select } from "@/components/ui/Select";
 import { DataTable, type DataTableColumn } from "@/components/data/DataTable";
-import { listOrgUsers } from "@/api/tenancy";
-import type { OrgUser } from "@/types/tenancy";
+import { createInvitation, listOrgUsers } from "@/api/tenancy";
+import type { OrgUser, UserRole } from "@/types/tenancy";
+import { useTenant } from "@/context/TenantContext";
+import { useToast } from "@/context/ToastContext";
 import { formatRelativeTime } from "@/utils/date";
 import { titleCase } from "@/utils/format";
 
 const ROLE_TONE = { owner: "accent", admin: "info", member: "neutral", viewer: "neutral" } as const;
+const INVITABLE_ROLES: UserRole[] = ["admin", "member", "viewer"];
+
+function InviteUserModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const { organization } = useTenant();
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [email, setEmail] = useState("");
+  const [role, setRole] = useState<UserRole>("member");
+
+  const inviteMutation = useMutation({
+    mutationFn: () => {
+      if (!organization) throw new Error("No organization selected");
+      return createInvitation(organization.id, { email, grantsRole: role });
+    },
+    onSuccess: () => {
+      toast({ variant: "success", title: `Invitation sent to ${email}` });
+      queryClient.invalidateQueries({ queryKey: ["users"] });
+      setEmail("");
+      setRole("member");
+      onClose();
+    },
+    onError: () => {
+      toast({ variant: "error", title: "Failed to send invitation" });
+    },
+  });
+
+  return (
+    <Modal open={open} onClose={onClose} title="Invite a user" description="They'll receive access once they accept.">
+      <form
+        className="flex flex-col gap-3"
+        onSubmit={(event) => {
+          event.preventDefault();
+          inviteMutation.mutate();
+        }}
+      >
+        <label className="flex flex-col gap-1 text-xs font-medium text-ink-muted">
+          Email
+          <Input
+            type="email"
+            required
+            placeholder="engineer@company.com"
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-xs font-medium text-ink-muted">
+          Role
+          <Select value={role} onChange={(event) => setRole(event.target.value as UserRole)}>
+            {INVITABLE_ROLES.map((r) => (
+              <option key={r} value={r}>
+                {titleCase(r)}
+              </option>
+            ))}
+          </Select>
+        </label>
+        <div className="mt-2 flex justify-end gap-2">
+          <Button type="button" variant="secondary" size="sm" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button type="submit" variant="primary" size="sm" disabled={inviteMutation.isPending || !email}>
+            {inviteMutation.isPending ? "Sending…" : "Send invitation"}
+          </Button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
 
 export function UsersSettingsPage() {
   const usersQuery = useQuery({ queryKey: ["users"], queryFn: listOrgUsers });
+  const [isInviteOpen, setIsInviteOpen] = useState(false);
 
   const columns: DataTableColumn<OrgUser>[] = [
     {
@@ -42,7 +116,7 @@ export function UsersSettingsPage() {
     <Card>
       <div className="flex items-center justify-between border-b border-border px-4 py-3">
         <h3 className="text-sm font-semibold text-ink">Users</h3>
-        <Button size="sm" variant="primary" className="gap-1.5">
+        <Button size="sm" variant="primary" className="gap-1.5" onClick={() => setIsInviteOpen(true)}>
           <UserPlus className="h-3.5 w-3.5" />
           Invite user
         </Button>
@@ -55,6 +129,7 @@ export function UsersSettingsPage() {
         isError={usersQuery.isError}
         onRetry={() => usersQuery.refetch()}
       />
+      <InviteUserModal open={isInviteOpen} onClose={() => setIsInviteOpen(false)} />
     </Card>
   );
 }

@@ -1,0 +1,336 @@
+{
+  "generated_at": "2026-08-14T05:18:57.709529+00:00",
+  "organization": {
+    "slug": "test-org",
+    "name": "Test Org"
+  },
+  "current_default_threshold": 0.6,
+  "excluded_count": 0,
+  "best_threshold": 0.8,
+  "best_threshold_metrics": {
+    "precision": null,
+    "recall": null,
+    "f1": null,
+    "accuracy": 1.0
+  },
+  "threshold_sweep": [
+    {
+      "threshold": 0.4,
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 10,
+      "precision": null,
+      "recall": null,
+      "f1": null,
+      "accuracy": 1.0
+    },
+    {
+      "threshold": 0.45,
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 10,
+      "precision": null,
+      "recall": null,
+      "f1": null,
+      "accuracy": 1.0
+    },
+    {
+      "threshold": 0.5,
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 10,
+      "precision": null,
+      "recall": null,
+      "f1": null,
+      "accuracy": 1.0
+    },
+    {
+      "threshold": 0.55,
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 10,
+      "precision": null,
+      "recall": null,
+      "f1": null,
+      "accuracy": 1.0
+    },
+    {
+      "threshold": 0.6,
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 10,
+      "precision": null,
+      "recall": null,
+      "f1": null,
+      "accuracy": 1.0
+    },
+    {
+      "threshold": 0.65,
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 10,
+      "precision": null,
+      "recall": null,
+      "f1": null,
+      "accuracy": 1.0
+    },
+    {
+      "threshold": 0.7,
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 10,
+      "precision": null,
+      "recall": null,
+      "f1": null,
+      "accuracy": 1.0
+    },
+    {
+      "threshold": 0.75,
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 10,
+      "precision": null,
+      "recall": null,
+      "f1": null,
+      "accuracy": 1.0
+    },
+    {
+      "threshold": 0.8,
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 10,
+      "precision": null,
+      "recall": null,
+      "f1": null,
+      "accuracy": 1.0
+    }
+  ],
+  "category_behavior": {
+    "per_category": {
+      "no-information": {
+        "count": 10,
+        "real_answer_rate": 0.0
+      }
+    },
+    "clear_answer_accuracy": null,
+    "ambiguous_false_answer_rate": null,
+    "no_information_investigation_rate": 1.0
+  },
+  "grounding": {
+    "per_category": {
+      "no-information": 0.0
+    },
+    "headline_answer_grounding_rate": null
+  },
+  "confidence_by_category": {
+    "no-information": {
+      "min": 0.3888988233465785,
+      "max": 0.3905653459576398,
+      "mean": 0.38909259848367633,
+      "n": 10
+    }
+  },
+  "questions": [
+    {
+      "id": "neg-parental-leave",
+      "category": "no-information",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": "investigation",
+      "confidence_score": 0.3889344841281954,
+      "is_real_answer": false,
+      "citations_count": 0,
+      "answer": null,
+      "error": null
+    },
+    {
+      "id": "neg-world-cup",
+      "category": "no-information",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": "investigation",
+      "confidence_score": 0.3905653459576398,
+      "is_real_answer": false,
+      "citations_count": 0,
+      "answer": null,
+      "error": null
+    },
+    {
+      "id": "neg-k8s-autoscaling",
+      "category": "no-information",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": "investigation",
+      "confidence_score": 0.3889253672913254,
+      "is_real_answer": false,
+      "citations_count": 0,
+      "answer": null,
+      "error": null
+    },
+    {
+      "id": "neg-aws-spend",
+      "category": "no-information",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": "investigation",
+      "confidence_score": 0.38901222240721567,
+      "is_real_answer": false,
+      "citations_count": 0,
+      "answer": null,
+      "error": null
+    },
+    {
+      "id": "neg-database-vendor-pricing",
+      "category": "no-information",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": "investigation",
+      "confidence_score": 0.38890034313322563,
+      "is_real_answer": false,
+      "citations_count": 0,
+      "answer": null,
+      "error": null
+    },
+    {
+      "id": "neg-oncall-rotation",
+      "category": "no-information",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": "investigation",
+      "confidence_score": 0.38890756192933174,
+      "is_real_answer": false,
+      "citations_count": 0,
+      "answer": null,
+      "error": null
+    },
+    {
+      "id": "neg-competitor-analysis",
+      "category": "no-information",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": "investigation",
+      "confidence_score": 0.3889267133697089,
+      "is_real_answer": false,
+      "citations_count": 0,
+      "answer": null,
+      "error": null
+    },
+    {
+      "id": "neg-legal-contract-terms",
+      "category": "no-information",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": "investigation",
+      "confidence_score": 0.3888988233465785,
+      "is_real_answer": false,
+      "citations_count": 0,
+      "answer": null,
+      "error": null
+    },
+    {
+      "id": "neg-marketing-campaign-ctr",
+      "category": "no-information",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": "investigation",
+      "confidence_score": 0.3889318734293207,
+      "is_real_answer": false,
+      "citations_count": 0,
+      "answer": null,
+      "error": null
+    },
+    {
+      "id": "neg-team-headcount",
+      "category": "no-information",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": "investigation",
+      "confidence_score": 0.3889232498442219,
+      "is_real_answer": false,
+      "citations_count": 0,
+      "answer": null,
+      "error": null
+    }
+  ],
+  "grounding_traces": [
+    {
+      "id": "neg-parental-leave",
+      "category": "no-information",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": 0.0,
+      "error": null
+    },
+    {
+      "id": "neg-world-cup",
+      "category": "no-information",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": 0.0,
+      "error": null
+    },
+    {
+      "id": "neg-k8s-autoscaling",
+      "category": "no-information",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": 0.0,
+      "error": null
+    },
+    {
+      "id": "neg-aws-spend",
+      "category": "no-information",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": 0.0,
+      "error": null
+    },
+    {
+      "id": "neg-database-vendor-pricing",
+      "category": "no-information",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": 0.0,
+      "error": null
+    },
+    {
+      "id": "neg-oncall-rotation",
+      "category": "no-information",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": 0.0,
+      "error": null
+    },
+    {
+      "id": "neg-competitor-analysis",
+      "category": "no-information",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": 0.0,
+      "error": null
+    },
+    {
+      "id": "neg-legal-contract-terms",
+      "category": "no-information",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": 0.0,
+      "error": null
+    },
+    {
+      "id": "neg-marketing-campaign-ctr",
+      "category": "no-information",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": 0.0,
+      "error": null
+    },
+    {
+      "id": "neg-team-headcount",
+      "category": "no-information",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": 0.0,
+      "error": null
+    }
+  ]
+}

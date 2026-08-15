@@ -37,6 +37,27 @@ export function clearSession(): void {
   setRefreshToken(null);
 }
 
+/**
+ * Fired when `apiRequest` (api/client.ts) receives a 401 -- the access
+ * token is expired/invalid and there is no automatic silent-refresh-and-
+ * retry path (yet), so the session is cleared and every listener (just
+ * `AuthContext` today) reacts by clearing its own `user` state, which makes
+ * `ProtectedRoute` redirect to `/login` through its existing, ordinary
+ * "not authenticated" path -- no separate redirect mechanism needed.
+ *
+ * A plain DOM event, not a direct function call into `AuthContext`, because
+ * `api/client.ts` is a plain module with no React context to call into;
+ * this keeps `client.ts` and `AuthContext.tsx` decoupled through the one
+ * module (`tokenStore.ts`) both already depend on, rather than introducing
+ * a new import cycle between them.
+ */
+export const SESSION_EXPIRED_EVENT = "ekip:session-expired";
+
+export function clearSessionAndNotifyExpired(): void {
+  clearSession();
+  window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
+}
+
 let pendingRefresh: Promise<unknown> | null = null;
 
 /**

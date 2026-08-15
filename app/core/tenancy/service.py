@@ -254,6 +254,14 @@ async def configure_sso(
     existing configuration is a distinct, not-yet-built operation (see
     repository.insert_sso_configuration's docstring), not silently handled
     here as an upsert.
+
+    `data.client_secret_ref` is envelope-encrypted before being persisted,
+    the same encrypt-at-write/decrypt-at-read split `register_connector`
+    already established for connector credentials -- previously this
+    function stored the client secret unencrypted, and `core.auth.service.
+    _resolve_client_secret` read it back as if it already were plaintext.
+    Both ends of that gap are fixed together; see `_resolve_client_secret`'s
+    updated docstring.
     """
     _ensure_same_organization(actor, organization_id)
     require_permission(actor, _MANAGE_PERMISSION)
@@ -268,6 +276,7 @@ async def configure_sso(
             detail={"organization_id": str(organization_id)},
         )
 
+    encrypted_client_secret_ref = encrypt_secret(get_kms(), data.client_secret_ref)
     row = await repository.insert_sso_configuration(
         session,
         organization_id=organization_id,
@@ -275,7 +284,7 @@ async def configure_sso(
         protocol=data.protocol,
         issuer_url=data.issuer_url,
         client_id=data.client_id,
-        client_secret_ref=data.client_secret_ref,
+        client_secret_ref=encrypted_client_secret_ref,
     )
     await record_audit_event(
         session,
@@ -425,8 +434,18 @@ async def register_connector(
 async def list_connectors(
     session: AsyncSession, actor: Identity, organization_id: uuid.UUID
 ) -> list[ConnectorConfig]:
-    """Return every connector configuration belonging to `organization_id`."""
+    """Return every connector configuration belonging to `organization_id`.
+
+    Gated by `tenancy:manage`, matching `register_connector`/`get_connector`
+    -- a connector's `credential_ref` field is an encrypted reference, not a
+    plaintext secret, but the list of what's connected and its sync status
+    is still `tenancy:manage`-scoped configuration data, not something every
+    org member should see by default. Previously ungated while its sibling
+    write (`register_connector`) already required this permission -- a real
+    inconsistency, not an intentional "reads are open" exception.
+    """
     _ensure_same_organization(actor, organization_id)
+    require_permission(actor, _MANAGE_PERMISSION)
 
     rows = await repository.list_connector_configs(session, organization_id)
     return [ConnectorConfig.model_validate(row) for row in rows]
@@ -585,8 +604,14 @@ async def create_access_rule(
 async def list_access_rules(
     session: AsyncSession, actor: Identity, organization_id: uuid.UUID
 ) -> list[AccessRule]:
-    """Return every access rule (active or not) belonging to `organization_id`."""
+    """Return every access rule (active or not) belonging to `organization_id`.
+
+    Gated by `tenancy:manage`, matching `create_access_rule`/
+    `deactivate_access_rule` -- previously ungated, a real inconsistency
+    (see `list_connectors`'s identical fix above).
+    """
     _ensure_same_organization(actor, organization_id)
+    require_permission(actor, _MANAGE_PERMISSION)
 
     rows = await repository.list_access_rules(session, organization_id)
     return [AccessRule.model_validate(row) for row in rows]
@@ -689,8 +714,15 @@ async def create_invitation(
 async def list_invitations(
     session: AsyncSession, actor: Identity, organization_id: uuid.UUID
 ) -> list[Invitation]:
-    """Return every invitation belonging to `organization_id`, newest first."""
+    """Return every invitation belonging to `organization_id`, newest first.
+
+    Gated by `tenancy:manage`, matching `create_invitation`/
+    `revoke_invitation` -- previously ungated, which leaked every invited
+    email address in the organization to any authenticated org member (see
+    `list_connectors`'s identical fix above for the same class of bug).
+    """
     _ensure_same_organization(actor, organization_id)
+    require_permission(actor, _MANAGE_PERMISSION)
 
     rows = await repository.list_invitations(session, organization_id)
     return [Invitation.model_validate(row) for row in rows]

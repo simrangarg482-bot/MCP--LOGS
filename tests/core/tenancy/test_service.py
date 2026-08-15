@@ -18,7 +18,7 @@ import pytest
 
 from app.core.exceptions import ConflictError, NotFoundError, PermissionDeniedError, ValidationError
 from app.core.tenancy import service as tenancy_service
-from app.core.tenancy.schemas import ConnectorConfigCreate, OrganizationCreate
+from app.core.tenancy.schemas import ConnectorConfigCreate, OrganizationCreate, SSOConfigurationCreate
 from app.shared.schemas import ActorKind, Identity
 from app.shared.security import decrypt_secret, get_kms
 
@@ -530,3 +530,157 @@ async def test_register_connector_without_project_id_still_requires_org_level_pe
             organization_id,
             ConnectorConfigCreate(source="slack", credential_ref="xoxb-token"),
         )
+
+
+def _member_no_permissions(organization_id: uuid.UUID) -> Identity:
+    """An authenticated org member holding no permissions at all -- used to
+    verify the three read-endpoint RBAC gaps found by audit (list_connectors/
+    list_access_rules/list_invitations were reachable by any org member even
+    though their sibling writes already required `tenancy:manage`).
+    """
+    return Identity(
+        kind=ActorKind.USER,
+        subject=str(uuid.uuid4()),
+        organization_id=organization_id,
+        user_id=uuid.uuid4(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_connectors_requires_tenancy_manage_permission() -> None:
+    organization_id = uuid.uuid4()
+    actor = _member_no_permissions(organization_id)
+
+    with pytest.raises(PermissionDeniedError):
+        await tenancy_service.list_connectors(None, actor, organization_id)
+
+
+@pytest.mark.asyncio
+async def test_list_connectors_succeeds_with_tenancy_manage_permission(monkeypatch) -> None:
+    organization_id = uuid.uuid4()
+    actor = _admin(organization_id)
+
+    async def fake_list_connector_configs(session, org_id):
+        assert org_id == organization_id
+        return []
+
+    monkeypatch.setattr(
+        tenancy_service.repository, "list_connector_configs", fake_list_connector_configs
+    )
+
+    result = await tenancy_service.list_connectors(None, actor, organization_id)
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_list_access_rules_requires_tenancy_manage_permission() -> None:
+    organization_id = uuid.uuid4()
+    actor = _member_no_permissions(organization_id)
+
+    with pytest.raises(PermissionDeniedError):
+        await tenancy_service.list_access_rules(None, actor, organization_id)
+
+
+@pytest.mark.asyncio
+async def test_list_access_rules_succeeds_with_tenancy_manage_permission(monkeypatch) -> None:
+    organization_id = uuid.uuid4()
+    actor = _admin(organization_id)
+
+    async def fake_list_access_rules(session, org_id):
+        assert org_id == organization_id
+        return []
+
+    monkeypatch.setattr(tenancy_service.repository, "list_access_rules", fake_list_access_rules)
+
+    result = await tenancy_service.list_access_rules(None, actor, organization_id)
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_list_invitations_requires_tenancy_manage_permission() -> None:
+    organization_id = uuid.uuid4()
+    actor = _member_no_permissions(organization_id)
+
+    with pytest.raises(PermissionDeniedError):
+        await tenancy_service.list_invitations(None, actor, organization_id)
+
+
+class _FakeInsertedSSOConfigurationRow:
+    def __init__(self, **kwargs: object) -> None:
+        now = datetime.now(timezone.utc)
+        self.id = uuid.uuid4()
+        self.organization_id = kwargs["organization_id"]
+        self.provider = kwargs["provider"]
+        self.protocol = kwargs["protocol"]
+        self.issuer_url = kwargs["issuer_url"]
+        self.client_id = kwargs["client_id"]
+        self.client_secret_ref = kwargs["client_secret_ref"]
+        self.created_at = now
+        self.updated_at = now
+
+
+@pytest.mark.asyncio
+async def test_configure_sso_encrypts_client_secret_before_storing(monkeypatch) -> None:
+    """Regression test for the SSO client-secret KMS bypass: `configure_sso`
+    must envelope-encrypt `client_secret_ref` before persisting it, matching
+    `register_connector`'s identical treatment of connector credentials --
+    previously this was stored unencrypted, and `core.auth.service.
+    _resolve_client_secret` read it back as if it already were plaintext.
+    """
+    organization_id = uuid.uuid4()
+    actor = _admin(organization_id)
+    plaintext_secret = "super-secret-oidc-client-secret"
+    captured: dict[str, object] = {}
+
+    async def fake_get_sso_configuration_by_organization_id(session, org_id):
+        return None
+
+    async def fake_insert_sso_configuration(session, **kwargs):
+        captured.update(kwargs)
+        return _FakeInsertedSSOConfigurationRow(**kwargs)
+
+    async def fake_record_audit_event(session, actor, **kwargs):
+        return None
+
+    monkeypatch.setattr(
+        tenancy_service.repository,
+        "get_sso_configuration_by_organization_id",
+        fake_get_sso_configuration_by_organization_id,
+    )
+    monkeypatch.setattr(
+        tenancy_service.repository, "insert_sso_configuration", fake_insert_sso_configuration
+    )
+    monkeypatch.setattr(tenancy_service, "record_audit_event", fake_record_audit_event)
+
+    result = await tenancy_service.configure_sso(
+        None,
+        actor,
+        organization_id,
+        SSOConfigurationCreate(
+            provider="okta",
+            issuer_url="https://example.okta.com",
+            client_id="client-123",
+            client_secret_ref=plaintext_secret,
+        ),
+    )
+
+    stored_client_secret_ref = captured["client_secret_ref"]
+    assert stored_client_secret_ref != plaintext_secret
+    assert plaintext_secret not in stored_client_secret_ref
+    assert decrypt_secret(get_kms(), stored_client_secret_ref) == plaintext_secret
+    assert result.client_secret_ref == stored_client_secret_ref
+
+
+@pytest.mark.asyncio
+async def test_list_invitations_succeeds_with_tenancy_manage_permission(monkeypatch) -> None:
+    organization_id = uuid.uuid4()
+    actor = _admin(organization_id)
+
+    async def fake_list_invitations(session, org_id):
+        assert org_id == organization_id
+        return []
+
+    monkeypatch.setattr(tenancy_service.repository, "list_invitations", fake_list_invitations)
+
+    result = await tenancy_service.list_invitations(None, actor, organization_id)
+    assert result == []

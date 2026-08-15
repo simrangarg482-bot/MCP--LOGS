@@ -39,6 +39,7 @@ def _document(actor: Identity, **overrides: object) -> Document:
         status="proposed",
         version=1,
         content="do the thing",
+        source="manual",
         source_incident_id=None,
         created_at=now,
         updated_at=now,

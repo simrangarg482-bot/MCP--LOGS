@@ -181,3 +181,18 @@ async def test_revoke_all_sessions_scopes_by_user_and_organization(monkeypatch) 
     assert captured["user_id"] == user_id
     assert captured["organization_id"] == organization_id
     assert captured["revoked_at"] is not None
+
+
+def test_resolve_client_secret_decrypts_an_envelope_encrypted_reference() -> None:
+    """Regression test for the SSO client-secret KMS bypass: `_resolve_
+    client_secret` must decrypt a real envelope produced by `core.tenancy.
+    service.configure_sso`'s encrypt-at-write half of this same split, not
+    treat the stored reference as if it were already plaintext.
+    """
+    from app.shared.security import encrypt_secret, get_kms
+
+    plaintext_secret = "super-secret-oidc-client-secret"
+    encrypted_client_secret_ref = encrypt_secret(get_kms(), plaintext_secret)
+
+    assert encrypted_client_secret_ref != plaintext_secret
+    assert auth_service._resolve_client_secret(encrypted_client_secret_ref) == plaintext_secret

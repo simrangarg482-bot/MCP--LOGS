@@ -24,6 +24,19 @@ export interface OrgUser {
   lastActiveAt?: string;
 }
 
+export interface InvitationRequest {
+  email: string;
+  grantsRole: UserRole;
+}
+
+export interface Invitation {
+  id: UUID;
+  organizationId: UUID;
+  email: string;
+  status: "pending" | "accepted" | "expired" | "revoked";
+  expiresAt: string;
+}
+
 export type SsoProtocol = "oidc" | "saml";
 
 export type SsoProviderKind = "entra_id" | "okta" | "auth0" | "google_workspace" | "generic_oidc";

@@ -501,9 +501,31 @@ async def trigger_postmortem_generation(
 async def get_postmortem(
     session: AsyncSession, actor: Identity, organization_id: uuid.UUID, postmortem_id: uuid.UUID
 ) -> Postmortem:
-    """Fetch one postmortem (draft or published)."""
+    """Fetch one postmortem (draft or published).
+
+    Approved/published postmortems are readable by anyone in the
+    organization; a still-draft/in-review one requires `postmortem:write`
+    or `postmortem:approve` -- mirroring `core.knowledge.service.
+    get_document`'s identical published-vs-proposed gate. Unlike `list_
+    recent_postmortems`'s own "read-only, no gate" note just below (which
+    only ever returns already-reviewed postmortems, so needs no gate), this
+    function can return a draft -- and until this fix, it did so to any org
+    member holding a raw postmortem id, with no permission check at all.
+    """
     _ensure_same_organization(actor, organization_id)
     row = await _get_owned_postmortem(session, organization_id, postmortem_id)
+    if row.status not in ("approved", "published"):
+        incident = await repository.get_incident_by_id(session, row.incident_id)
+        project_id = incident.project_id if incident is not None else None
+        if not (
+            actor.has_permission(_POSTMORTEM_WRITE_PERMISSION, project_id=project_id)
+            or actor.has_permission(_POSTMORTEM_APPROVE_PERMISSION, project_id=project_id)
+        ):
+            raise PermissionDeniedError(
+                "This postmortem has not been reviewed yet.",
+                error_code="postmortem.not_reviewed",
+                detail={"postmortem_id": str(postmortem_id)},
+            )
     return Postmortem.model_validate(row)
 
 

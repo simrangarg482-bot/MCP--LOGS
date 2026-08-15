@@ -9,7 +9,6 @@ type AnyStatus = IncidentStatus | ConnectorStatus | DocumentStatus | "healthy" |
 const STATUS_TONE: Record<AnyStatus, BadgeTone> = {
   open: "warning",
   investigating: "accent",
-  monitoring: "info",
   resolved: "success",
   closed: "neutral",
   active: "success",

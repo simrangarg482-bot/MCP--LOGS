@@ -6,6 +6,7 @@ import {
   decodeAccessTokenClaims,
   dedupedRefresh,
   getRefreshToken,
+  SESSION_EXPIRED_EVENT,
   setAccessToken,
   setRefreshToken,
 } from "./tokenStore";
@@ -50,6 +51,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       })
       .finally(() => setIsLoading(false));
   }, [loadUserFromAccessToken]);
+
+  useEffect(() => {
+    // Fired by api/client.ts on a 401 from an authenticated request --
+    // tokenStore.clearSessionAndNotifyExpired already cleared the stored
+    // tokens; clearing `user` here is what actually makes `isAuthenticated`
+    // false, which is what ProtectedRoute's existing redirect already keys
+    // off of. No new redirect logic needed -- this reuses the ordinary
+    // "not authenticated" path a fresh unauthenticated visitor already hits.
+    const handleSessionExpired = () => setUser(null);
+    window.addEventListener(SESSION_EXPIRED_EVENT, handleSessionExpired);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, handleSessionExpired);
+  }, []);
 
   const handleSignup = useCallback(
     async (payload: SignupPayload) => {

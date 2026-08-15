@@ -27,6 +27,17 @@ no principled way to "fix" an ungrounded draft without regenerating it. Only
 once `agents.retry.call_with_retry`'s budget is exhausted does this node fall
 back to an explicit "insufficient grounded information" response, never a
 partially-fabricated one.
+
+`_generate_and_verify` also runs `agents.answer.sufficiency.assess_sufficiency`
+BEFORE generation, not just grounding verification after -- see that module's
+docstring for the confidently-wrong-answer failure mode (real, evaluated via
+`scripts/eval_confidence.py`) that only checking sentences after the fact
+against retrieved chunks cannot catch: a chunk can textually support a
+sentence's wording while still not actually answering the question, either
+because other retrieved chunks disagree with it or because it belongs to a
+different, superficially-similar topic. A non-"sufficient" verdict fails
+through the exact same retry-then-decline path an ungrounded draft already
+does.
 """
 
 from __future__ import annotations
@@ -40,6 +51,7 @@ from app.agents.answer.citations import build_citations
 from app.agents.answer.generation import generate_answer, is_no_answer
 from app.agents.answer.grounding import split_sentences, verify_grounding
 from app.agents.answer.markers import strip_markers
+from app.agents.answer.sufficiency import assess_sufficiency
 from app.agents.graph import GraphState
 from app.agents.retry import call_with_retry
 from app.retrieval.schemas import ScoredChunk
@@ -99,11 +111,25 @@ def make_answer_agent_node(
 async def _generate_and_verify(
     llm: BaseChatModel, query: str, chunks: list[ScoredChunk]
 ) -> tuple[str, list[Citation]]:
-    """One full generate-then-verify attempt. Raises `_UngroundedAnswerError`
-    if the model declined to answer, or if nothing survives grounding
-    verification -- either way, `call_with_retry` treats this as a retryable
-    failure and tries generation fresh.
+    """One full sufficiency-check-then-generate-then-verify attempt. Raises
+    `_UngroundedAnswerError` if the evidence is judged partial/insufficient
+    before generation even runs, if the model declined to answer, or if
+    nothing survives grounding verification -- every case flows through the
+    same retryable-failure path, so `call_with_retry` treats them
+    identically and tries a fresh attempt.
+
+    The sufficiency check runs FIRST, not after grounding: grounding only
+    ever checks whether a sentence the model already wrote is textually
+    supported by *some* chunk, never whether the evidence as a whole
+    actually answers `query` -- see `agents.answer.sufficiency`'s module
+    docstring for the two real failure shapes this closes (cross-chunk
+    conflict, topic-adjacent borrowing) that a purely post-generation check
+    cannot catch.
     """
+    verdict = await assess_sufficiency(llm, query, chunks)
+    if verdict != "sufficient":
+        raise _UngroundedAnswerError(f"evidence sufficiency check: {verdict}")
+
     raw_answer = await generate_answer(llm, query, chunks)
     if is_no_answer(raw_answer):
         raise _UngroundedAnswerError("model declined to answer from context")

@@ -2,25 +2,34 @@ import type { ISODateString, UUID } from "./common";
 
 export type IncidentSeverity = "critical" | "high" | "medium" | "low";
 
-export type IncidentStatus = "open" | "investigating" | "monitoring" | "resolved" | "closed";
+// Matches `app.shared.schemas.common.IncidentStatus` exactly -- the backend
+// has no "monitoring" state (a value the frontend previously invented).
+export type IncidentStatus = "open" | "investigating" | "resolved" | "closed";
 
+// Matches `app.core.incidents.schemas.Incident` field-for-field. The
+// previous shape (`displayId`, `service`, `assignee`, `tags`) matched
+// nothing the real backend returns -- there is no assignee concept and no
+// "service" field, only `ownerTeam` (nullable free text) and `projectId`.
 export interface Incident {
   id: UUID;
-  displayId: string;
+  organizationId: UUID;
+  projectId: UUID;
   title: string;
-  description?: string;
+  description: string;
   severity: IncidentSeverity;
   status: IncidentStatus;
-  service: string;
-  assignee?: {
-    id: UUID;
-    name: string;
-    avatarUrl?: string;
-  };
+  ownerTeam: string | null;
+  reportedBy: UUID;
+  resolvedAt: ISODateString | null;
   createdAt: ISODateString;
   updatedAt: ISODateString;
-  resolvedAt?: ISODateString;
-  tags?: string[];
+}
+
+export interface IncidentCreatePayload {
+  title: string;
+  description: string;
+  severity: IncidentSeverity;
+  projectId?: string;
 }
 
 export type TimelineEventType =
@@ -81,15 +90,15 @@ export interface IncidentComment {
   createdAt: ISODateString;
 }
 
+// Matches `app.core.incidents.schemas.IncidentFilter` exactly: single-value
+// severity/status/owner_team (never arrays), offset/limit pagination (the
+// backend exposes no total-count query -- see `app/api/routers/incidents.py`
+// `list_incidents`'s own docstring -- so there is no page-number pagination
+// to build, and no free-text `search` filter exists at all).
 export interface IncidentFilters {
-  search?: string;
-  severity?: IncidentSeverity[];
-  status?: IncidentStatus[];
-  service?: string[];
-  dateFrom?: string;
-  dateTo?: string;
-  page?: number;
-  pageSize?: number;
-  sortBy?: keyof Incident;
-  sortDir?: "asc" | "desc";
+  severity?: IncidentSeverity;
+  status?: IncidentStatus;
+  ownerTeam?: string;
+  limit?: number;
+  offset?: number;
 }

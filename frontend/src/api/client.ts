@@ -1,6 +1,6 @@
 import type { ApiError } from "@/types/common";
 import { API_BASE_URL } from "./config";
-import { getAccessToken } from "@/context/tokenStore";
+import { clearSessionAndNotifyExpired, getAccessToken } from "@/context/tokenStore";
 import { keysToCamelCase, keysToSnakeCase } from "./caseConversion";
 
 interface RequestOptions {
@@ -38,6 +38,20 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     } catch {
       // response had no JSON body
     }
+
+    // A 401 on a request that carried a Bearer token means the session
+    // itself died (expired/revoked access token) -- previously this just
+    // surfaced as a generic per-widget error, with no way back to a working
+    // state short of a manual page reload. A 401 with NO token attached
+    // (e.g. a wrong-password `/auth/login` attempt) is a different, local
+    // failure -- there is no session to expire yet -- so this must not fire
+    // for those or every failed login attempt would look like a forced
+    // logout. See tokenStore.clearSessionAndNotifyExpired for the reactive
+    // side (AuthContext clears its user state, ProtectedRoute redirects).
+    if (response.status === 401 && token) {
+      clearSessionAndNotifyExpired();
+    }
+
     throw error;
   }
 

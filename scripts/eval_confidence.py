@@ -807,6 +807,17 @@ async def _run(args) -> dict:
             "candidate threshold on this dataset -- no change supported.",
             flush=True,
         )
+    elif best["f1"] is None or current_metrics["f1"] is None:
+        # A --category filter that excludes the positive or negative class
+        # entirely (e.g. --category ambiguous) makes precision/recall/f1
+        # undefined at every threshold -- nothing to compare, so say that
+        # plainly instead of crashing trying to format None as .3f.
+        print(
+            "\n  f1 is undefined at one or both thresholds on this filtered dataset (a --category "
+            "filter likely excluded the positive or negative class entirely) -- no threshold "
+            "comparison is meaningful here.",
+            flush=True,
+        )
     elif f1_margin < _MARGIN_FOR_CHANGE:
         print(
             f"\n  {best['threshold']} scores marginally higher than the current default "

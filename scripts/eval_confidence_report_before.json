@@ -1,0 +1,852 @@
+{
+  "generated_at": "2026-08-13T08:18:54.671487+00:00",
+  "organization": {
+    "slug": "test-org",
+    "name": "Test Org"
+  },
+  "current_default_threshold": 0.6,
+  "excluded_count": 0,
+  "best_threshold": 0.4,
+  "best_threshold_metrics": {
+    "precision": 0.5384615384615384,
+    "recall": 1.0,
+    "f1": 0.7000000000000001,
+    "accuracy": 0.6666666666666666
+  },
+  "threshold_sweep": [
+    {
+      "threshold": 0.4,
+      "tp": 14,
+      "fp": 12,
+      "fn": 0,
+      "tn": 10,
+      "precision": 0.5384615384615384,
+      "recall": 1.0,
+      "f1": 0.7000000000000001,
+      "accuracy": 0.6666666666666666
+    },
+    {
+      "threshold": 0.45,
+      "tp": 13,
+      "fp": 12,
+      "fn": 1,
+      "tn": 10,
+      "precision": 0.52,
+      "recall": 0.9285714285714286,
+      "f1": 0.6666666666666666,
+      "accuracy": 0.6388888888888888
+    },
+    {
+      "threshold": 0.5,
+      "tp": 12,
+      "fp": 12,
+      "fn": 2,
+      "tn": 10,
+      "precision": 0.5,
+      "recall": 0.8571428571428571,
+      "f1": 0.631578947368421,
+      "accuracy": 0.6111111111111112
+    },
+    {
+      "threshold": 0.55,
+      "tp": 12,
+      "fp": 12,
+      "fn": 2,
+      "tn": 10,
+      "precision": 0.5,
+      "recall": 0.8571428571428571,
+      "f1": 0.631578947368421,
+      "accuracy": 0.6111111111111112
+    },
+    {
+      "threshold": 0.6,
+      "tp": 12,
+      "fp": 10,
+      "fn": 2,
+      "tn": 12,
+      "precision": 0.5454545454545454,
+      "recall": 0.8571428571428571,
+      "f1": 0.6666666666666665,
+      "accuracy": 0.6666666666666666
+    },
+    {
+      "threshold": 0.65,
+      "tp": 12,
+      "fp": 10,
+      "fn": 2,
+      "tn": 12,
+      "precision": 0.5454545454545454,
+      "recall": 0.8571428571428571,
+      "f1": 0.6666666666666665,
+      "accuracy": 0.6666666666666666
+    },
+    {
+      "threshold": 0.7,
+      "tp": 11,
+      "fp": 10,
+      "fn": 3,
+      "tn": 12,
+      "precision": 0.5238095238095238,
+      "recall": 0.7857142857142857,
+      "f1": 0.6285714285714286,
+      "accuracy": 0.6388888888888888
+    },
+    {
+      "threshold": 0.75,
+      "tp": 11,
+      "fp": 9,
+      "fn": 3,
+      "tn": 13,
+      "precision": 0.55,
+      "recall": 0.7857142857142857,
+      "f1": 0.6470588235294117,
+      "accuracy": 0.6666666666666666
+    },
+    {
+      "threshold": 0.8,
+      "tp": 1,
+      "fp": 1,
+      "fn": 13,
+      "tn": 21,
+      "precision": 0.5,
+      "recall": 0.07142857142857142,
+      "f1": 0.125,
+      "accuracy": 0.6111111111111112
+    }
+  ],
+  "category_behavior": {
+    "per_category": {
+      "clear-answer": {
+        "count": 14,
+        "real_answer_rate": 0.8571428571428571
+      },
+      "ambiguous": {
+        "count": 12,
+        "real_answer_rate": 0.3333333333333333
+      },
+      "no-information": {
+        "count": 10,
+        "real_answer_rate": 0.0
+      }
+    },
+    "clear_answer_accuracy": 0.8571428571428571,
+    "ambiguous_false_answer_rate": 0.3333333333333333,
+    "no_information_investigation_rate": 1.0
+  },
+  "grounding": {
+    "per_category": {
+      "clear-answer": 0.8869047619047619,
+      "ambiguous": 0.3333333333333333,
+      "no-information": 0.0
+    },
+    "headline_answer_grounding_rate": 0.8869047619047619
+  },
+  "confidence_by_category": {
+    "clear-answer": {
+      "min": 0.42243208939614363,
+      "max": 0.9999110649219626,
+      "mean": 0.7341093402682899,
+      "n": 14
+    },
+    "ambiguous": {
+      "min": 0.5722587905918991,
+      "max": 0.9996175502061315,
+      "mean": 0.7505482261064872,
+      "n": 12
+    },
+    "no-information": {
+      "min": 0.3888988233465785,
+      "max": 0.3905653459576398,
+      "mean": 0.38909259848367633,
+      "n": 10
+    }
+  },
+  "questions": [
+    {
+      "id": "sso-login-failure",
+      "category": "clear-answer",
+      "expected_route": "answer",
+      "actual_route_at_current_default": "answer",
+      "confidence_score": 0.7773067303109532,
+      "is_real_answer": true,
+      "citations_count": 2,
+      "answer": "Users were unable to log in through Google Workspace SSO due to an incorrect redirect URI configured in the identity provider, which caused an OIDC callback URL mismatch . The issue was fixed by updating the OIDC configuration .",
+      "error": null
+    },
+    {
+      "id": "embedding-worker-memory",
+      "category": "clear-answer",
+      "expected_route": "answer",
+      "actual_route_at_current_default": "answer",
+      "confidence_score": 0.7772811269597227,
+      "is_real_answer": true,
+      "citations_count": 2,
+      "answer": "The application containers restarted due to excessive memory consumption by the document embedding workers . The configuration change that resolved the issue was reducing worker concurrency from 10 to 4 .",
+      "error": null
+    },
+    {
+      "id": "incidents-api-500",
+      "category": "clear-answer",
+      "expected_route": "answer",
+      "actual_route_at_current_default": "answer",
+      "confidence_score": 0.7775850714661486,
+      "is_real_answer": true,
+      "citations_count": 1,
+      "answer": "The incidents API returns an HTTP 500 error when filtering by date range because the query builder was generating invalid SQL for empty date filters .",
+      "error": null
+    },
+    {
+      "id": "brute-force-login",
+      "category": "clear-answer",
+      "expected_route": "answer",
+      "actual_route_at_current_default": "answer",
+      "confidence_score": 0.6729412714894824,
+      "is_real_answer": true,
+      "citations_count": 2,
+      "answer": "Multiple failed authentication attempts were detected, originating from an unknown IP address, which resulted in one user account being temporarily locked after 10 failed attempts . The investigation revealed that this activity was likely a brute force attack . To mitigate the issue, stricter rate limiting was added to the authentication endpoint .",
+      "error": null
+    },
+    {
+      "id": "alembic-lock-timeout",
+      "category": "clear-answer",
+      "expected_route": "answer",
+      "actual_route_at_current_default": "answer",
+      "confidence_score": 0.7773712818199384,
+      "is_real_answer": true,
+      "citations_count": 2,
+      "answer": "The Alembic database migration failed with a lock timeout because it was modifying a large table during a high traffic period . The recommended solution was to run migrations during maintenance windows and use batch operations .",
+      "error": null
+    },
+    {
+      "id": "api-latency-analytics",
+      "category": "clear-answer",
+      "expected_route": "answer",
+      "actual_route_at_current_default": "answer",
+      "confidence_score": 0.9999110649219626,
+      "is_real_answer": true,
+      "citations_count": 3,
+      "answer": "The API latency increase after the analytics deployment was caused by an inefficient database query introduced by the analytics service, specifically due to a missing database index on the user_activity table . It was resolved by adding a database index migration .",
+      "error": null
+    },
+    {
+      "id": "rag-retrieval-quality",
+      "category": "clear-answer",
+      "expected_route": "answer",
+      "actual_route_at_current_default": "answer",
+      "confidence_score": 0.7776081529127968,
+      "is_real_answer": true,
+      "citations_count": 2,
+      "answer": "The changes made to improve retrieval accuracy when the RAG system was returning irrelevant documents include reducing chunk size, adding metadata filtering, and adding cross encoder reranking .",
+      "error": null
+    },
+    {
+      "id": "checkout-500-runbook",
+      "category": "clear-answer",
+      "expected_route": "answer",
+      "actual_route_at_current_default": "answer",
+      "confidence_score": 0.7681526462837883,
+      "is_real_answer": true,
+      "citations_count": 1,
+      "answer": "Check the payment adapter for null handling .",
+      "error": null
+    },
+    {
+      "id": "deployment-version",
+      "category": "clear-answer",
+      "expected_route": "answer",
+      "actual_route_at_current_default": "answer",
+      "confidence_score": 0.7699565221258149,
+      "is_real_answer": true,
+      "citations_count": 2,
+      "answer": "Version 2.4.0 was deployed to production when the API latency problem began .",
+      "error": null
+    },
+    {
+      "id": "code-patch-config-purpose",
+      "category": "clear-answer",
+      "expected_route": "answer",
+      "actual_route_at_current_default": "investigation",
+      "confidence_score": 0.42243208939614363,
+      "is_real_answer": false,
+      "citations_count": 0,
+      "answer": null,
+      "error": null
+    },
+    {
+      "id": "code-sample-with-temperature",
+      "category": "clear-answer",
+      "expected_route": "answer",
+      "actual_route_at_current_default": "answer",
+      "confidence_score": 0.751363225168685,
+      "is_real_answer": true,
+      "citations_count": 1,
+      "answer": "The `sample_with_temperature` function picks the next predicted token by first applying a logarithmic transformation to the predicted probabilities, adjusting them based on the specified temperature. Finally, it selects from the top-k indices based on their probabilities using a random choice weighted by these probabilities .",
+      "error": null
+    },
+    {
+      "id": "code-keras-mismatch-commit",
+      "category": "clear-answer",
+      "expected_route": "answer",
+      "actual_route_at_current_default": "answer",
+      "confidence_score": 0.7760825204367915,
+      "is_real_answer": true,
+      "citations_count": 1,
+      "answer": "The fix committed for the Keras version mismatch in app.py was called \"Add FixedInputLayer to handle Keras version mismatch in app.py\" .",
+      "error": null
+    },
+    {
+      "id": "test1-docs-restructure",
+      "category": "clear-answer",
+      "expected_route": "answer",
+      "actual_route_at_current_default": "answer",
+      "confidence_score": 0.7756231682486819,
+      "is_real_answer": true,
+      "citations_count": 1,
+      "answer": "The 'Improve test-1 documentation and developer experience' change actually restructured the documentation by adding a `docs/` directory that covers introduction, installation, local development, repository structure, usage, testing, and troubleshooting .",
+      "error": null
+    },
+    {
+      "id": "readme-project-name",
+      "category": "clear-answer",
+      "expected_route": "answer",
+      "actual_route_at_current_default": "investigation",
+      "confidence_score": 0.4539158922151478,
+      "is_real_answer": false,
+      "citations_count": 0,
+      "answer": null,
+      "error": null
+    },
+    {
+      "id": "python-version-conflict",
+      "category": "ambiguous",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": "answer",
+      "confidence_score": 0.7222381272849492,
+      "is_real_answer": true,
+      "citations_count": 1,
+      "answer": "The project requires Python version 3.11.9 .",
+      "error": null
+    },
+    {
+      "id": "tensorflow-keras-upgrade-reason",
+      "category": "ambiguous",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": "answer",
+      "confidence_score": 0.9996175502061315,
+      "is_real_answer": true,
+      "citations_count": 1,
+      "answer": "The upgrade was necessary to support the modern model format due to a Keras version mismatch, specifically related to how the InputLayer saves 'batch_shape' and 'optional' attributes, which older versions do not understand .",
+      "error": null
+    },
+    {
+      "id": "render-build-command-fix",
+      "category": "ambiguous",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": "answer",
+      "confidence_score": 0.7691807835048563,
+      "is_real_answer": false,
+      "citations_count": 0,
+      "answer": "I don't have enough grounded information from the available sources to answer this confidently.",
+      "error": null
+    },
+    {
+      "id": "force-python311-reason",
+      "category": "ambiguous",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": "answer",
+      "confidence_score": 0.7753890376676875,
+      "is_real_answer": true,
+      "citations_count": 1,
+      "answer": "The project forced Python 3.11 and removed pyproject.toml to ensure compatibility with the specified Python version .",
+      "error": null
+    },
+    {
+      "id": "startup-crash-root-cause",
+      "category": "ambiguous",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": "answer",
+      "confidence_score": 0.7592472553400732,
+      "is_real_answer": true,
+      "citations_count": 1,
+      "answer": "The root cause of the startup crash was related to deferring model/tokenizer loading with caching .",
+      "error": null
+    },
+    {
+      "id": "rag-chunk-size-exact-value",
+      "category": "ambiguous",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": "investigation",
+      "confidence_score": 0.572937741149942,
+      "is_real_answer": false,
+      "citations_count": 0,
+      "answer": null,
+      "error": null
+    },
+    {
+      "id": "alembic-exact-maintenance-window",
+      "category": "ambiguous",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": "investigation",
+      "confidence_score": 0.5722587905918991,
+      "is_real_answer": false,
+      "citations_count": 0,
+      "answer": null,
+      "error": null
+    },
+    {
+      "id": "brute-force-source-ip",
+      "category": "ambiguous",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": "answer",
+      "confidence_score": 0.7754045912129555,
+      "is_real_answer": false,
+      "citations_count": 0,
+      "answer": "I don't have enough grounded information from the available sources to answer this confidently.",
+      "error": null
+    },
+    {
+      "id": "embedding-worker-exact-memory-gb",
+      "category": "ambiguous",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": "answer",
+      "confidence_score": 0.7761551348462351,
+      "is_real_answer": false,
+      "citations_count": 0,
+      "answer": "I don't have enough grounded information from the available sources to answer this confidently.",
+      "error": null
+    },
+    {
+      "id": "checkout-runbook-secondary-step",
+      "category": "ambiguous",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": "answer",
+      "confidence_score": 0.758638547979041,
+      "is_real_answer": false,
+      "citations_count": 0,
+      "answer": "I don't have enough grounded information from the available sources to answer this confidently.",
+      "error": null
+    },
+    {
+      "id": "sso-doc-location-and-owner",
+      "category": "ambiguous",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": "answer",
+      "confidence_score": 0.7533078289670726,
+      "is_real_answer": false,
+      "citations_count": 0,
+      "answer": "I don't have enough grounded information from the available sources to answer this confidently.",
+      "error": null
+    },
+    {
+      "id": "incidents-api-fix-deployed-when",
+      "category": "ambiguous",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": "answer",
+      "confidence_score": 0.7722033245270042,
+      "is_real_answer": false,
+      "citations_count": 0,
+      "answer": "I don't have enough grounded information from the available sources to answer this confidently.",
+      "error": null
+    },
+    {
+      "id": "neg-parental-leave",
+      "category": "no-information",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": "investigation",
+      "confidence_score": 0.3889344841281954,
+      "is_real_answer": false,
+      "citations_count": 0,
+      "answer": null,
+      "error": null
+    },
+    {
+      "id": "neg-world-cup",
+      "category": "no-information",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": "investigation",
+      "confidence_score": 0.3905653459576398,
+      "is_real_answer": false,
+      "citations_count": 0,
+      "answer": null,
+      "error": null
+    },
+    {
+      "id": "neg-k8s-autoscaling",
+      "category": "no-information",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": "investigation",
+      "confidence_score": 0.3889253672913254,
+      "is_real_answer": false,
+      "citations_count": 0,
+      "answer": null,
+      "error": null
+    },
+    {
+      "id": "neg-aws-spend",
+      "category": "no-information",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": "investigation",
+      "confidence_score": 0.38901222240721567,
+      "is_real_answer": false,
+      "citations_count": 0,
+      "answer": null,
+      "error": null
+    },
+    {
+      "id": "neg-database-vendor-pricing",
+      "category": "no-information",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": "investigation",
+      "confidence_score": 0.38890034313322563,
+      "is_real_answer": false,
+      "citations_count": 0,
+      "answer": null,
+      "error": null
+    },
+    {
+      "id": "neg-oncall-rotation",
+      "category": "no-information",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": "investigation",
+      "confidence_score": 0.38890756192933174,
+      "is_real_answer": false,
+      "citations_count": 0,
+      "answer": null,
+      "error": null
+    },
+    {
+      "id": "neg-competitor-analysis",
+      "category": "no-information",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": "investigation",
+      "confidence_score": 0.3889267133697089,
+      "is_real_answer": false,
+      "citations_count": 0,
+      "answer": null,
+      "error": null
+    },
+    {
+      "id": "neg-legal-contract-terms",
+      "category": "no-information",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": "investigation",
+      "confidence_score": 0.3888988233465785,
+      "is_real_answer": false,
+      "citations_count": 0,
+      "answer": null,
+      "error": null
+    },
+    {
+      "id": "neg-marketing-campaign-ctr",
+      "category": "no-information",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": "investigation",
+      "confidence_score": 0.3889318734293207,
+      "is_real_answer": false,
+      "citations_count": 0,
+      "answer": null,
+      "error": null
+    },
+    {
+      "id": "neg-team-headcount",
+      "category": "no-information",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": "investigation",
+      "confidence_score": 0.3889232498442219,
+      "is_real_answer": false,
+      "citations_count": 0,
+      "answer": null,
+      "error": null
+    }
+  ],
+  "grounding_traces": [
+    {
+      "id": "sso-login-failure",
+      "category": "clear-answer",
+      "sentence_count": 2,
+      "grounded_count": 2,
+      "grounded_ratio": 1.0,
+      "error": null
+    },
+    {
+      "id": "embedding-worker-memory",
+      "category": "clear-answer",
+      "sentence_count": 2,
+      "grounded_count": 2,
+      "grounded_ratio": 1.0,
+      "error": null
+    },
+    {
+      "id": "incidents-api-500",
+      "category": "clear-answer",
+      "sentence_count": 1,
+      "grounded_count": 1,
+      "grounded_ratio": 1.0,
+      "error": null
+    },
+    {
+      "id": "brute-force-login",
+      "category": "clear-answer",
+      "sentence_count": 4,
+      "grounded_count": 3,
+      "grounded_ratio": 0.75,
+      "error": null
+    },
+    {
+      "id": "alembic-lock-timeout",
+      "category": "clear-answer",
+      "sentence_count": 2,
+      "grounded_count": 2,
+      "grounded_ratio": 1.0,
+      "error": null
+    },
+    {
+      "id": "api-latency-analytics",
+      "category": "clear-answer",
+      "sentence_count": 2,
+      "grounded_count": 2,
+      "grounded_ratio": 1.0,
+      "error": null
+    },
+    {
+      "id": "rag-retrieval-quality",
+      "category": "clear-answer",
+      "sentence_count": 1,
+      "grounded_count": 1,
+      "grounded_ratio": 1.0,
+      "error": null
+    },
+    {
+      "id": "checkout-500-runbook",
+      "category": "clear-answer",
+      "sentence_count": 1,
+      "grounded_count": 1,
+      "grounded_ratio": 1.0,
+      "error": null
+    },
+    {
+      "id": "deployment-version",
+      "category": "clear-answer",
+      "sentence_count": 1,
+      "grounded_count": 1,
+      "grounded_ratio": 1.0,
+      "error": null
+    },
+    {
+      "id": "code-patch-config-purpose",
+      "category": "clear-answer",
+      "sentence_count": 3,
+      "grounded_count": 3,
+      "grounded_ratio": 1.0,
+      "error": null
+    },
+    {
+      "id": "code-sample-with-temperature",
+      "category": "clear-answer",
+      "sentence_count": 3,
+      "grounded_count": 2,
+      "grounded_ratio": 0.6666666666666666,
+      "error": null
+    },
+    {
+      "id": "code-keras-mismatch-commit",
+      "category": "clear-answer",
+      "sentence_count": 1,
+      "grounded_count": 1,
+      "grounded_ratio": 1.0,
+      "error": null
+    },
+    {
+      "id": "test1-docs-restructure",
+      "category": "clear-answer",
+      "sentence_count": 1,
+      "grounded_count": 1,
+      "grounded_ratio": 1.0,
+      "error": null
+    },
+    {
+      "id": "readme-project-name",
+      "category": "clear-answer",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": 0.0,
+      "error": null
+    },
+    {
+      "id": "python-version-conflict",
+      "category": "ambiguous",
+      "sentence_count": 1,
+      "grounded_count": 1,
+      "grounded_ratio": 1.0,
+      "error": null
+    },
+    {
+      "id": "tensorflow-keras-upgrade-reason",
+      "category": "ambiguous",
+      "sentence_count": 1,
+      "grounded_count": 1,
+      "grounded_ratio": 1.0,
+      "error": null
+    },
+    {
+      "id": "render-build-command-fix",
+      "category": "ambiguous",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": 0.0,
+      "error": null
+    },
+    {
+      "id": "force-python311-reason",
+      "category": "ambiguous",
+      "sentence_count": 1,
+      "grounded_count": 1,
+      "grounded_ratio": 1.0,
+      "error": null
+    },
+    {
+      "id": "startup-crash-root-cause",
+      "category": "ambiguous",
+      "sentence_count": 1,
+      "grounded_count": 1,
+      "grounded_ratio": 1.0,
+      "error": null
+    },
+    {
+      "id": "rag-chunk-size-exact-value",
+      "category": "ambiguous",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": 0.0,
+      "error": null
+    },
+    {
+      "id": "alembic-exact-maintenance-window",
+      "category": "ambiguous",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": 0.0,
+      "error": null
+    },
+    {
+      "id": "brute-force-source-ip",
+      "category": "ambiguous",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": 0.0,
+      "error": null
+    },
+    {
+      "id": "embedding-worker-exact-memory-gb",
+      "category": "ambiguous",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": 0.0,
+      "error": null
+    },
+    {
+      "id": "checkout-runbook-secondary-step",
+      "category": "ambiguous",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": 0.0,
+      "error": null
+    },
+    {
+      "id": "sso-doc-location-and-owner",
+      "category": "ambiguous",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": 0.0,
+      "error": null
+    },
+    {
+      "id": "incidents-api-fix-deployed-when",
+      "category": "ambiguous",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": 0.0,
+      "error": null
+    },
+    {
+      "id": "neg-parental-leave",
+      "category": "no-information",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": 0.0,
+      "error": null
+    },
+    {
+      "id": "neg-world-cup",
+      "category": "no-information",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": 0.0,
+      "error": null
+    },
+    {
+      "id": "neg-k8s-autoscaling",
+      "category": "no-information",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": 0.0,
+      "error": null
+    },
+    {
+      "id": "neg-aws-spend",
+      "category": "no-information",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": 0.0,
+      "error": null
+    },
+    {
+      "id": "neg-database-vendor-pricing",
+      "category": "no-information",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": 0.0,
+      "error": null
+    },
+    {
+      "id": "neg-oncall-rotation",
+      "category": "no-information",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": 0.0,
+      "error": null
+    },
+    {
+      "id": "neg-competitor-analysis",
+      "category": "no-information",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": 0.0,
+      "error": null
+    },
+    {
+      "id": "neg-legal-contract-terms",
+      "category": "no-information",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": 0.0,
+      "error": null
+    },
+    {
+      "id": "neg-marketing-campaign-ctr",
+      "category": "no-information",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": 0.0,
+      "error": null
+    },
+    {
+      "id": "neg-team-headcount",
+      "category": "no-information",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": 0.0,
+      "error": null
+    }
+  ]
+}

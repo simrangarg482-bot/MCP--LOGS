@@ -1,0 +1,830 @@
+{
+  "generated_at": "2026-08-14T04:42:57.228241+00:00",
+  "organization": {
+    "slug": "test-org",
+    "name": "Test Org"
+  },
+  "current_default_threshold": 0.6,
+  "excluded_count": 22,
+  "best_threshold": 0.4,
+  "best_threshold_metrics": {
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1": 1.0,
+    "accuracy": 1.0
+  },
+  "threshold_sweep": [
+    {
+      "threshold": 0.4,
+      "tp": 14,
+      "fp": 0,
+      "fn": 0,
+      "tn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "accuracy": 1.0
+    },
+    {
+      "threshold": 0.45,
+      "tp": 13,
+      "fp": 0,
+      "fn": 1,
+      "tn": 0,
+      "precision": 1.0,
+      "recall": 0.9285714285714286,
+      "f1": 0.962962962962963,
+      "accuracy": 0.9285714285714286
+    },
+    {
+      "threshold": 0.5,
+      "tp": 12,
+      "fp": 0,
+      "fn": 2,
+      "tn": 0,
+      "precision": 1.0,
+      "recall": 0.8571428571428571,
+      "f1": 0.923076923076923,
+      "accuracy": 0.8571428571428571
+    },
+    {
+      "threshold": 0.55,
+      "tp": 12,
+      "fp": 0,
+      "fn": 2,
+      "tn": 0,
+      "precision": 1.0,
+      "recall": 0.8571428571428571,
+      "f1": 0.923076923076923,
+      "accuracy": 0.8571428571428571
+    },
+    {
+      "threshold": 0.6,
+      "tp": 12,
+      "fp": 0,
+      "fn": 2,
+      "tn": 0,
+      "precision": 1.0,
+      "recall": 0.8571428571428571,
+      "f1": 0.923076923076923,
+      "accuracy": 0.8571428571428571
+    },
+    {
+      "threshold": 0.65,
+      "tp": 12,
+      "fp": 0,
+      "fn": 2,
+      "tn": 0,
+      "precision": 1.0,
+      "recall": 0.8571428571428571,
+      "f1": 0.923076923076923,
+      "accuracy": 0.8571428571428571
+    },
+    {
+      "threshold": 0.7,
+      "tp": 11,
+      "fp": 0,
+      "fn": 3,
+      "tn": 0,
+      "precision": 1.0,
+      "recall": 0.7857142857142857,
+      "f1": 0.88,
+      "accuracy": 0.7857142857142857
+    },
+    {
+      "threshold": 0.75,
+      "tp": 11,
+      "fp": 0,
+      "fn": 3,
+      "tn": 0,
+      "precision": 1.0,
+      "recall": 0.7857142857142857,
+      "f1": 0.88,
+      "accuracy": 0.7857142857142857
+    },
+    {
+      "threshold": 0.8,
+      "tp": 1,
+      "fp": 0,
+      "fn": 13,
+      "tn": 0,
+      "precision": 1.0,
+      "recall": 0.07142857142857142,
+      "f1": 0.13333333333333333,
+      "accuracy": 0.07142857142857142
+    }
+  ],
+  "category_behavior": {
+    "per_category": {
+      "clear-answer": {
+        "count": 14,
+        "real_answer_rate": 0.8571428571428571
+      }
+    },
+    "clear_answer_accuracy": 0.8571428571428571,
+    "ambiguous_false_answer_rate": null,
+    "no_information_investigation_rate": null
+  },
+  "grounding": {
+    "per_category": {
+      "clear-answer": 1.0
+    },
+    "headline_answer_grounding_rate": 1.0
+  },
+  "confidence_by_category": {
+    "clear-answer": {
+      "min": 0.42243208939614363,
+      "max": 0.9999110649219626,
+      "mean": 0.7341093402682899,
+      "n": 14
+    }
+  },
+  "questions": [
+    {
+      "id": "sso-login-failure",
+      "category": "clear-answer",
+      "expected_route": "answer",
+      "actual_route_at_current_default": "answer",
+      "confidence_score": 0.7773067303109532,
+      "is_real_answer": true,
+      "citations_count": 2,
+      "answer": "Users were unable to log in through Google Workspace SSO due to an incorrect redirect URI configured in the identity provider, which caused an OIDC callback URL mismatch . The issue was fixed by updating the OIDC configuration .",
+      "error": null
+    },
+    {
+      "id": "embedding-worker-memory",
+      "category": "clear-answer",
+      "expected_route": "answer",
+      "actual_route_at_current_default": "answer",
+      "confidence_score": 0.7772811269597227,
+      "is_real_answer": true,
+      "citations_count": 2,
+      "answer": "The application containers restarted due to excessive memory consumption by the document embedding workers . The configuration change that resolved the issue was reducing worker concurrency from 10 to 4 .",
+      "error": null
+    },
+    {
+      "id": "incidents-api-500",
+      "category": "clear-answer",
+      "expected_route": "answer",
+      "actual_route_at_current_default": "answer",
+      "confidence_score": 0.7775850714661486,
+      "is_real_answer": true,
+      "citations_count": 1,
+      "answer": "The incidents API returns an HTTP 500 error when filtering by date range because the query builder was generating invalid SQL for empty date filters .",
+      "error": null
+    },
+    {
+      "id": "brute-force-login",
+      "category": "clear-answer",
+      "expected_route": "answer",
+      "actual_route_at_current_default": "answer",
+      "confidence_score": 0.6729412714894824,
+      "is_real_answer": true,
+      "citations_count": 2,
+      "answer": "Multiple failed authentication attempts were detected from an unknown IP address, leading to one user account being temporarily locked after 10 failed attempts . The investigation revealed that the activity was a possible brute force attack . To mitigate this, stricter rate limiting was added to the authentication endpoint .",
+      "error": null
+    },
+    {
+      "id": "alembic-lock-timeout",
+      "category": "clear-answer",
+      "expected_route": "answer",
+      "actual_route_at_current_default": "answer",
+      "confidence_score": 0.7773712818199384,
+      "is_real_answer": true,
+      "citations_count": 1,
+      "answer": "The Alembic database migration failed with a lock timeout because it was modifying a large table during peak traffic hours . The recommended solution was to schedule migrations during low traffic windows and use batch operations .",
+      "error": null
+    },
+    {
+      "id": "api-latency-analytics",
+      "category": "clear-answer",
+      "expected_route": "answer",
+      "actual_route_at_current_default": "answer",
+      "confidence_score": 0.9999110649219626,
+      "is_real_answer": true,
+      "citations_count": 4,
+      "answer": "The API latency increase after the analytics deployment was caused by an inefficient database query introduced by the analytics service, specifically due to a missing database index on the user_activity table . It was resolved by adding a database index migration .",
+      "error": null
+    },
+    {
+      "id": "rag-retrieval-quality",
+      "category": "clear-answer",
+      "expected_route": "answer",
+      "actual_route_at_current_default": "answer",
+      "confidence_score": 0.7776081529127968,
+      "is_real_answer": true,
+      "citations_count": 2,
+      "answer": "The changes made to improve retrieval accuracy when the RAG system was returning irrelevant documents include reducing chunk size, adding metadata filtering, and adding cross encoder reranking .",
+      "error": null
+    },
+    {
+      "id": "checkout-500-runbook",
+      "category": "clear-answer",
+      "expected_route": "answer",
+      "actual_route_at_current_default": "answer",
+      "confidence_score": 0.7681526462837883,
+      "is_real_answer": true,
+      "citations_count": 1,
+      "answer": "Check the payment adapter for null handling .",
+      "error": null
+    },
+    {
+      "id": "deployment-version",
+      "category": "clear-answer",
+      "expected_route": "answer",
+      "actual_route_at_current_default": "answer",
+      "confidence_score": 0.7699565221258149,
+      "is_real_answer": true,
+      "citations_count": 2,
+      "answer": "Version 2.4.0 was deployed to production when the API latency problem began .",
+      "error": null
+    },
+    {
+      "id": "code-patch-config-purpose",
+      "category": "clear-answer",
+      "expected_route": "answer",
+      "actual_route_at_current_default": "investigation",
+      "confidence_score": 0.42243208939614363,
+      "is_real_answer": false,
+      "citations_count": 0,
+      "answer": null,
+      "error": null
+    },
+    {
+      "id": "code-sample-with-temperature",
+      "category": "clear-answer",
+      "expected_route": "answer",
+      "actual_route_at_current_default": "answer",
+      "confidence_score": 0.751363225168685,
+      "is_real_answer": true,
+      "citations_count": 1,
+      "answer": "The `sample_with_temperature` function picks the next predicted token by first applying a logarithmic transformation to the predicted probabilities and then scaling them by the temperature parameter. The function then selects the top indices based on the probabilities and randomly chooses one of these indices according to their normalized probabilities .",
+      "error": null
+    },
+    {
+      "id": "code-keras-mismatch-commit",
+      "category": "clear-answer",
+      "expected_route": "answer",
+      "actual_route_at_current_default": "answer",
+      "confidence_score": 0.7760825204367915,
+      "is_real_answer": true,
+      "citations_count": 1,
+      "answer": "The fix committed for the Keras version mismatch in app.py was called \"Add FixedInputLayer to handle Keras version mismatch in app.py\" .",
+      "error": null
+    },
+    {
+      "id": "test1-docs-restructure",
+      "category": "clear-answer",
+      "expected_route": "answer",
+      "actual_route_at_current_default": "answer",
+      "confidence_score": 0.7756231682486819,
+      "is_real_answer": true,
+      "citations_count": 2,
+      "answer": "The 'Improve test-1 documentation and developer experience' change actually restructured the documentation into a proper `docs/` directory, which includes sections on introduction, installation, local development, repository structure, usage, testing, and troubleshooting .",
+      "error": null
+    },
+    {
+      "id": "readme-project-name",
+      "category": "clear-answer",
+      "expected_route": "answer",
+      "actual_route_at_current_default": "investigation",
+      "confidence_score": 0.4539158922151478,
+      "is_real_answer": false,
+      "citations_count": 0,
+      "answer": null,
+      "error": null
+    },
+    {
+      "id": "python-version-conflict",
+      "category": "ambiguous",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": null,
+      "confidence_score": null,
+      "is_real_answer": null,
+      "citations_count": 0,
+      "answer": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "tensorflow-keras-upgrade-reason",
+      "category": "ambiguous",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": null,
+      "confidence_score": null,
+      "is_real_answer": null,
+      "citations_count": 0,
+      "answer": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "render-build-command-fix",
+      "category": "ambiguous",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": null,
+      "confidence_score": null,
+      "is_real_answer": null,
+      "citations_count": 0,
+      "answer": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "force-python311-reason",
+      "category": "ambiguous",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": null,
+      "confidence_score": null,
+      "is_real_answer": null,
+      "citations_count": 0,
+      "answer": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "startup-crash-root-cause",
+      "category": "ambiguous",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": null,
+      "confidence_score": null,
+      "is_real_answer": null,
+      "citations_count": 0,
+      "answer": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "rag-chunk-size-exact-value",
+      "category": "ambiguous",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": null,
+      "confidence_score": null,
+      "is_real_answer": null,
+      "citations_count": 0,
+      "answer": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "alembic-exact-maintenance-window",
+      "category": "ambiguous",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": null,
+      "confidence_score": null,
+      "is_real_answer": null,
+      "citations_count": 0,
+      "answer": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "brute-force-source-ip",
+      "category": "ambiguous",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": null,
+      "confidence_score": null,
+      "is_real_answer": null,
+      "citations_count": 0,
+      "answer": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "embedding-worker-exact-memory-gb",
+      "category": "ambiguous",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": null,
+      "confidence_score": null,
+      "is_real_answer": null,
+      "citations_count": 0,
+      "answer": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "checkout-runbook-secondary-step",
+      "category": "ambiguous",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": null,
+      "confidence_score": null,
+      "is_real_answer": null,
+      "citations_count": 0,
+      "answer": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "sso-doc-location-and-owner",
+      "category": "ambiguous",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": null,
+      "confidence_score": null,
+      "is_real_answer": null,
+      "citations_count": 0,
+      "answer": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "incidents-api-fix-deployed-when",
+      "category": "ambiguous",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": null,
+      "confidence_score": null,
+      "is_real_answer": null,
+      "citations_count": 0,
+      "answer": null,
+      "error": ""
+    },
+    {
+      "id": "neg-parental-leave",
+      "category": "no-information",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": null,
+      "confidence_score": null,
+      "is_real_answer": null,
+      "citations_count": 0,
+      "answer": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "neg-world-cup",
+      "category": "no-information",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": null,
+      "confidence_score": null,
+      "is_real_answer": null,
+      "citations_count": 0,
+      "answer": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "neg-k8s-autoscaling",
+      "category": "no-information",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": null,
+      "confidence_score": null,
+      "is_real_answer": null,
+      "citations_count": 0,
+      "answer": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "neg-aws-spend",
+      "category": "no-information",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": null,
+      "confidence_score": null,
+      "is_real_answer": null,
+      "citations_count": 0,
+      "answer": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "neg-database-vendor-pricing",
+      "category": "no-information",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": null,
+      "confidence_score": null,
+      "is_real_answer": null,
+      "citations_count": 0,
+      "answer": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "neg-oncall-rotation",
+      "category": "no-information",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": null,
+      "confidence_score": null,
+      "is_real_answer": null,
+      "citations_count": 0,
+      "answer": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "neg-competitor-analysis",
+      "category": "no-information",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": null,
+      "confidence_score": null,
+      "is_real_answer": null,
+      "citations_count": 0,
+      "answer": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "neg-legal-contract-terms",
+      "category": "no-information",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": null,
+      "confidence_score": null,
+      "is_real_answer": null,
+      "citations_count": 0,
+      "answer": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "neg-marketing-campaign-ctr",
+      "category": "no-information",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": null,
+      "confidence_score": null,
+      "is_real_answer": null,
+      "citations_count": 0,
+      "answer": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "neg-team-headcount",
+      "category": "no-information",
+      "expected_route": "investigation",
+      "actual_route_at_current_default": null,
+      "confidence_score": null,
+      "is_real_answer": null,
+      "citations_count": 0,
+      "answer": null,
+      "error": ""
+    }
+  ],
+  "grounding_traces": [
+    {
+      "id": "sso-login-failure",
+      "category": "clear-answer",
+      "sentence_count": 2,
+      "grounded_count": 2,
+      "grounded_ratio": 1.0,
+      "error": null
+    },
+    {
+      "id": "embedding-worker-memory",
+      "category": "clear-answer",
+      "sentence_count": 2,
+      "grounded_count": 2,
+      "grounded_ratio": 1.0,
+      "error": null
+    },
+    {
+      "id": "incidents-api-500",
+      "category": "clear-answer",
+      "sentence_count": 1,
+      "grounded_count": 1,
+      "grounded_ratio": 1.0,
+      "error": null
+    },
+    {
+      "id": "brute-force-login",
+      "category": "clear-answer",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": null,
+      "error": "Connection error."
+    },
+    {
+      "id": "alembic-lock-timeout",
+      "category": "clear-answer",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "api-latency-analytics",
+      "category": "clear-answer",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "rag-retrieval-quality",
+      "category": "clear-answer",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "checkout-500-runbook",
+      "category": "clear-answer",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "deployment-version",
+      "category": "clear-answer",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "code-patch-config-purpose",
+      "category": "clear-answer",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "code-sample-with-temperature",
+      "category": "clear-answer",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "code-keras-mismatch-commit",
+      "category": "clear-answer",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "test1-docs-restructure",
+      "category": "clear-answer",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "readme-project-name",
+      "category": "clear-answer",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "python-version-conflict",
+      "category": "ambiguous",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "tensorflow-keras-upgrade-reason",
+      "category": "ambiguous",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "render-build-command-fix",
+      "category": "ambiguous",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "force-python311-reason",
+      "category": "ambiguous",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "startup-crash-root-cause",
+      "category": "ambiguous",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "rag-chunk-size-exact-value",
+      "category": "ambiguous",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "alembic-exact-maintenance-window",
+      "category": "ambiguous",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "brute-force-source-ip",
+      "category": "ambiguous",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "embedding-worker-exact-memory-gb",
+      "category": "ambiguous",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "checkout-runbook-secondary-step",
+      "category": "ambiguous",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "sso-doc-location-and-owner",
+      "category": "ambiguous",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "incidents-api-fix-deployed-when",
+      "category": "ambiguous",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "neg-parental-leave",
+      "category": "no-information",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "neg-world-cup",
+      "category": "no-information",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "neg-k8s-autoscaling",
+      "category": "no-information",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "neg-aws-spend",
+      "category": "no-information",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "neg-database-vendor-pricing",
+      "category": "no-information",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "neg-oncall-rotation",
+      "category": "no-information",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "neg-competitor-analysis",
+      "category": "no-information",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "neg-legal-contract-terms",
+      "category": "no-information",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "neg-marketing-campaign-ctr",
+      "category": "no-information",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    },
+    {
+      "id": "neg-team-headcount",
+      "category": "no-information",
+      "sentence_count": 0,
+      "grounded_count": 0,
+      "grounded_ratio": null,
+      "error": "[Errno 11001] getaddrinfo failed"
+    }
+  ]
+}

@@ -56,10 +56,34 @@ export function ChatMessage({ turn }: { turn: ChatTurn }) {
                     Confidence was too low for a direct answer -- EKIP escalated to an investigation.
                   </div>
 
+                  {turn.response.investigation.evidence.length > 0 && (
+                    <div>
+                      <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-ink-subtle">
+                        Verified evidence
+                      </p>
+                      <ul className="flex flex-col gap-1.5">
+                        {turn.response.investigation.evidence.map((item, index) => (
+                          <li
+                            key={index}
+                            className="rounded-md border border-border bg-white px-2.5 py-2 text-sm text-ink"
+                          >
+                            <div className="mb-0.5 flex items-center gap-1.5">
+                              <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-ink-muted">
+                                {item.source}
+                              </span>
+                              <span className="text-xs text-ink-muted">{item.reference}</span>
+                            </div>
+                            <p className="text-sm text-ink">{item.summary}</p>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
                   {turn.response.investigation.hypotheses.length > 0 && (
                     <div>
                       <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-ink-subtle">
-                        Hypotheses
+                        Hypotheses (AI-generated, unverified)
                       </p>
                       <ul className="flex flex-col gap-1.5">
                         {turn.response.investigation.hypotheses.map((hypothesis, index) => (
