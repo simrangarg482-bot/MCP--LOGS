@@ -21,15 +21,39 @@ export async function listProjects(organizationId: string): Promise<Project[]> {
   return apiRequest<Project[]>(`/organizations/${organizationId}/projects`);
 }
 
-export async function listOrgUsers(): Promise<OrgUser[]> {
+interface OrganizationMemberResponse {
+  id: string;
+  email: string;
+  displayName: string;
+  isActive: boolean;
+  roles: string[];
+  createdAt: string;
+}
+
+/**
+ * `GET /organizations/{id}/members` -- a real Phase 2 addition
+ * (`core.users.service.list_organization_members`); this previously pointed
+ * at a `GET /users` endpoint that never existed on the backend at all.
+ */
+export async function listOrgUsers(organizationId: string): Promise<OrgUser[]> {
   if (USE_MOCK_DATA) {
     return mockDelay(mockUsers);
   }
-  // No real "list users in my organization" endpoint exists yet on the
-  // backend (only /users/{id}/logout-all). Left pointed at the closest
-  // plausible path so this fails loudly (404) instead of silently, until
-  // that endpoint exists.
-  return apiRequest<OrgUser[]>(`/users`);
+  const members = await apiRequest<OrganizationMemberResponse[]>(
+    `/organizations/${organizationId}/members`,
+  );
+  return members.map((member) => ({
+    id: member.id,
+    name: member.displayName,
+    email: member.email,
+    // The backend returns every role name a member holds (alphabetically
+    // sorted); the frontend's OrgUser model only has room for one, so this
+    // picks the first -- the same simplification `getCurrentUser` already
+    // makes for the current user (`roles[0]`), not a "most privileged role"
+    // selection.
+    role: (member.roles[0] as OrgUser["role"]) ?? "member",
+    status: member.isActive ? "active" : "suspended",
+  }));
 }
 
 export async function getSsoConfig(_organizationId: string): Promise<SsoConfig> {

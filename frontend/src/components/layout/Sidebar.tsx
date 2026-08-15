@@ -1,13 +1,18 @@
 import { NavLink } from "react-router-dom";
 import { Boxes } from "lucide-react";
 import { cn } from "@/utils/cn";
-import { PRIMARY_NAV, SETTINGS_NAV } from "@/routes/nav";
+import { PRIMARY_NAV, SETTINGS_NAV, type NavItem } from "@/routes/nav";
+import { useAuth } from "@/context/AuthContext";
 
 interface SidebarProps {
   collapsed?: boolean;
 }
 
 export function Sidebar({ collapsed }: SidebarProps) {
+  const { user } = useAuth();
+  const permissions = new Set(user?.permissions ?? []);
+  const visible = (item: NavItem) => !item.permission || permissions.has(item.permission);
+
   return (
     <aside
       className={cn(
@@ -24,7 +29,7 @@ export function Sidebar({ collapsed }: SidebarProps) {
 
       <nav className="flex-1 overflow-y-auto px-2 py-3 scrollbar-thin">
         <ul className="flex flex-col gap-0.5">
-          {PRIMARY_NAV.map((item) => (
+          {PRIMARY_NAV.filter(visible).map((item) => (
             <SidebarLink key={item.path} item={item} collapsed={collapsed} />
           ))}
         </ul>
@@ -32,7 +37,7 @@ export function Sidebar({ collapsed }: SidebarProps) {
         <div className="my-3 border-t border-sidebar-border" />
 
         <ul className="flex flex-col gap-0.5">
-          {SETTINGS_NAV.map((item) => (
+          {SETTINGS_NAV.filter(visible).map((item) => (
             <SidebarLink key={item.path} item={item} collapsed={collapsed} />
           ))}
         </ul>

@@ -85,7 +85,12 @@ function InviteUserModal({ open, onClose }: { open: boolean; onClose: () => void
 }
 
 export function UsersSettingsPage() {
-  const usersQuery = useQuery({ queryKey: ["users"], queryFn: listOrgUsers });
+  const { organization } = useTenant();
+  const usersQuery = useQuery({
+    queryKey: ["users", organization?.id],
+    queryFn: () => listOrgUsers(organization!.id),
+    enabled: Boolean(organization),
+  });
   const [isInviteOpen, setIsInviteOpen] = useState(false);
 
   const columns: DataTableColumn<OrgUser>[] = [

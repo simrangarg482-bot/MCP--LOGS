@@ -75,6 +75,8 @@ from app.core.tenancy.schemas import (
     SSOConfiguration,
     SSOConfigurationCreate,
 )
+from app.core.users import service as users_service
+from app.core.users.schemas import OrganizationMember
 
 router = APIRouter(prefix="/tenancy", tags=["tenancy"])
 
@@ -167,6 +169,20 @@ async def list_projects(
     organization_id: uuid.UUID, actor: CurrentIdentity, session: DbSession
 ) -> list[Project]:
     return await tenancy_service.list_projects(session, actor, organization_id)
+
+
+# --- Members ---------------------------------------------------------------------
+
+
+@admin_router.get("/organizations/{organization_id}/members", response_model=list[OrganizationMember])
+async def list_organization_members(
+    organization_id: uuid.UUID, actor: CurrentIdentity, session: DbSession
+) -> list[OrganizationMember]:
+    """Phase 2 addition: the frontend's Users settings page previously
+    called `GET /users`, an endpoint that never existed. This is the real
+    equivalent (`core.users.service.list_organization_members`).
+    """
+    return await users_service.list_organization_members(session, actor, organization_id)
 
 
 # --- SSO -------------------------------------------------------------------------

@@ -59,6 +59,26 @@ class UserProfile(BaseModel):
     updated_at: datetime
 
 
+class OrganizationMember(BaseModel):
+    """One user's membership summary within a single organization -- the
+    read surface backing `GET /organizations/{id}/members` (Phase 2's fix
+    for the previously-nonexistent `GET /users` the frontend's Users
+    settings page called). Deliberately not `UserProfile`: this is a listing
+    of *other* users seen by an admin, not "my own resolved access," so it
+    carries `roles` only (never a flattened `permissions` set for someone
+    else's account) and omits anything password/credential-adjacent.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    id: uuid.UUID
+    email: str
+    display_name: str
+    is_active: bool
+    roles: tuple[str, ...] = ()
+    created_at: datetime
+
+
 class UserCredentialLookup(BaseModel):
     """The minimum a caller verifying a *password* credential needs -- not a
     full `User` row.

@@ -67,6 +67,46 @@ async def get_by_email(session: AsyncSession, email: str) -> User | None:
     return result.scalar_one_or_none()
 
 
+async def list_organization_members(
+    session: AsyncSession, organization_id: uuid.UUID
+) -> Sequence[tuple[User, Sequence[str]]]:
+    """Return every user holding at least one role in `organization_id`,
+    each paired with the names of every role they hold there -- the read
+    side of "who is on this team," backing the previously-missing `GET
+    /organizations/{id}/members` (the frontend's Users settings page called
+    a `GET /users` endpoint that never existed; this is the real
+    equivalent).
+
+    Two queries, not a single query with an aggregate: `user_roles` is a
+    many-to-many join (a user can hold more than one role in the same
+    organization), and building the per-user role-name list in Python next
+    to a single ordered `users` query is simpler and just as cheap at this
+    scale as a `GROUP BY`/`array_agg`, matching `get_permission_codes`'s own
+    "group in Python, not SQL" precedent in `get_project_permission_map`
+    just below.
+    """
+    member_ids_stmt = (
+        select(UserRole.user_id).where(UserRole.organization_id == organization_id).distinct()
+    )
+    member_ids = (await session.execute(member_ids_stmt)).scalars().all()
+    if not member_ids:
+        return []
+
+    users_stmt = select(User).where(User.id.in_(member_ids)).order_by(User.display_name)
+    users = (await session.execute(users_stmt)).scalars().all()
+
+    roles_stmt = (
+        select(UserRole.user_id, Role.name)
+        .join(Role, Role.id == UserRole.role_id)
+        .where(UserRole.organization_id == organization_id, UserRole.user_id.in_(member_ids))
+    )
+    roles_by_user: dict[uuid.UUID, list[str]] = {}
+    for user_id, role_name in (await session.execute(roles_stmt)).all():
+        roles_by_user.setdefault(user_id, []).append(role_name)
+
+    return [(user, sorted(roles_by_user.get(user.id, []))) for user in users]
+
+
 async def get_role_names(
     session: AsyncSession, user_id: uuid.UUID, organization_id: uuid.UUID
 ) -> Sequence[str]:

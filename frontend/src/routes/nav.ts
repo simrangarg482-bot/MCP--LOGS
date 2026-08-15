@@ -4,6 +4,7 @@ import {
   LayoutDashboard,
   AlertCircle,
   BookOpen,
+  Lightbulb,
   Search,
   Plug,
   Bot,
@@ -16,6 +17,11 @@ export interface NavItem {
   label: string;
   path: string;
   icon: LucideIcon;
+  // A permission code required to see this item at all, matching the real
+  // backend gate its page's primary data call now enforces (see
+  // Phase 1's tenancy:manage/knowledge:review fixes). Omit for pages with
+  // no such gate. UX only -- the backend re-checks regardless.
+  permission?: string;
 }
 
 export const PRIMARY_NAV: NavItem[] = [
@@ -23,9 +29,10 @@ export const PRIMARY_NAV: NavItem[] = [
   { label: "Dashboard", path: "/dashboard", icon: LayoutDashboard },
   { label: "Incidents", path: "/incidents", icon: AlertCircle },
   { label: "Knowledge", path: "/knowledge", icon: BookOpen },
+  { label: "Knowledge Gaps", path: "/knowledge-gaps", icon: Lightbulb, permission: "knowledge:review" },
   { label: "Search", path: "/search", icon: Search },
-  { label: "Connectors", path: "/connectors", icon: Plug },
-  { label: "Agents", path: "/agents", icon: Bot },
+  { label: "Connectors", path: "/connectors", icon: Plug, permission: "tenancy:manage" },
+  { label: "Agents", path: "/agents", icon: Bot, permission: "observability:read" },
   { label: "MCP Tools", path: "/mcp", icon: Wrench },
   { label: "Analytics", path: "/analytics", icon: BarChart3 },
 ];

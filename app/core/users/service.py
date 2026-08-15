@@ -45,12 +45,29 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import NotFoundError, PermissionDeniedError
 from app.core.users import repository
-from app.core.users.schemas import UserCredentialLookup, UserProfile
+from app.core.users.schemas import OrganizationMember, UserCredentialLookup, UserProfile
 from app.database.session import set_tenant_context
 from app.shared.config.logging import get_logger
 from app.shared.schemas import ActorKind, Identity
 
 logger = get_logger(__name__)
+
+
+def _ensure_same_organization(actor: Identity, organization_id: uuid.UUID) -> None:
+    """Tenant-isolation guard, same shape as `core.tenancy.service`'s own
+    (duplicated per that module's own precedent -- see its docstring on why
+    a small, cheap guard like this is copied per-module rather than shared).
+    Needed here because `list_organization_members`, unlike every other
+    function in this file, is reached via an explicit `{organization_id}`
+    path parameter (`GET /organizations/{id}/members`), not derived purely
+    from `actor.organization_id` with no override possible.
+    """
+    if actor.organization_id != organization_id:
+        raise PermissionDeniedError(
+            "Cannot access another organization's data.",
+            error_code="users.cross_organization_denied",
+            detail={"organization_id": str(organization_id)},
+        )
 
 
 async def resolve_identity(
@@ -164,6 +181,35 @@ async def get_user_profile(
         created_at=user.created_at,
         updated_at=user.updated_at,
     )
+
+
+async def list_organization_members(
+    session: AsyncSession, actor: Identity, organization_id: uuid.UUID
+) -> list[OrganizationMember]:
+    """List every user holding a role in `organization_id`, with their role
+    names -- backs `GET /organizations/{id}/members` (Phase 2's fix for the
+    frontend's Users settings page, which previously called a `GET /users`
+    endpoint that never existed on the backend at all).
+
+    No `require_permission` gate beyond organization membership itself:
+    seeing your own teammates' names, emails, and roles is ordinary within
+    an organization (needed for e.g. deciding who to loop into an incident),
+    unlike `core.tenancy.service.list_invitations`/`list_access_rules`
+    (Phase 1's fix), which expose configuration data, not who's on the team.
+    """
+    _ensure_same_organization(actor, organization_id)
+    rows = await repository.list_organization_members(session, organization_id)
+    return [
+        OrganizationMember(
+            id=user.id,
+            email=user.email,
+            display_name=user.display_name,
+            is_active=user.is_active,
+            roles=tuple(role_names),
+            created_at=user.created_at,
+        )
+        for user, role_names in rows
+    ]
 
 
 async def get_or_create_user(

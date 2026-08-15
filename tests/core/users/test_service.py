@@ -222,3 +222,58 @@ def test_require_project_permission_falls_back_to_org_level_when_no_override() -
     )
 
     users_service.require_project_permission(actor, project_id, "incident:write")  # no raise
+
+
+class _FakeMemberRow:
+    def __init__(self, *, user_id, email, display_name, is_active=True) -> None:
+        import datetime
+
+        self.id = user_id
+        self.email = email
+        self.display_name = display_name
+        self.is_active = is_active
+        self.created_at = datetime.datetime.now(datetime.timezone.utc)
+
+
+def _member_actor(organization_id: uuid.UUID) -> Identity:
+    return Identity(
+        kind=ActorKind.USER,
+        subject=str(uuid.uuid4()),
+        organization_id=organization_id,
+        user_id=uuid.uuid4(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_organization_members_denies_cross_organization_access() -> None:
+    """Regression test for the Phase 2 `GET /organizations/{id}/members`
+    addition -- an actor from a different organization must not be able to
+    list another organization's members via the explicit path parameter.
+    """
+    actor = _member_actor(uuid.uuid4())
+    other_organization_id = uuid.uuid4()
+
+    with pytest.raises(PermissionDeniedError):
+        await users_service.list_organization_members(None, actor, other_organization_id)
+
+
+@pytest.mark.asyncio
+async def test_list_organization_members_maps_rows_to_schema(monkeypatch) -> None:
+    organization_id = uuid.uuid4()
+    actor = _member_actor(organization_id)
+    row = _FakeMemberRow(user_id=uuid.uuid4(), email="a@example.com", display_name="A Person")
+
+    async def fake_list_organization_members(session, org_id):
+        assert org_id == organization_id
+        return [(row, ["member", "incident_commander"])]
+
+    monkeypatch.setattr(
+        users_service.repository, "list_organization_members", fake_list_organization_members
+    )
+
+    result = await users_service.list_organization_members(None, actor, organization_id)
+
+    assert len(result) == 1
+    assert result[0].id == row.id
+    assert result[0].email == "a@example.com"
+    assert result[0].roles == ("member", "incident_commander")

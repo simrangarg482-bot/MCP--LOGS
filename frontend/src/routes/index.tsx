@@ -8,7 +8,9 @@ import { SignupPage } from "@/pages/auth/SignupPage";
 import { AskPage } from "@/pages/ask/AskPage";
 import { DashboardPage } from "@/pages/dashboard/DashboardPage";
 import { IncidentsListPage } from "@/pages/incidents/IncidentsListPage";
+import { IncidentCreatePage } from "@/pages/incidents/IncidentCreatePage";
 import { IncidentDetailPage } from "@/pages/incidents/IncidentDetailPage";
+import { KnowledgeGapsPage } from "@/pages/knowledge-gaps/KnowledgeGapsPage";
 import { KnowledgeListPage } from "@/pages/knowledge/KnowledgeListPage";
 import { KnowledgeDetailPage } from "@/pages/knowledge/KnowledgeDetailPage";
 import { SearchPage } from "@/pages/search/SearchPage";
@@ -42,9 +44,11 @@ export const router = createBrowserRouter([
           { path: "/ask", element: <AskPage /> },
           { path: "/dashboard", element: <DashboardPage /> },
           { path: "/incidents", element: <IncidentsListPage /> },
+          { path: "/incidents/new", element: <IncidentCreatePage /> },
           { path: "/incidents/:id", element: <IncidentDetailPage /> },
           { path: "/knowledge", element: <KnowledgeListPage /> },
           { path: "/knowledge/:id", element: <KnowledgeDetailPage /> },
+          { path: "/knowledge-gaps", element: <KnowledgeGapsPage /> },
           { path: "/search", element: <SearchPage /> },
           { path: "/connectors", element: <ConnectorsPage /> },
           { path: "/agents", element: <AgentsPage /> },

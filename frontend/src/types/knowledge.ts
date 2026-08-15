@@ -32,13 +32,20 @@ export interface KnowledgeDocument {
   updatedAt: ISODateString;
 }
 
+// Matches `app.shared.schemas.agent_contracts.GapReport` field-for-field --
+// the previous shape (`topic`, `description`, `relatedIncidentIds`,
+// `detectedAt`, `severity`) matched nothing the real `GET /knowledge/gaps`
+// response actually returns.
 export interface GapReport {
   id: UUID;
-  topic: string;
-  description: string;
-  relatedIncidentIds: string[];
-  detectedAt: ISODateString;
-  severity: "high" | "medium" | "low";
+  organizationId: UUID;
+  suggestedTopic: string;
+  supportingExecutionIds: string[];
+  suggestedAction: "new_runbook" | "update_existing";
+  relatedDocumentId: UUID | null;
+  status: "open" | "dismissed";
+  createdAt: ISODateString;
+  updatedAt: ISODateString;
 }
 
 export interface KnowledgeFilters {

@@ -45,7 +45,7 @@ export function DashboardPage() {
 
   const incidentsQuery = useQuery({
     queryKey: ["incidents", "dashboard"],
-    queryFn: () => listIncidents({ page: 1, pageSize: 6 }),
+    queryFn: () => listIncidents({ limit: 6, offset: 0 }),
   });
   const connectorsQuery = useQuery({ queryKey: ["connectors"], queryFn: listConnectors });
   const agentsQuery = useQuery({ queryKey: ["agents", "stats"], queryFn: listAgentStats });
@@ -55,29 +55,24 @@ export function DashboardPage() {
     queryFn: () => listKnowledgeDocuments({ page: 1, pageSize: 1 }),
   });
 
-  const incidents = incidentsQuery.data?.items ?? [];
+  const incidents = incidentsQuery.data ?? [];
   const openCount = incidents.filter((i) => i.status === "open" || i.status === "investigating").length;
   const criticalCount = incidents.filter((i) => i.severity === "critical").length;
   const resolvedCount = incidents.filter((i) => i.status === "resolved" || i.status === "closed").length;
 
   const columns: DataTableColumn<Incident>[] = [
     {
-      key: "displayId",
+      key: "id",
       header: "Incident",
-      render: (row) => <span className="font-medium text-ink">{row.displayId}</span>,
+      render: (row) => <span className="font-mono text-xs font-medium text-ink">{row.id.slice(0, 8)}</span>,
     },
     { key: "severity", header: "Severity", render: (row) => <SeverityBadge severity={row.severity} /> },
     { key: "status", header: "Status", render: (row) => <StatusBadge status={row.status} /> },
-    { key: "service", header: "Service", render: (row) => row.service },
+    { key: "ownerTeam", header: "Owner team", render: (row) => row.ownerTeam ?? "Unassigned" },
     {
       key: "createdAt",
       header: "Created",
       render: (row) => <span className="text-ink-muted">{formatRelativeTime(row.createdAt)}</span>,
-    },
-    {
-      key: "assignee",
-      header: "Assignee",
-      render: (row) => <span className="text-ink-muted">{row.assignee?.name ?? "Unassigned"}</span>,
     },
   ];
 

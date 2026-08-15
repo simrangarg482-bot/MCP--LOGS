@@ -95,7 +95,7 @@ export function AIAnalysisPanel({ investigation }: { investigation: AiInvestigat
                   >
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
-                        <span className="text-xs font-medium text-ink-muted">{incident.displayId}</span>
+                        <span className="text-xs font-medium text-ink-muted">{incident.id.slice(0, 8)}</span>
                         <SeverityBadge severity={incident.severity} />
                       </div>
                       <p className="mt-0.5 truncate text-sm text-ink">{incident.title}</p>
