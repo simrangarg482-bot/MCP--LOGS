@@ -23,6 +23,7 @@ from app.core.incidents.schemas import (
     IncidentCreate,
     IncidentFilter,
     IncidentUpdate,
+    Postmortem,
     TimelineEntry,
     TimelineNoteCreate,
 )
@@ -93,4 +94,18 @@ async def add_timeline_note(
 ) -> TimelineEntry:
     return await incidents_service.add_timeline_note(
         session, actor, actor.organization_id, incident_id, data
+    )
+
+
+@router.get("/{incident_id}/postmortem", response_model=Postmortem)
+async def get_incident_postmortem(
+    incident_id: uuid.UUID, actor: CurrentIdentity, session: DbSession
+) -> Postmortem:
+    """404s with `error_code="postmortem.not_found"` if no postmortem exists
+    for this incident yet -- an expected, common state a frontend uses to
+    decide whether to offer "generate a postmortem" or show the existing
+    one, not a genuine error.
+    """
+    return await incidents_service.get_postmortem_by_incident(
+        session, actor, actor.organization_id, incident_id
     )

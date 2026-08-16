@@ -54,17 +54,20 @@ export function DataTable<T>({
                 <th
                   key={col.key}
                   scope="col"
+                  aria-sort={col.sortable ? (isSorted ? (sortDir === "asc" ? "ascending" : "descending") : "none") : undefined}
                   className={cn(
                     "whitespace-nowrap px-4 py-2.5 text-xs font-medium text-ink-muted",
-                    col.sortable && "cursor-pointer select-none hover:text-ink",
                     col.headerClassName,
                   )}
-                  onClick={() => col.sortable && onSortChange?.(col.key)}
                 >
-                  <span className="inline-flex items-center gap-1">
-                    {col.header}
-                    {col.sortable &&
-                      (isSorted ? (
+                  {col.sortable ? (
+                    <button
+                      type="button"
+                      onClick={() => onSortChange?.(col.key)}
+                      className="inline-flex items-center gap-1 hover:text-ink"
+                    >
+                      {col.header}
+                      {isSorted ? (
                         sortDir === "asc" ? (
                           <ArrowUp className="h-3 w-3" />
                         ) : (
@@ -72,8 +75,11 @@ export function DataTable<T>({
                         )
                       ) : (
                         <ArrowUpDown className="h-3 w-3 opacity-40" />
-                      ))}
-                  </span>
+                      )}
+                    </button>
+                  ) : (
+                    <span className="inline-flex items-center gap-1">{col.header}</span>
+                  )}
                 </th>
               );
             })}
@@ -85,7 +91,21 @@ export function DataTable<T>({
               <tr
                 key={rowKey(row)}
                 onClick={() => onRowClick?.(row)}
-                className={cn("transition-colors", onRowClick && "cursor-pointer hover:bg-slate-50")}
+                tabIndex={onRowClick ? 0 : undefined}
+                onKeyDown={
+                  onRowClick
+                    ? (event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          onRowClick(row);
+                        }
+                      }
+                    : undefined
+                }
+                className={cn(
+                  "transition-colors",
+                  onRowClick && "cursor-pointer hover:bg-slate-50 focus-visible:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent",
+                )}
               >
                 {columns.map((col) => (
                   <td key={col.key} className={cn("whitespace-nowrap px-4 py-3 text-ink", col.className)}>

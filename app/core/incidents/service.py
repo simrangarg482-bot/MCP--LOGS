@@ -529,6 +529,57 @@ async def get_postmortem(
     return Postmortem.model_validate(row)
 
 
+async def get_postmortem_by_incident(
+    session: AsyncSession, actor: Identity, organization_id: uuid.UUID, incident_id: uuid.UUID
+) -> Postmortem:
+    """Look up the postmortem already attached to `incident_id`.
+
+    Raises `NotFoundError` if none exists yet -- an ordinary 404 a caller is
+    expected to catch to mean "no postmortem yet, offer to generate one,"
+    not a genuine error state; matching every other "fetch by id" function
+    in this module (`_get_owned_incident`, `_get_owned_postmortem`), none of
+    which return `None` for a not-yet-existing resource, so this doesn't
+    introduce a second style.
+
+    Closes a real, previously-flagged gap: `trigger_postmortem_generation`'s
+    409 "already exists" response never told the caller the existing
+    postmortem's id (only the incident id, which the caller already had) --
+    there was no REST way at all to go from "I have an incident id" to "is
+    there already a postmortem, and if so what's its id" without this.
+    Backs `GET /incidents/{incident_id}/postmortem`.
+
+    Applies the exact same read gate `get_postmortem` does (approved/
+    published open to any org member; draft/in-review requires
+    `postmortem:write` or `postmortem:approve`) -- this is the same
+    resource, just looked up by a different key, so it must not be a wider
+    door into the same data.
+    """
+    _ensure_same_organization(actor, organization_id)
+    await _get_owned_incident(session, organization_id, incident_id)
+
+    row = await repository.get_postmortem_by_incident_id(session, incident_id)
+    if row is None or row.organization_id != organization_id:
+        raise NotFoundError(
+            "No postmortem exists for this incident yet.",
+            error_code="postmortem.not_found",
+            detail={"incident_id": str(incident_id)},
+        )
+
+    if row.status not in ("approved", "published"):
+        incident = await repository.get_incident_by_id(session, incident_id)
+        project_id = incident.project_id if incident is not None else None
+        if not (
+            actor.has_permission(_POSTMORTEM_WRITE_PERMISSION, project_id=project_id)
+            or actor.has_permission(_POSTMORTEM_APPROVE_PERMISSION, project_id=project_id)
+        ):
+            raise PermissionDeniedError(
+                "This postmortem has not been reviewed yet.",
+                error_code="postmortem.not_reviewed",
+                detail={"postmortem_id": str(row.id)},
+            )
+    return Postmortem.model_validate(row)
+
+
 async def list_recent_postmortems(
     session: AsyncSession,
     actor: Identity,

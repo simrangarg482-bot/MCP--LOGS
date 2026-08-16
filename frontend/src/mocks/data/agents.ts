@@ -1,7 +1,13 @@
-import type { AgentExecution, AgentStageDefinition, AgentStats } from "@/types/agent";
-import { minutesAgo } from "@/mocks/time";
+import type { AgentExecutionStats } from "@/types/agent";
 
-export const agentPipelineStages: AgentStageDefinition[] = [
+// Purely illustrative/static -- describes the real component pipeline
+// `agents.retrieval`/`agents.confidence`/`agents.answer` implement
+// (app/agents/retrieval/, app/agents/confidence.py, app/agents/answer/),
+// NOT a live-monitored list of per-agent stats. Kept separate from
+// `mockAgentStats` below (which mirrors the real, coarser-grained
+// `agent_name` values `agent_executions` actually records) so the two are
+// never confused as the same data source.
+export const agentPipelineStages = [
   { key: "query_understanding", name: "Query Understanding", description: "Parses intent, entities, and constraints from the incoming question or incident." },
   { key: "hybrid_retrieval", name: "Hybrid Retrieval", description: "Runs lexical and vector search across knowledge and incident indices." },
   { key: "rrf_fusion", name: "RRF Fusion", description: "Fuses ranked result sets from multiple retrievers using reciprocal rank fusion." },
@@ -12,21 +18,15 @@ export const agentPipelineStages: AgentStageDefinition[] = [
   { key: "grounding_verification", name: "Grounding Verification", description: "Checks that every claim in the answer is supported by retrieved evidence." },
 ];
 
-export const mockAgentStats: AgentStats[] = [
-  { key: "query_understanding", name: "Query Understanding", description: agentPipelineStages[0].description, status: "healthy", lastExecutionAt: minutesAgo(8), avgExecutionTimeMs: 120, successRate: 0.995, avgConfidence: 0.93, executionsLast24h: 412 },
-  { key: "hybrid_retrieval", name: "Hybrid Retrieval", description: agentPipelineStages[1].description, status: "healthy", lastExecutionAt: minutesAgo(8), avgExecutionTimeMs: 340, successRate: 0.991, avgConfidence: 0.88, executionsLast24h: 412 },
-  { key: "rrf_fusion", name: "RRF Fusion", description: agentPipelineStages[2].description, status: "healthy", lastExecutionAt: minutesAgo(8), avgExecutionTimeMs: 45, successRate: 1, avgConfidence: 0.9, executionsLast24h: 412 },
-  { key: "cross_encoder", name: "Cross Encoder", description: agentPipelineStages[3].description, status: "degraded", lastExecutionAt: minutesAgo(8), avgExecutionTimeMs: 890, successRate: 0.94, avgConfidence: 0.81, executionsLast24h: 412 },
-  { key: "context_assembly", name: "Context Assembly", description: agentPipelineStages[4].description, status: "healthy", lastExecutionAt: minutesAgo(8), avgExecutionTimeMs: 60, successRate: 0.998, avgConfidence: 0.92, executionsLast24h: 412 },
-  { key: "confidence_evaluation", name: "Confidence Evaluation", description: agentPipelineStages[5].description, status: "healthy", lastExecutionAt: minutesAgo(8), avgExecutionTimeMs: 30, successRate: 1, avgConfidence: 0.95, executionsLast24h: 412 },
-  { key: "answer_agent", name: "Answer Agent", description: agentPipelineStages[6].description, status: "healthy", lastExecutionAt: minutesAgo(8), avgExecutionTimeMs: 1450, successRate: 0.97, avgConfidence: 0.86, executionsLast24h: 398 },
-  { key: "grounding_verification", name: "Grounding Verification", description: agentPipelineStages[7].description, status: "healthy", lastExecutionAt: minutesAgo(8), avgExecutionTimeMs: 210, successRate: 0.988, avgConfidence: 0.9, executionsLast24h: 398 },
-];
-
-export const mockAgentExecutions: AgentExecution[] = [
-  { id: "exec-1", agentKey: "answer_agent", status: "success", startedAt: minutesAgo(8), durationMs: 1390, confidence: 0.82, incidentId: "inc-1024", summary: "Generated root cause hypotheses for INC-1024." },
-  { id: "exec-2", agentKey: "cross_encoder", status: "success", startedAt: minutesAgo(9), durationMs: 910, confidence: 0.79, incidentId: "inc-1024" },
-  { id: "exec-3", agentKey: "hybrid_retrieval", status: "success", startedAt: minutesAgo(9), durationMs: 355, confidence: 0.88, incidentId: "inc-1024" },
-  { id: "exec-4", agentKey: "answer_agent", status: "failure", startedAt: minutesAgo(42), durationMs: 2100, incidentId: "inc-1023", summary: "Timed out waiting on context assembly for a large log attachment." },
-  { id: "exec-5", agentKey: "grounding_verification", status: "success", startedAt: minutesAgo(51), durationMs: 198, confidence: 0.94, incidentId: "inc-1022" },
+// Matches `app.agents.schemas.AgentExecutionStats` -- real `agent_name`
+// values are the four graph entry points `app/agents/service.py` actually
+// records (`answer_question`, `triage_incident`, `generate_postmortem`,
+// `detect_knowledge_gaps`), not the eight fine-grained pipeline stages
+// above -- those are internal steps within `answer_question`, not
+// separately-tracked agents.
+export const mockAgentStats: AgentExecutionStats[] = [
+  { agentName: "answer_question", executionCount: 412, succeededCount: 398, failedCount: 14, avgConfidenceScore: 0.79, avgLatencySeconds: 2.4 },
+  { agentName: "triage_incident", executionCount: 63, succeededCount: 60, failedCount: 3, avgConfidenceScore: 0.58, avgLatencySeconds: 4.1 },
+  { agentName: "generate_postmortem", executionCount: 18, succeededCount: 18, failedCount: 0, avgConfidenceScore: null, avgLatencySeconds: 6.8 },
+  { agentName: "detect_knowledge_gaps", executionCount: 30, succeededCount: 29, failedCount: 1, avgConfidenceScore: null, avgLatencySeconds: 1.9 },
 ];

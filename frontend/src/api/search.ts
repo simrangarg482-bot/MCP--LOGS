@@ -1,18 +1,22 @@
-import { apiRequest, mockDelay } from "./client";
-import { USE_MOCK_DATA } from "./config";
-import type { SearchResult } from "@/types/search";
-import { mockSearchResults } from "@/mocks/data/search";
+import type { ScoredChunk } from "@/types/ask";
+import { searchSimilarIncidents } from "./ask";
 
-export async function globalSearch(query: string): Promise<SearchResult[]> {
+/**
+ * The real backend has no generic `GET /search` endpoint at all -- the
+ * previous `globalSearch()` called one that doesn't exist, with the wrong
+ * HTTP method (GET with a `?q=` param; every real search route is POST
+ * with a JSON body) and an invented response shape (`SearchResult` with a
+ * `type: "incident"|"knowledge"|"slack"|"github"` taxonomy that doesn't
+ * exist on any real response).
+ *
+ * The closest real, general-purpose search is `POST /search/similar-
+ * incidents` (`agents.service.search_similar_incidents`) -- despite its
+ * name, it searches every retrieval collection (no `collection` filter),
+ * unlike `search_recent_changes`, which defaults to just the "code"
+ * collection. Real results are `ScoredChunk`s grouped by `collection`
+ * (documentation/code/conversations), not the fictional type taxonomy.
+ */
+export async function globalSearch(query: string): Promise<ScoredChunk[]> {
   if (!query.trim()) return [];
-
-  if (USE_MOCK_DATA) {
-    const q = query.toLowerCase();
-    const results = mockSearchResults.filter(
-      (r) => r.title.toLowerCase().includes(q) || r.snippet.toLowerCase().includes(q),
-    );
-    return mockDelay(results.length ? results : mockSearchResults, 300);
-  }
-
-  return apiRequest<SearchResult[]>(`/search?q=${encodeURIComponent(query)}`);
+  return searchSimilarIncidents(query, 20);
 }

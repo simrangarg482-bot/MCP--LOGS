@@ -92,8 +92,9 @@ async def test_list_postmortems_for_ingestion_requires_no_actor(monkeypatch) -> 
 
 
 class _FakeIncidentRow:
-    def __init__(self, project_id: uuid.UUID | None) -> None:
+    def __init__(self, project_id: uuid.UUID | None, organization_id: uuid.UUID | None = None) -> None:
         self.project_id = project_id
+        self.organization_id = organization_id
 
 
 def _member_no_permissions(organization_id: uuid.UUID) -> Identity:
@@ -182,4 +183,88 @@ async def test_get_postmortem_allows_approved_without_permission(monkeypatch) ->
     )
 
     result = await incidents_service.get_postmortem(None, actor, organization_id, row.id)
+    assert result.id == row.id
+
+
+@pytest.mark.asyncio
+async def test_get_postmortem_by_incident_raises_not_found_when_none_exists(monkeypatch) -> None:
+    """Regression test for the Phase 2D `GET /incidents/{id}/postmortem`
+    addition -- a 404 here is the expected way a caller learns "no
+    postmortem yet, offer to generate one," not a genuine error.
+    """
+    from app.core.exceptions import NotFoundError
+
+    organization_id = uuid.uuid4()
+    incident_id = uuid.uuid4()
+    actor = _member_no_permissions(organization_id)
+
+    async def fake_get_incident_by_id(session, inc_id):
+        return _FakeIncidentRow(uuid.uuid4(), organization_id=organization_id)
+
+    async def fake_get_postmortem_by_incident_id(session, inc_id):
+        return None
+
+    monkeypatch.setattr(
+        incidents_service.repository, "get_incident_by_id", fake_get_incident_by_id
+    )
+    monkeypatch.setattr(
+        incidents_service.repository,
+        "get_postmortem_by_incident_id",
+        fake_get_postmortem_by_incident_id,
+    )
+
+    with pytest.raises(NotFoundError):
+        await incidents_service.get_postmortem_by_incident(None, actor, organization_id, incident_id)
+
+
+@pytest.mark.asyncio
+async def test_get_postmortem_by_incident_denies_draft_without_permission(monkeypatch) -> None:
+    organization_id = uuid.uuid4()
+    incident_id = uuid.uuid4()
+    project_id = uuid.uuid4()
+    row = _postmortem_row(organization_id, status="draft", incident_id=incident_id)
+    actor = _member_no_permissions(organization_id)
+
+    async def fake_get_incident_by_id(session, inc_id):
+        return _FakeIncidentRow(project_id, organization_id=organization_id)
+
+    async def fake_get_postmortem_by_incident_id(session, inc_id):
+        return row
+
+    monkeypatch.setattr(
+        incidents_service.repository, "get_incident_by_id", fake_get_incident_by_id
+    )
+    monkeypatch.setattr(
+        incidents_service.repository,
+        "get_postmortem_by_incident_id",
+        fake_get_postmortem_by_incident_id,
+    )
+
+    with pytest.raises(PermissionDeniedError):
+        await incidents_service.get_postmortem_by_incident(None, actor, organization_id, incident_id)
+
+
+@pytest.mark.asyncio
+async def test_get_postmortem_by_incident_allows_approved_without_permission(monkeypatch) -> None:
+    organization_id = uuid.uuid4()
+    incident_id = uuid.uuid4()
+    row = _postmortem_row(organization_id, status="approved", incident_id=incident_id)
+    actor = _member_no_permissions(organization_id)
+
+    async def fake_get_incident_by_id(session, inc_id):
+        return _FakeIncidentRow(uuid.uuid4(), organization_id=organization_id)
+
+    async def fake_get_postmortem_by_incident_id(session, inc_id):
+        return row
+
+    monkeypatch.setattr(
+        incidents_service.repository, "get_incident_by_id", fake_get_incident_by_id
+    )
+    monkeypatch.setattr(
+        incidents_service.repository,
+        "get_postmortem_by_incident_id",
+        fake_get_postmortem_by_incident_id,
+    )
+
+    result = await incidents_service.get_postmortem_by_incident(None, actor, organization_id, incident_id)
     assert result.id == row.id

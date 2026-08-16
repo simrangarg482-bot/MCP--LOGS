@@ -14,6 +14,7 @@ import { StatusBadge } from "@/components/data/StatusBadge";
 import { useDebounce } from "@/hooks/useDebounce";
 import { listIncidents } from "@/api/incidents";
 import type { Incident, IncidentSeverity, IncidentStatus } from "@/types/incident";
+import { useAuth } from "@/context/AuthContext";
 import { formatDateTime, formatRelativeTime } from "@/utils/date";
 
 const SEVERITIES: IncidentSeverity[] = ["critical", "high", "medium", "low"];
@@ -27,6 +28,10 @@ const PAGE_SIZE = 20;
 // page uses "load more" (offset/limit) instead of page-number pagination.
 export function IncidentsListPage() {
   const navigate = useNavigate();
+  const { user } = useAuth();
+  // Mirrors the real gate `core.incidents.service.create_incident` enforces
+  // -- UX only, the backend re-checks regardless.
+  const canWrite = Boolean(user?.permissions.includes("incident:write"));
   const [severity, setSeverity] = useState<IncidentSeverity | "">("");
   const [status, setStatus] = useState<IncidentStatus | "">("");
   const [ownerTeamInput, setOwnerTeamInput] = useState("");
@@ -100,7 +105,13 @@ export function IncidentsListPage() {
         title="Incidents"
         description="Track and investigate active and historical incidents."
         actions={
-          <Button variant="primary" className="gap-1.5" onClick={() => navigate("/incidents/new")}>
+          <Button
+            variant="primary"
+            className="gap-1.5"
+            onClick={() => navigate("/incidents/new")}
+            disabled={!canWrite}
+            title={canWrite ? undefined : "Requires the incident:write permission"}
+          >
             <Plus className="h-4 w-4" />
             New incident
           </Button>
@@ -110,6 +121,7 @@ export function IncidentsListPage() {
       <div className="flex flex-col gap-3">
         <FilterBar activeCount={activeFilterCount} onClear={handleClearFilters}>
           <Select
+            aria-label="Filter by severity"
             value={severity}
             onChange={(e) => setSeverity(e.target.value as IncidentSeverity | "")}
             className="w-40"
@@ -122,7 +134,12 @@ export function IncidentsListPage() {
             ))}
           </Select>
 
-          <Select value={status} onChange={(e) => setStatus(e.target.value as IncidentStatus | "")} className="w-40">
+          <Select
+            aria-label="Filter by status"
+            value={status}
+            onChange={(e) => setStatus(e.target.value as IncidentStatus | "")}
+            className="w-40"
+          >
             <option value="">All statuses</option>
             {STATUSES.map((s) => (
               <option key={s} value={s}>
@@ -135,6 +152,7 @@ export function IncidentsListPage() {
             value={ownerTeamInput}
             onChange={(e) => setOwnerTeamInput(e.target.value)}
             placeholder="Filter by owner team…"
+            aria-label="Filter by owner team"
             className="w-48"
           />
         </FilterBar>

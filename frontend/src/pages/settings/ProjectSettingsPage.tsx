@@ -1,8 +1,11 @@
 import { useTenant } from "@/context/TenantContext";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
-import { Button } from "@/components/ui/Button";
 
+// There is no `update_project` backend capability -- `core.tenancy.service`
+// only supports creating and listing projects, never editing one after
+// creation. This view is read-only; do not add a "Save changes" action here
+// without a real backend endpoint to back it.
 export function ProjectSettingsPage() {
   const { project, projects, organization } = useTenant();
 
@@ -14,18 +17,14 @@ export function ProjectSettingsPage() {
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           <div className="max-w-md">
-            <label className="mb-1.5 block text-xs font-medium text-ink-muted">Project name</label>
-            <Input defaultValue={project?.name} />
+            <label htmlFor="project-name" className="mb-1.5 block text-xs font-medium text-ink-muted">Project name</label>
+            <Input id="project-name" defaultValue={project?.name} disabled />
           </div>
           <div className="max-w-md">
-            <label className="mb-1.5 block text-xs font-medium text-ink-muted">Slug</label>
-            <Input defaultValue={project?.slug} disabled />
+            <label htmlFor="project-slug" className="mb-1.5 block text-xs font-medium text-ink-muted">Slug</label>
+            <Input id="project-slug" defaultValue={project?.slug} disabled />
           </div>
-          <div>
-            <Button variant="primary" size="sm">
-              Save changes
-            </Button>
-          </div>
+          <p className="text-xs text-ink-subtle">Project details cannot be edited after creation.</p>
         </CardContent>
       </Card>
 

@@ -11,10 +11,10 @@ meaning of its own, importable by every other module).
 
 from functools import lru_cache
 from typing import Literal
-from typing import ClassVar
+from typing import Annotated, ClassVar
 
 from pydantic import Field, PostgresDsn, RedisDsn, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -162,7 +162,18 @@ class Settings(BaseSettings):
     )
 
     # --- CORS (browser-based frontends, e.g. frontend/) ---------------------
-    cors_allowed_origins: list[str] = Field(
+    # `NoDecode` is required here: pydantic-settings' own env source attempts
+    # to JSON-decode any list-typed field's raw env value *before* the
+    # `_split_cors_origins` validator below ever runs, so a real
+    # `CORS_ALLOWED_ORIGINS=http://a,http://b` env var crashed the app
+    # outright at startup (`SettingsError` from a failed `json.loads` on a
+    # non-JSON string) despite this field's own description promising
+    # comma-separated support -- caught by an actual browser E2E run
+    # (frontend/e2e/), not by any unit test, since nothing exercises real
+    # process startup with a real env var override. `NoDecode` tells
+    # pydantic-settings to hand the raw string straight to the validator
+    # instead of pre-decoding it as JSON.
+    cors_allowed_origins: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["http://localhost:5173", "http://127.0.0.1:5173"],
         description=(
             "Origins allowed to call this API from a browser. Defaults to "

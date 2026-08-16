@@ -1,7 +1,8 @@
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import { cn } from "@/utils/cn";
+import { useFocusTrap } from "@/hooks/useFocusTrap";
 
 interface DrawerProps {
   open: boolean;
@@ -12,6 +13,8 @@ interface DrawerProps {
 }
 
 export function Drawer({ open, onClose, title, children, className }: DrawerProps) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {
@@ -21,13 +24,20 @@ export function Drawer({ open, onClose, title, children, className }: DrawerProp
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [open, onClose]);
 
+  // Moves focus into the panel on open, traps Tab/Shift+Tab within it, and
+  // restores focus to the triggering element on close.
+  useFocusTrap(dialogRef, open);
+
   if (!open) return null;
 
   return createPortal(
     <div className="fixed inset-0 z-50 flex justify-end bg-slate-900/40">
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
+        aria-label={title}
+        tabIndex={-1}
         className={cn(
           "flex h-full w-full max-w-md flex-col border-l border-border bg-white shadow-panel",
           className,

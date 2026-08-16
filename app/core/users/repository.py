@@ -48,6 +48,7 @@ ADMIN_PERMISSION_CODES: Sequence[str] = (
     "postmortem:approve",
     "knowledge:review",
     "observability:read",
+    "audit:read",
 )
 
 

@@ -9,12 +9,17 @@ import { Button } from "@/components/ui/Button";
 import { createIncident } from "@/api/incidents";
 import type { IncidentSeverity } from "@/types/incident";
 import { useToast } from "@/context/ToastContext";
+import { useAuth } from "@/context/AuthContext";
 
 const SEVERITIES: IncidentSeverity[] = ["critical", "high", "medium", "low"];
 
 export function IncidentCreatePage() {
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { user } = useAuth();
+  // Mirrors the real gate `core.incidents.service.create_incident` enforces
+  // -- UX only, the backend re-checks regardless.
+  const canWrite = Boolean(user?.permissions.includes("incident:write"));
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [severity, setSeverity] = useState<IncidentSeverity>("medium");
@@ -40,6 +45,12 @@ export function IncidentCreatePage() {
 
       <Card>
         <CardContent>
+          {!canWrite && (
+            <p className="mb-4 rounded-md border border-border bg-slate-50 px-3 py-2 text-xs text-ink-muted">
+              You need the <span className="font-medium text-ink">incident:write</span> permission to create an
+              incident.
+            </p>
+          )}
           <form
             className="flex flex-col gap-4"
             onSubmit={(event) => {
@@ -51,6 +62,7 @@ export function IncidentCreatePage() {
               Title
               <Input
                 required
+                disabled={!canWrite}
                 placeholder="e.g. Payment API returning 500 errors"
                 value={title}
                 onChange={(event) => setTitle(event.target.value)}
@@ -61,11 +73,12 @@ export function IncidentCreatePage() {
               Description
               <textarea
                 required
+                disabled={!canWrite}
                 rows={5}
                 placeholder="What's happening, and what's the customer/system impact so far?"
                 value={description}
                 onChange={(event) => setDescription(event.target.value)}
-                className="w-full rounded-md border border-border bg-white px-3 py-2 text-sm text-ink placeholder:text-ink-subtle focus-visible:border-accent"
+                className="w-full rounded-md border border-border bg-white px-3 py-2 text-sm text-ink placeholder:text-ink-subtle focus-visible:border-accent disabled:bg-slate-50 disabled:text-ink-subtle"
               />
             </label>
 
@@ -73,6 +86,7 @@ export function IncidentCreatePage() {
               Severity
               <Select
                 value={severity}
+                disabled={!canWrite}
                 onChange={(event) => setSeverity(event.target.value as IncidentSeverity)}
                 className="w-48"
               >
@@ -91,7 +105,7 @@ export function IncidentCreatePage() {
               <Button
                 type="submit"
                 variant="primary"
-                disabled={createMutation.isPending || !title || !description}
+                disabled={createMutation.isPending || !title || !description || !canWrite}
               >
                 {createMutation.isPending ? "Creating…" : "Create incident"}
               </Button>

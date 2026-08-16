@@ -28,9 +28,40 @@ export async function askQuestion(query: string, incidentId?: string): Promise<A
   });
 }
 
+const MOCK_INVESTIGATION_RESPONSE: AskResponse = {
+  confidence: 0.58,
+  routeTaken: "investigation",
+  answer: null,
+  citations: [],
+  investigation: {
+    evidence: [
+      {
+        source: "commit",
+        reference: "payment-service@a1b2c3d",
+        summary: "Deployed payment-service v2.14.0, introducing the promo-code refactor.",
+        retrievedAt: new Date().toISOString(),
+        sourceTimestamp: null,
+        metadata: {},
+      },
+    ],
+    hypotheses: [
+      {
+        description: "Null discount configuration object introduced by the promo-code refactor.",
+        confidence: 0.72,
+        supportingEvidenceIds: ["payment-service@a1b2c3d"],
+      },
+    ],
+    suggestedOwnerTeam: "Payments",
+    suggestedNextSteps: [
+      "Review the promo-code refactor's config migration for missing rows.",
+      "Confirm the deploy timestamp against the error-rate spike.",
+    ],
+  },
+};
+
 export async function investigateIncident(incidentId: string): Promise<AskResponse> {
   if (USE_MOCK_DATA) {
-    return mockDelay({ ...MOCK_RESPONSE, routeTaken: "investigation", answer: null }, 800);
+    return mockDelay(MOCK_INVESTIGATION_RESPONSE, 800);
   }
   return apiRequest<AskResponse>(`/incidents/${incidentId}/investigate`, { method: "POST" });
 }
@@ -42,9 +73,36 @@ export async function getQuestionHistory(limit = 20, offset = 0): Promise<Questi
   return apiRequest<QuestionHistoryEntry[]>(`/ask/history?limit=${limit}&offset=${offset}`);
 }
 
+const MOCK_SCORED_CHUNKS: ScoredChunk[] = [
+  {
+    chunkId: "00000000-0000-0000-0000-000000000010",
+    documentId: "00000000-0000-0000-0000-000000000011",
+    collection: "conversations",
+    content: "The embedding service was consuming more memory than expected. Reduced worker concurrency from 10 to 4.",
+    score: 0.78,
+    sourceOffsetStart: 0,
+    sourceOffsetEnd: 96,
+    title: "#incidents — embedding worker memory",
+    sourceUrl: null,
+    metadata: {},
+  },
+  {
+    chunkId: "00000000-0000-0000-0000-000000000012",
+    documentId: "00000000-0000-0000-0000-000000000013",
+    collection: "documentation",
+    content: "If checkout returns 500, check the payment adapter for null handling.",
+    score: 0.71,
+    sourceOffsetStart: 0,
+    sourceOffsetEnd: 70,
+    title: "Checkout 500 runbook",
+    sourceUrl: null,
+    metadata: {},
+  },
+];
+
 export async function searchSimilarIncidents(description: string, topK = 10): Promise<ScoredChunk[]> {
   if (USE_MOCK_DATA) {
-    return mockDelay([], 500);
+    return mockDelay(MOCK_SCORED_CHUNKS.slice(0, topK), 500);
   }
   return apiRequest<ScoredChunk[]>("/search/similar-incidents", {
     method: "POST",

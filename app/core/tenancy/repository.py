@@ -24,6 +24,7 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.database.models.ingestion_models import IngestionJob
 from app.database.models.tenancy_models import (
     ConnectorConfig,
     Invitation,
@@ -234,6 +235,43 @@ async def list_connector_configs(
         select(ConnectorConfig)
         .where(ConnectorConfig.organization_id == organization_id)
         .order_by(ConnectorConfig.created_at.desc())
+    )
+    result = await session.execute(stmt)
+    return result.scalars().all()
+
+
+async def list_ingestion_runs(
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    connector_config_id: uuid.UUID,
+    *,
+    limit: int,
+    offset: int,
+) -> Sequence[IngestionJob]:
+    """Return `connector_config_id`'s ingestion run history, newest first.
+
+    Phase 2D addition backing `GET /tenancy/connectors/{id}/runs` -- reads
+    the `ingestion_jobs` table directly (owned by `app.ingestion`'s data
+    model, but core/tenancy is import-linter-forbidden from depending on
+    `app.ingestion` itself) rather than reaching through `app.ingestion.
+    service`, the same "read the raw table directly" precedent `app.
+    ingestion.repository` already established for its own reads of
+    `connector_configs` (this module's own table). Filtered by both
+    `organization_id` and `connector_config_id` -- the caller
+    (`core.tenancy.service.list_ingestion_runs`) already verified the
+    connector belongs to this organization, but filtering here too costs
+    nothing and means this function is never the one place a tenant-
+    isolation bug could slip through.
+    """
+    stmt = (
+        select(IngestionJob)
+        .where(
+            IngestionJob.organization_id == organization_id,
+            IngestionJob.connector_config_id == connector_config_id,
+        )
+        .order_by(IngestionJob.created_at.desc())
+        .limit(limit)
+        .offset(offset)
     )
     result = await session.execute(stmt)
     return result.scalars().all()

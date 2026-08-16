@@ -45,6 +45,7 @@ export function Topbar({ onToggleSidebar }: TopbarProps) {
         trigger={
           <button
             type="button"
+            aria-label={user?.name ? `Account menu for ${user.name}` : "Account menu"}
             className="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-slate-100"
           >
             <div className="flex h-7 w-7 items-center justify-center rounded-full bg-accent-subtle text-accent">

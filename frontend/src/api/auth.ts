@@ -9,7 +9,6 @@ interface UserProfileResponse {
   isActive: boolean;
   roles: string[];
   permissions: string[];
-  permissions: string[];
 }
 
 const MOCK_USER: AuthUser = {
@@ -18,7 +17,7 @@ const MOCK_USER: AuthUser = {
   email: "bhawna.relhan@navikenz.com",
   organizationId: "org-1",
   role: "owner",
-  permissions: ["tenancy:manage", "knowledge:review", "observability:read", "incident:write", "postmortem:write", "postmortem:approve"],
+  permissions: ["tenancy:manage", "knowledge:review", "observability:read", "incident:write", "postmortem:write", "postmortem:approve", "audit:read"],
 };
 
 const MOCK_TOKENS: SessionTokens = {

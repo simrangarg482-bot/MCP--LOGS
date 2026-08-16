@@ -14,7 +14,7 @@ interface TabsProps {
 
 export function Tabs({ items, activeKey, onChange }: TabsProps) {
   return (
-    <div role="tablist" className="flex items-center gap-1 border-b border-border">
+    <div role="tablist" className="flex items-center gap-1 overflow-x-auto border-b border-border scrollbar-thin">
       {items.map((item) => {
         const isActive = item.key === activeKey;
         return (
@@ -24,7 +24,7 @@ export function Tabs({ items, activeKey, onChange }: TabsProps) {
             aria-selected={isActive}
             onClick={() => onChange(item.key)}
             className={cn(
-              "relative flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium transition-colors",
+              "relative flex shrink-0 items-center gap-1.5 whitespace-nowrap px-3 py-2.5 text-sm font-medium transition-colors",
               isActive ? "text-ink" : "text-ink-muted hover:text-ink",
             )}
           >

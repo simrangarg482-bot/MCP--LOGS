@@ -56,16 +56,20 @@ Two `APIRouter` instances live in this one file:
 from __future__ import annotations
 
 import uuid
+from typing import Annotated
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from app.api.deps import ArqPool, CurrentIdentity, DbSession
+from app.core.audit import service as audit_service
+from app.core.audit.schemas import AuditLogEntry, AuditLogQuery
 from app.core.tenancy import service as tenancy_service
 from app.core.tenancy.schemas import (
     AccessRule,
     AccessRuleCreate,
     ConnectorConfig,
     ConnectorConfigCreate,
+    IngestionRun,
     Invitation,
     InvitationCreate,
     Organization,
@@ -120,6 +124,26 @@ async def sync_connector(
     )
     await arq_pool.enqueue_job("run_ingestion_job_task", str(connector.id))
     return {"status": "enqueued", "connector_config_id": str(connector.id)}
+
+
+@router.get("/connectors/{connector_config_id}/runs", response_model=list[IngestionRun])
+async def list_ingestion_runs(
+    connector_config_id: uuid.UUID,
+    actor: CurrentIdentity,
+    session: DbSession,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[IngestionRun]:
+    """Phase 2D addition: real ingestion-run history for one connector, so
+    `sync_connector`'s own docstring ("poll `GET /tenancy/connectors` and
+    watch `last_synced_at`/`status`") gets an actual run-by-run history
+    rather than just the connector's single latest-sync summary. No new
+    permission -- reuses `tenancy:manage`, the same gate every other
+    connector-facing endpoint already applies.
+    """
+    return await tenancy_service.list_ingestion_runs(
+        session, actor, actor.organization_id, connector_config_id, limit=limit, offset=offset
+    )
 
 
 admin_router = APIRouter(tags=["tenancy-admin"])
@@ -183,6 +207,27 @@ async def list_organization_members(
     equivalent (`core.users.service.list_organization_members`).
     """
     return await users_service.list_organization_members(session, actor, organization_id)
+
+
+# --- Audit -------------------------------------------------------------------------
+
+
+@admin_router.get("/organizations/{organization_id}/audit", response_model=list[AuditLogEntry])
+async def query_audit_log(
+    organization_id: uuid.UUID,
+    actor: CurrentIdentity,
+    session: DbSession,
+    query: Annotated[AuditLogQuery, Depends()],
+) -> list[AuditLogEntry]:
+    """Phase 2C addition: `core.audit.service.query_audit_log` existed with
+    a real, complete implementation but had no REST or MCP caller anywhere
+    (confirmed by a full-repo grep before this route was added) -- this is
+    its first real caller. Gated by the new `audit:read` permission (see
+    that service function's own docstring for why a permission gate was
+    added at the same time as this route, not left at only a tenant-match
+    check).
+    """
+    return await audit_service.query_audit_log(session, actor, organization_id, query)
 
 
 # --- SSO -------------------------------------------------------------------------

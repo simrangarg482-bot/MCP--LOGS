@@ -1,4 +1,4 @@
-import type { AiInvestigation, Incident, IncidentComment, TimelineEntry } from "@/types/incident";
+import type { Incident, TimelineEntry } from "@/types/incident";
 import { hoursAgo, minutesAgo, daysAgo } from "@/mocks/time";
 
 const ORG_ID = "org-1";
@@ -120,153 +120,54 @@ export const mockIncidents: Incident[] = [
   },
 ];
 
+// Real event types only ("note", "investigation") -- see types/incident.ts's
+// TimelineEventType docstring for why the previous six-type mock roster
+// (created/status_change/severity_change/assignment/agent_execution/
+// connector_event/resolution) matched nothing the backend produces.
 export const mockTimeline: Record<string, TimelineEntry[]> = {
   "inc-1024": [
     {
-      id: "tl-1",
-      incidentId: "inc-1024",
-      type: "created",
-      actor: "monitoring-system",
-      message: "Incident created from PagerDuty alert 'payment-service-5xx-rate-high'.",
-      createdAt: minutesAgo(12),
-    },
-    {
-      id: "tl-2",
-      incidentId: "inc-1024",
-      type: "severity_change",
-      actor: "monitoring-system",
-      message: "Severity escalated from High to Critical — error rate exceeded 15%.",
-      createdAt: minutesAgo(11),
-    },
-    {
       id: "tl-3",
+      organizationId: ORG_ID,
       incidentId: "inc-1024",
-      type: "assignment",
-      actor: "Rahul Mehta",
-      message: "Assigned incident to Simran Kaur.",
-      createdAt: minutesAgo(10),
-    },
-    {
-      id: "tl-4",
-      incidentId: "inc-1024",
-      type: "agent_execution",
-      actor: "EKIP Investigation Agent",
-      message: "Ran automated investigation pipeline — generated root cause hypotheses.",
-      createdAt: minutesAgo(8),
-    },
-    {
-      id: "tl-5",
-      incidentId: "inc-1024",
-      type: "status_change",
-      actor: "Simran Kaur",
-      message: "Status changed from Open to Investigating.",
-      createdAt: minutesAgo(6),
+      eventType: "investigation",
+      eventData: {
+        evidence: [
+          {
+            source: "commit",
+            reference: "payment-service@a1b2c3d",
+            summary: "Deployed payment-service v2.14.0 at 14:02 UTC, introducing the promo-code refactor.",
+            retrievedAt: minutesAgo(8),
+            sourceTimestamp: minutesAgo(20),
+            metadata: {},
+          },
+        ],
+        hypotheses: [
+          {
+            description: "Null discount configuration object introduced by the promo-code refactor in v2.14.0.",
+            confidence: 0.82,
+            supportingEvidenceIds: ["payment-service@a1b2c3d"],
+          },
+        ],
+        suggestedOwnerTeam: "Payments",
+        suggestedNextSteps: [
+          "Roll back payment-service to v2.13.4 to stop active customer impact.",
+          "Backfill promo_rules for the 3 campaigns missing configuration.",
+        ],
+      },
+      actor: "agent:investigation_agent",
+      occurredAt: minutesAgo(8),
     },
     {
       id: "tl-6",
+      organizationId: ORG_ID,
       incidentId: "inc-1024",
-      type: "comment",
-      actor: "Simran Kaur",
-      message: "Confirmed the 14:02 UTC deploy of payment-service v2.14.0 correlates with the error spike. Rolling back.",
-      createdAt: minutesAgo(3),
-    },
-  ],
-};
-
-export const mockAiInvestigations: Record<string, AiInvestigation> = {
-  "inc-1024": {
-    incidentId: "inc-1024",
-    summary:
-      "Payment API 500 errors began within 90 seconds of the payment-service v2.14.0 deployment at 14:02 UTC. The error signature (NullReferenceException in CheckoutOrchestrator.ApplyDiscount) matches a code path introduced in that release. Error rate has climbed from 2% to 17% and is concentrated on orders that use a promotional discount code.",
-    rootCauseHypotheses: [
-      {
-        summary: "Null discount configuration object introduced by the promo-code refactor in v2.14.0.",
-        confidence: 0.82,
-        evidence: [
-          "Stack trace points to CheckoutOrchestrator.ApplyDiscount:L118",
-          "Errors only occur on orders with a discount code applied",
-          "No errors observed prior to the 14:02 UTC deploy",
-        ],
+      eventType: "note",
+      eventData: {
+        note: "Confirmed the 14:02 UTC deploy of payment-service v2.14.0 correlates with the error spike. Rolling back.",
       },
-      {
-        summary: "Feature flag 'promo-v2' rolled out to 100% without a matching config migration.",
-        confidence: 0.54,
-        evidence: [
-          "Feature flag promo-v2 flipped to 100% at 14:00 UTC",
-          "Config table promo_rules missing rows for 3 active campaigns",
-        ],
-      },
-    ],
-    relevantKnowledge: [
-      {
-        label: "payment-service — Deployment Runbook",
-        system: "github",
-        reference: "payment-service/RUNBOOK.md",
-        url: "#",
-        timestamp: hoursAgo(48),
-      },
-      {
-        label: "#payments — prior discount-code incident discussion",
-        system: "slack",
-        reference: "#payments",
-        url: "#",
-        timestamp: daysAgo(30),
-      },
-      {
-        label: "INC-984 — Postmortem: Promo code null reference",
-        system: "incident",
-        reference: "INC-984",
-        url: "#",
-        timestamp: daysAgo(31),
-      },
-    ],
-    similarIncidents: [
-      {
-        incident: {
-          id: "inc-984",
-          organizationId: ORG_ID,
-          projectId: PROJECT_ID,
-          title: "Checkout 500s after promo-code service deploy",
-          description: "Postmortem-linked prior incident with a matching error signature.",
-          severity: "critical",
-          status: "closed",
-          ownerTeam: "Payments",
-          reportedBy: reporters[0],
-          createdAt: daysAgo(31),
-          updatedAt: daysAgo(31),
-          resolvedAt: daysAgo(31),
-        },
-        similarityScore: 0.91,
-        matchedOn: "Error signature + affected code path",
-      },
-    ],
-    recommendedActions: [
-      "Roll back payment-service to v2.13.4 to stop active customer impact.",
-      "Backfill promo_rules for the 3 campaigns missing configuration.",
-      "Add a null-check guard and unit test for CheckoutOrchestrator.ApplyDiscount before re-deploying.",
-      "Add a canary gate on promo-v2 rollouts tied to checkout error-rate SLO.",
-    ],
-    confidence: 0.82,
-    generatedAt: minutesAgo(8),
-    model: "ekip-investigation-agent-v3",
-  },
-};
-
-export const mockComments: Record<string, IncidentComment[]> = {
-  "inc-1024": [
-    {
-      id: "c-1",
-      incidentId: "inc-1024",
-      author: "Rahul Mehta",
-      body: "Paged in — looking at the deploy now.",
-      createdAt: minutesAgo(10),
-    },
-    {
-      id: "c-2",
-      incidentId: "inc-1024",
-      author: "Simran Kaur",
-      body: "Confirmed the 14:02 UTC deploy correlates with the error spike. Rolling back v2.14.0.",
-      createdAt: minutesAgo(3),
+      actor: "user:simran.kaur@example.com",
+      occurredAt: minutesAgo(3),
     },
   ],
 };

@@ -1,23 +1,31 @@
 import { NavLink, Outlet } from "react-router-dom";
 import { PageHeader } from "@/components/layout/PageHeader";
+import { useAuth } from "@/context/AuthContext";
 import { cn } from "@/utils/cn";
 
-const SETTINGS_NAV = [
+const SETTINGS_TABS = [
   { label: "Organization", path: "/settings/organization" },
   { label: "Project", path: "/settings/project" },
   { label: "Users", path: "/settings/users" },
   { label: "SSO", path: "/settings/sso" },
-  { label: "Connectors", path: "/settings/connectors" },
+  // `core.tenancy.service.list_connectors` gates on `tenancy:manage` --
+  // hide this tab for anyone lacking it, matching the real /connectors
+  // nav item's gate (see routes/nav.ts).
+  { label: "Connectors", path: "/settings/connectors", permission: "tenancy:manage" },
 ];
 
 export function SettingsLayout() {
+  const { user } = useAuth();
+  const permissions = new Set(user?.permissions ?? []);
+  const visibleTabs = SETTINGS_TABS.filter((tab) => !tab.permission || permissions.has(tab.permission));
+
   return (
     <div className="flex flex-col gap-5">
       <PageHeader title="Settings" description="Manage your organization, project, users, and integrations." />
 
       <div className="flex flex-col gap-6 lg:flex-row">
         <nav className="flex shrink-0 flex-row gap-1 overflow-x-auto lg:w-48 lg:flex-col lg:overflow-visible">
-          {SETTINGS_NAV.map((item) => (
+          {visibleTabs.map((item) => (
             <NavLink
               key={item.path}
               to={item.path}

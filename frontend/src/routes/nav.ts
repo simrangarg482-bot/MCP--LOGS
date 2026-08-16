@@ -9,7 +9,7 @@ import {
   Plug,
   Bot,
   Wrench,
-  BarChart3,
+  ScrollText,
   Settings,
 } from "lucide-react";
 
@@ -33,8 +33,8 @@ export const PRIMARY_NAV: NavItem[] = [
   { label: "Search", path: "/search", icon: Search },
   { label: "Connectors", path: "/connectors", icon: Plug, permission: "tenancy:manage" },
   { label: "Agents", path: "/agents", icon: Bot, permission: "observability:read" },
-  { label: "MCP Tools", path: "/mcp", icon: Wrench },
-  { label: "Analytics", path: "/analytics", icon: BarChart3 },
+  { label: "MCP Tools", path: "/mcp", icon: Wrench, permission: "observability:read" },
+  { label: "Audit Log", path: "/audit", icon: ScrollText, permission: "audit:read" },
 ];
 
 export const SETTINGS_NAV: NavItem[] = [{ label: "Settings", path: "/settings", icon: Settings }];

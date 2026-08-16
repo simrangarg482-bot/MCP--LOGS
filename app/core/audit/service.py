@@ -34,10 +34,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import repository
 from app.core.audit.schemas import AuditLogEntry, AuditLogQuery
 from app.core.exceptions import PermissionDeniedError
+from app.core.users.service import require_permission
 from app.shared.config.logging import get_logger
 from app.shared.schemas import Identity
 
 logger = get_logger(__name__)
+
+# Phase 2C addition: `query_audit_log` previously had no permission gate at
+# all beyond tenant match -- harmless while nothing called it, but exposing
+# a full org-wide audit trail to any authenticated member the moment a REST
+# route calls this would be a real, new authorization gap, not an existing
+# one. Follows this codebase's `resource:verb` permission-code convention
+# (matching `observability:read`, `knowledge:review`).
+_AUDIT_READ_PERMISSION = "audit:read"
 
 
 def _ensure_same_organization(actor: Identity, organization_id: uuid.UUID) -> None:
@@ -119,9 +128,16 @@ async def query_audit_log(
     every other org-scoped read in this codebase is denied, rather than being
     an oversight waiting for its first caller to exploit it.
 
+    Also requires `audit:read` (Phase 2C addition, once this became a real
+    REST-facing capability -- see `_AUDIT_READ_PERMISSION`'s own comment):
+    the audit trail can reveal every consequential action taken in an
+    organization, which is admin-facing information, not something every
+    org member should be able to read by default.
+
     Maps ORM rows into `AuditLogEntry` so the transactional ORM objects never
     cross the module boundary (ARCHITECTURE.md section 2).
     """
     _ensure_same_organization(actor, organization_id)
+    require_permission(actor, _AUDIT_READ_PERMISSION)
     rows = await repository.list_entries(session, organization_id, query)
     return [AuditLogEntry.model_validate(row) for row in rows]

@@ -17,7 +17,7 @@ import { SearchPage } from "@/pages/search/SearchPage";
 import { ConnectorsPage } from "@/pages/connectors/ConnectorsPage";
 import { AgentsPage } from "@/pages/agents/AgentsPage";
 import { McpToolsPage } from "@/pages/mcp/McpToolsPage";
-import { AnalyticsPage } from "@/pages/analytics/AnalyticsPage";
+import { AuditPage } from "@/pages/audit/AuditPage";
 import { SettingsLayout } from "@/pages/settings/SettingsLayout";
 import { OrganizationSettingsPage } from "@/pages/settings/OrganizationSettingsPage";
 import { ProjectSettingsPage } from "@/pages/settings/ProjectSettingsPage";
@@ -53,7 +53,7 @@ export const router = createBrowserRouter([
           { path: "/connectors", element: <ConnectorsPage /> },
           { path: "/agents", element: <AgentsPage /> },
           { path: "/mcp", element: <McpToolsPage /> },
-          { path: "/analytics", element: <AnalyticsPage /> },
+          { path: "/audit", element: <AuditPage /> },
           {
             path: "/settings",
             element: <SettingsLayout />,

@@ -2,8 +2,6 @@ import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { AlertCircle, ShieldAlert, CheckCircle2, BookOpen, Plug, Bot } from "lucide-react";
 import {
-  AreaChart,
-  Area,
   Bar,
   BarChart,
   CartesianGrid,
@@ -25,40 +23,67 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
 import { listIncidents } from "@/api/incidents";
 import { listConnectors } from "@/api/connectors";
 import { listAgentStats } from "@/api/agents";
-import { getAnalyticsSummary } from "@/api/analytics";
 import { listKnowledgeDocuments } from "@/api/knowledge";
-import { listRecentActivity } from "@/api/activity";
 import type { Incident } from "@/types/incident";
 import { formatRelativeTime } from "@/utils/date";
 
-const CHART_COLORS = {
-  opened: "#94A3B8",
-  resolved: "#2563EB",
+const SEVERITY_COLORS = {
   critical: "#DC2626",
   high: "#D97706",
   medium: "#64748B",
   low: "#93C5FD",
 };
 
+// A wider fetch than the 6-row table below needs, specifically so the
+// severity/owner-team breakdown charts reflect a real (if capped, not
+// paginated-away) sample of actual incidents rather than just the 6 most
+// recent -- still real, client-computed data, not the fictional
+// `getAnalyticsSummary()` this page used to call (no backend endpoint for
+// it exists at all; see docs/ENGINEERING_DECISIONS.md-style audit notes in
+// this session's history).
+const BREAKDOWN_SAMPLE_SIZE = 100;
+
 export function DashboardPage() {
   const navigate = useNavigate();
 
-  const incidentsQuery = useQuery({
-    queryKey: ["incidents", "dashboard"],
+  const recentIncidentsQuery = useQuery({
+    queryKey: ["incidents", "dashboard", "recent"],
     queryFn: () => listIncidents({ limit: 6, offset: 0 }),
+  });
+  const breakdownIncidentsQuery = useQuery({
+    queryKey: ["incidents", "dashboard", "breakdown"],
+    queryFn: () => listIncidents({ limit: BREAKDOWN_SAMPLE_SIZE, offset: 0 }),
   });
   const connectorsQuery = useQuery({ queryKey: ["connectors"], queryFn: listConnectors });
   const agentsQuery = useQuery({ queryKey: ["agents", "stats"], queryFn: listAgentStats });
-  const analyticsQuery = useQuery({ queryKey: ["analytics", "summary"], queryFn: getAnalyticsSummary });
   const knowledgeQuery = useQuery({
     queryKey: ["knowledge", "dashboard"],
     queryFn: () => listKnowledgeDocuments({ page: 1, pageSize: 1 }),
   });
 
-  const incidents = incidentsQuery.data ?? [];
+  const incidents = recentIncidentsQuery.data ?? [];
+  const breakdownIncidents = breakdownIncidentsQuery.data ?? [];
   const openCount = incidents.filter((i) => i.status === "open" || i.status === "investigating").length;
   const criticalCount = incidents.filter((i) => i.severity === "critical").length;
   const resolvedCount = incidents.filter((i) => i.status === "resolved" || i.status === "closed").length;
+
+  const severityBreakdown = (["critical", "high", "medium", "low"] as const)
+    .map((severity) => ({
+      severity,
+      count: breakdownIncidents.filter((i) => i.severity === severity).length,
+    }))
+    .filter((entry) => entry.count > 0);
+
+  const ownerTeamBreakdown = Object.entries(
+    breakdownIncidents.reduce<Record<string, number>>((acc, incident) => {
+      const team = incident.ownerTeam ?? "Unassigned";
+      acc[team] = (acc[team] ?? 0) + 1;
+      return acc;
+    }, {}),
+  )
+    .map(([ownerTeam, count]) => ({ ownerTeam, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 8);
 
   const columns: DataTableColumn<Incident>[] = [
     {
@@ -98,64 +123,23 @@ export function DashboardPage() {
           icon={Plug}
         />
         <MetricCard
-          label="Active Agents"
-          value={agentsQuery.data?.filter((a) => a.status === "healthy").length ?? "—"}
+          label="Agents with activity"
+          value={agentsQuery.data?.length ?? "—"}
           icon={Bot}
         />
       </div>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <Card className="lg:col-span-2">
-          <CardHeader>
-            <CardTitle>Incident volume — last 14 days</CardTitle>
-          </CardHeader>
-          <CardContent className="h-64">
-            {analyticsQuery.data && (
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={analyticsQuery.data.incidentVolume} margin={{ left: -20, right: 8 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" vertical={false} />
-                  <XAxis dataKey="date" tick={{ fontSize: 11, fill: "#64748B" }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fontSize: 11, fill: "#64748B" }} axisLine={false} tickLine={false} width={28} />
-                  <RechartsTooltip
-                    contentStyle={{ fontSize: 12, borderRadius: 6, borderColor: "#E2E8F0" }}
-                  />
-                  <Legend wrapperStyle={{ fontSize: 12 }} />
-                  <Area
-                    type="monotone"
-                    dataKey="opened"
-                    name="Opened"
-                    stroke={CHART_COLORS.opened}
-                    fill={CHART_COLORS.opened}
-                    fillOpacity={0.12}
-                    strokeWidth={2}
-                    isAnimationActive={false}
-                  />
-                  <Area
-                    type="monotone"
-                    dataKey="resolved"
-                    name="Resolved"
-                    stroke={CHART_COLORS.resolved}
-                    fill={CHART_COLORS.resolved}
-                    fillOpacity={0.12}
-                    strokeWidth={2}
-                    isAnimationActive={false}
-                  />
-                </AreaChart>
-              </ResponsiveContainer>
-            )}
-          </CardContent>
-        </Card>
-
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>
             <CardTitle>Severity distribution</CardTitle>
           </CardHeader>
           <CardContent className="h-64">
-            {analyticsQuery.data && (
+            {severityBreakdown.length > 0 ? (
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
                   <Pie
-                    data={analyticsQuery.data.severityBreakdown}
+                    data={severityBreakdown}
                     dataKey="count"
                     nameKey="severity"
                     innerRadius={50}
@@ -163,14 +147,37 @@ export function DashboardPage() {
                     paddingAngle={2}
                     isAnimationActive={false}
                   >
-                    {analyticsQuery.data.severityBreakdown.map((entry) => (
-                      <Cell key={entry.severity} fill={CHART_COLORS[entry.severity]} />
+                    {severityBreakdown.map((entry) => (
+                      <Cell key={entry.severity} fill={SEVERITY_COLORS[entry.severity]} />
                     ))}
                   </Pie>
                   <Legend wrapperStyle={{ fontSize: 12 }} />
                   <RechartsTooltip contentStyle={{ fontSize: 12, borderRadius: 6, borderColor: "#E2E8F0" }} />
                 </PieChart>
               </ResponsiveContainer>
+            ) : (
+              <p className="flex h-full items-center justify-center text-sm text-ink-muted">No incidents yet.</p>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Incidents by owner team</CardTitle>
+          </CardHeader>
+          <CardContent className="h-64">
+            {ownerTeamBreakdown.length > 0 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={ownerTeamBreakdown} margin={{ left: -20, right: 8 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" vertical={false} />
+                  <XAxis dataKey="ownerTeam" tick={{ fontSize: 11, fill: "#64748B" }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fontSize: 11, fill: "#64748B" }} axisLine={false} tickLine={false} width={28} />
+                  <RechartsTooltip contentStyle={{ fontSize: 12, borderRadius: 6, borderColor: "#E2E8F0" }} />
+                  <Bar dataKey="count" name="Incidents" fill="#2563EB" radius={[3, 3, 0, 0]} isAnimationActive={false} />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <p className="flex h-full items-center justify-center text-sm text-ink-muted">No incidents yet.</p>
             )}
           </CardContent>
         </Card>
@@ -184,64 +191,12 @@ export function DashboardPage() {
           columns={columns}
           rows={incidents}
           rowKey={(row) => row.id}
-          isLoading={incidentsQuery.isLoading}
-          isError={incidentsQuery.isError}
-          onRetry={() => incidentsQuery.refetch()}
+          isLoading={recentIncidentsQuery.isLoading}
+          isError={recentIncidentsQuery.isError}
+          onRetry={() => recentIncidentsQuery.refetch()}
           onRowClick={(row) => navigate(`/incidents/${row.id}`)}
         />
       </Card>
-
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle>Incidents by service</CardTitle>
-          </CardHeader>
-          <CardContent className="h-56">
-            {analyticsQuery.data && (
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={analyticsQuery.data.incidentsByService} margin={{ left: -20, right: 8 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" vertical={false} />
-                  <XAxis dataKey="service" tick={{ fontSize: 11, fill: "#64748B" }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fontSize: 11, fill: "#64748B" }} axisLine={false} tickLine={false} width={28} />
-                  <RechartsTooltip contentStyle={{ fontSize: 12, borderRadius: 6, borderColor: "#E2E8F0" }} />
-                  <Bar dataKey="count" name="Incidents" fill="#2563EB" radius={[3, 3, 0, 0]} isAnimationActive={false} />
-                </BarChart>
-              </ResponsiveContainer>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>System activity</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <SystemActivityFeed />
-          </CardContent>
-        </Card>
-      </div>
     </div>
-  );
-}
-
-function SystemActivityFeed() {
-  const activityQuery = useQuery({ queryKey: ["activity", "recent"], queryFn: listRecentActivity });
-
-  if (activityQuery.isLoading) {
-    return <p className="text-sm text-ink-muted">Loading activity…</p>;
-  }
-
-  return (
-    <ul className="flex flex-col gap-3">
-      {(activityQuery.data ?? []).map((item) => (
-        <li key={item.id} className="flex items-start justify-between gap-3 text-sm">
-          <div>
-            <p className="text-ink">{item.label}</p>
-            <p className="text-xs text-ink-muted">{item.meta}</p>
-          </div>
-          <span className="shrink-0 text-xs text-ink-subtle">{formatRelativeTime(item.occurredAt)}</span>
-        </li>
-      ))}
-    </ul>
   );
 }

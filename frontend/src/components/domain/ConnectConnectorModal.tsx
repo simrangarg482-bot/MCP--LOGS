@@ -94,10 +94,11 @@ export function ConnectConnectorModal({
       {tab === "github" && (
         <form onSubmit={handleGithubSubmit} className="flex flex-col gap-3">
           <div>
-            <label className="mb-1.5 block text-xs font-medium text-ink-muted">
+            <label htmlFor="github-token" className="mb-1.5 block text-xs font-medium text-ink-muted">
               Personal access token
             </label>
             <Input
+              id="github-token"
               type="password"
               required
               placeholder="ghp_…"
@@ -106,13 +107,14 @@ export function ConnectConnectorModal({
             />
           </div>
 
-          <div>
-            <label className="mb-1.5 block text-xs font-medium text-ink-muted">Repositories</label>
+          <fieldset className="m-0 min-w-0 border-0 p-0">
+            <legend className="mb-1.5 block text-xs font-medium text-ink-muted">Repositories</legend>
             <div className="flex flex-col gap-2">
               {repos.map((row, index) => (
                 <div key={index} className="flex gap-2">
                   <Input
                     placeholder="owner/repo"
+                    aria-label={`Repository ${index + 1} (owner/repo)`}
                     value={row.repo}
                     onChange={(e) =>
                       setRepos((prev) =>
@@ -123,6 +125,7 @@ export function ConnectConnectorModal({
                   />
                   <Input
                     placeholder="branch (default: main)"
+                    aria-label={`Repository ${index + 1} branch (default: main)`}
                     value={row.ref ?? ""}
                     onChange={(e) =>
                       setRepos((prev) =>
@@ -154,7 +157,7 @@ export function ConnectConnectorModal({
               <Plus className="h-3.5 w-3.5" />
               Add repository
             </Button>
-          </div>
+          </fieldset>
 
           <Button type="submit" variant="primary" isLoading={isSubmitting} className="mt-2">
             Connect GitHub
@@ -165,8 +168,9 @@ export function ConnectConnectorModal({
       {tab === "slack" && (
         <form onSubmit={handleSlackSubmit} className="flex flex-col gap-3">
           <div>
-            <label className="mb-1.5 block text-xs font-medium text-ink-muted">Bot token</label>
+            <label htmlFor="slack-token" className="mb-1.5 block text-xs font-medium text-ink-muted">Bot token</label>
             <Input
+              id="slack-token"
               type="password"
               required
               placeholder="xoxb-…"
@@ -175,13 +179,14 @@ export function ConnectConnectorModal({
             />
           </div>
 
-          <div>
-            <label className="mb-1.5 block text-xs font-medium text-ink-muted">Channel IDs</label>
+          <fieldset className="m-0 min-w-0 border-0 p-0">
+            <legend className="mb-1.5 block text-xs font-medium text-ink-muted">Channel IDs</legend>
             <div className="flex flex-col gap-2">
               {channelIds.map((channelId, index) => (
                 <div key={index} className="flex gap-2">
                   <Input
                     placeholder="C0123456789"
+                    aria-label={`Channel ${index + 1} ID`}
                     value={channelId}
                     onChange={(e) =>
                       setChannelIds((prev) => prev.map((c, i) => (i === index ? e.target.value : c)))
@@ -211,7 +216,7 @@ export function ConnectConnectorModal({
               <Plus className="h-3.5 w-3.5" />
               Add channel
             </Button>
-          </div>
+          </fieldset>
 
           <Button type="submit" variant="primary" isLoading={isSubmitting} className="mt-2">
             Connect Slack

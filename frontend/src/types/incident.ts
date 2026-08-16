@@ -1,4 +1,5 @@
 import type { ISODateString, UUID } from "./common";
+import type { EvidenceItem, RootCauseHypothesis } from "./ask";
 
 export type IncidentSeverity = "critical" | "high" | "medium" | "low";
 
@@ -32,62 +33,57 @@ export interface IncidentCreatePayload {
   projectId?: string;
 }
 
-export type TimelineEventType =
-  | "created"
-  | "status_change"
-  | "severity_change"
-  | "assignment"
-  | "comment"
-  | "agent_execution"
-  | "connector_event"
-  | "resolution";
+// Matches `app.core.incidents.schemas.IncidentUpdate` exactly -- the only
+// three fields `update_incident` accepts, not an arbitrary `Partial<Incident>`.
+export interface IncidentUpdatePayload {
+  status?: IncidentStatus;
+  severity?: IncidentSeverity;
+  ownerTeam?: string | null;
+}
+
+// Matches `app.core.incidents.schemas.TimelineEntry`/the two real
+// `event_type` values `core.incidents.service` ever actually writes
+// (`add_timeline_note` -> "note", `record_investigation_result` ->
+// "investigation") -- the previous shape invented six event types
+// (`created`, `status_change`, `severity_change`, `assignment`,
+// `agent_execution`, `connector_event`, `resolution`) nothing on the
+// backend ever produces, a `message: string` field that doesn't exist, and
+// `createdAt` where the real column is `occurred_at`. There is also no
+// separate "comments" concept on the backend at all -- a human note IS a
+// timeline entry, not a different resource.
+export type TimelineEventType = "note" | "investigation";
+
+export interface TimelineNoteEventData {
+  note: string;
+}
+
+// Mirrors `core.incidents.service.record_investigation_result`'s exact
+// `event_data` shape (`evidence`/`hypotheses`/`suggested_owner_team`/
+// `suggested_next_steps`, deep-camelCased at the API boundary) -- the same
+// fields `InvestigationResult` (types/ask.ts) carries on `AskResponse`,
+// since this is that same result, persisted.
+export interface TimelineInvestigationEventData {
+  evidence: EvidenceItem[];
+  hypotheses: RootCauseHypothesis[];
+  suggestedOwnerTeam: string | null;
+  suggestedNextSteps: string[];
+}
 
 export interface TimelineEntry {
   id: UUID;
+  organizationId: UUID;
   incidentId: UUID;
-  type: TimelineEventType;
+  eventType: TimelineEventType;
+  eventData: TimelineNoteEventData | TimelineInvestigationEventData;
   actor: string;
-  message: string;
-  createdAt: ISODateString;
-  metadata?: Record<string, string>;
+  occurredAt: ISODateString;
 }
 
-export interface CitationSource {
-  label: string;
-  system: "github" | "slack" | "confluence" | "jira" | "incident" | "postgresql" | "other";
-  reference: string;
-  url?: string;
-  timestamp?: ISODateString;
-}
-
-export interface RootCauseHypothesis {
-  summary: string;
-  confidence: number;
-  evidence: string[];
-}
-
-export interface AiInvestigation {
-  incidentId: UUID;
-  summary: string;
-  rootCauseHypotheses: RootCauseHypothesis[];
-  relevantKnowledge: CitationSource[];
-  similarIncidents: Array<{
-    incident: Incident;
-    similarityScore: number;
-    matchedOn: string;
-  }>;
-  recommendedActions: string[];
-  confidence: number;
-  generatedAt: ISODateString;
-  model: string;
-}
-
-export interface IncidentComment {
-  id: UUID;
-  incidentId: UUID;
-  author: string;
-  body: string;
-  createdAt: ISODateString;
+// Request body for `POST /incidents/{id}/timeline`
+// (`app.core.incidents.schemas.TimelineNoteCreate`) -- the field is `note`,
+// not `body`; sending `{ body }` (the previous shape) would 422 for real.
+export interface TimelineNoteCreatePayload {
+  note: string;
 }
 
 // Matches `app.core.incidents.schemas.IncidentFilter` exactly: single-value

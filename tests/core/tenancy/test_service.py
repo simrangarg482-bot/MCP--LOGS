@@ -684,3 +684,104 @@ async def test_list_invitations_succeeds_with_tenancy_manage_permission(monkeypa
 
     result = await tenancy_service.list_invitations(None, actor, organization_id)
     assert result == []
+
+
+class _FakeIngestionJobRow:
+    def __init__(self, **kwargs: object) -> None:
+        now = datetime.now(timezone.utc)
+        self.id = uuid.uuid4()
+        self.organization_id = kwargs["organization_id"]
+        self.connector_config_id = kwargs["connector_config_id"]
+        self.status = kwargs.get("status", "succeeded")
+        self.failed_stage = kwargs.get("failed_stage")
+        self.documents_processed = kwargs.get("documents_processed", 0)
+        self.started_at = now
+        self.completed_at = now
+        self.created_at = now
+
+
+@pytest.mark.asyncio
+async def test_list_ingestion_runs_requires_tenancy_manage_permission(monkeypatch) -> None:
+    """Regression test for the Phase 2D `GET /tenancy/connectors/{id}/runs`
+    addition -- no new permission was introduced, so this must be denied by
+    the exact same `tenancy:manage` gate `get_connector` already applies.
+    """
+    organization_id = uuid.uuid4()
+    connector_config_id = uuid.uuid4()
+    actor = _member_no_permissions(organization_id)
+    connector_row = _FakeConnectorConfigRow(
+        organization_id=organization_id, source="github", credential_ref="encrypted-ref"
+    )
+    connector_row.id = connector_config_id
+
+    async def fake_get_connector_config_by_id(session, config_id):
+        return connector_row
+
+    monkeypatch.setattr(
+        tenancy_service.repository, "get_connector_config_by_id", fake_get_connector_config_by_id
+    )
+
+    with pytest.raises(PermissionDeniedError):
+        await tenancy_service.list_ingestion_runs(None, actor, organization_id, connector_config_id)
+
+
+@pytest.mark.asyncio
+async def test_list_ingestion_runs_denies_connector_from_a_different_organization(monkeypatch) -> None:
+    organization_id = uuid.uuid4()
+    connector_config_id = uuid.uuid4()
+    actor = _admin(organization_id)
+    connector_row = _FakeConnectorConfigRow(
+        organization_id=uuid.uuid4(), source="github", credential_ref="encrypted-ref"
+    )
+    connector_row.id = connector_config_id
+
+    async def fake_get_connector_config_by_id(session, config_id):
+        return connector_row
+
+    monkeypatch.setattr(
+        tenancy_service.repository, "get_connector_config_by_id", fake_get_connector_config_by_id
+    )
+
+    with pytest.raises(NotFoundError):
+        await tenancy_service.list_ingestion_runs(None, actor, organization_id, connector_config_id)
+
+
+@pytest.mark.asyncio
+async def test_list_ingestion_runs_succeeds_and_maps_rows(monkeypatch) -> None:
+    organization_id = uuid.uuid4()
+    connector_config_id = uuid.uuid4()
+    actor = _admin(organization_id)
+    connector_row = _FakeConnectorConfigRow(
+        organization_id=organization_id, source="github", credential_ref="encrypted-ref"
+    )
+    connector_row.id = connector_config_id
+    job_row = _FakeIngestionJobRow(
+        organization_id=organization_id, connector_config_id=connector_config_id, status="failed", failed_stage="fetch"
+    )
+    captured: dict[str, object] = {}
+
+    async def fake_get_connector_config_by_id(session, config_id):
+        return connector_row
+
+    async def fake_list_ingestion_runs(session, org_id, conn_id, *, limit, offset):
+        captured["organization_id"] = org_id
+        captured["connector_config_id"] = conn_id
+        captured["limit"] = limit
+        captured["offset"] = offset
+        return [job_row]
+
+    monkeypatch.setattr(
+        tenancy_service.repository, "get_connector_config_by_id", fake_get_connector_config_by_id
+    )
+    monkeypatch.setattr(tenancy_service.repository, "list_ingestion_runs", fake_list_ingestion_runs)
+
+    result = await tenancy_service.list_ingestion_runs(
+        None, actor, organization_id, connector_config_id, limit=10, offset=0
+    )
+
+    assert len(result) == 1
+    assert result[0].status == "failed"
+    assert result[0].failed_stage == "fetch"
+    assert captured["organization_id"] == organization_id
+    assert captured["connector_config_id"] == connector_config_id
+    assert captured["limit"] == 10

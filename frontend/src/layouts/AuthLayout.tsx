@@ -14,7 +14,9 @@ export function AuthLayout() {
             <p className="text-sm text-ink-muted">Enterprise Knowledge Incident Intelligence</p>
           </div>
         </div>
-        <Outlet />
+        <main>
+          <Outlet />
+        </main>
       </div>
     </div>
   );

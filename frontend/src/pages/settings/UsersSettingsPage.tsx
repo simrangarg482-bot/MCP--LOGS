@@ -12,6 +12,7 @@ import { createInvitation, listOrgUsers } from "@/api/tenancy";
 import type { OrgUser, UserRole } from "@/types/tenancy";
 import { useTenant } from "@/context/TenantContext";
 import { useToast } from "@/context/ToastContext";
+import { useAuth } from "@/context/AuthContext";
 import { formatRelativeTime } from "@/utils/date";
 import { titleCase } from "@/utils/format";
 
@@ -86,6 +87,11 @@ function InviteUserModal({ open, onClose }: { open: boolean; onClose: () => void
 
 export function UsersSettingsPage() {
   const { organization } = useTenant();
+  const { user } = useAuth();
+  // Mirrors the real gate `core.tenancy.service.create_invitation` enforces
+  // -- UX only, the backend re-checks regardless (see types/auth.ts's
+  // AuthUser.permissions docstring).
+  const canInvite = Boolean(user?.permissions.includes("tenancy:manage"));
   const usersQuery = useQuery({
     queryKey: ["users", organization?.id],
     queryFn: () => listOrgUsers(organization!.id),
@@ -121,7 +127,14 @@ export function UsersSettingsPage() {
     <Card>
       <div className="flex items-center justify-between border-b border-border px-4 py-3">
         <h3 className="text-sm font-semibold text-ink">Users</h3>
-        <Button size="sm" variant="primary" className="gap-1.5" onClick={() => setIsInviteOpen(true)}>
+        <Button
+          size="sm"
+          variant="primary"
+          className="gap-1.5"
+          disabled={!canInvite}
+          title={canInvite ? undefined : "Requires the tenancy:manage permission"}
+          onClick={() => setIsInviteOpen(true)}
+        >
           <UserPlus className="h-3.5 w-3.5" />
           Invite user
         </Button>
@@ -134,7 +147,7 @@ export function UsersSettingsPage() {
         isError={usersQuery.isError}
         onRetry={() => usersQuery.refetch()}
       />
-      <InviteUserModal open={isInviteOpen} onClose={() => setIsInviteOpen(false)} />
+      {canInvite && <InviteUserModal open={isInviteOpen} onClose={() => setIsInviteOpen(false)} />}
     </Card>
   );
 }

@@ -16,18 +16,31 @@ import {
   listConnectors,
   triggerConnectorSync,
 } from "@/api/connectors";
+import { listIngestionRuns } from "@/api/ingestion";
 import type { Connector } from "@/types/connector";
 import { useToast } from "@/context/ToastContext";
+import { useAuth } from "@/context/AuthContext";
 import { formatDateTime, formatRelativeTime } from "@/utils/date";
 import { titleCase } from "@/utils/format";
 
 export function ConnectorsPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const { user } = useAuth();
+  // Mirrors the real gate `core.tenancy.service.register_connector`/
+  // `get_connector` (used by sync) enforce -- UX only, the backend
+  // re-checks regardless.
+  const canManage = Boolean(user?.permissions.includes("tenancy:manage"));
   const [viewing, setViewing] = useState<Connector | null>(null);
   const [isConnectOpen, setIsConnectOpen] = useState(false);
 
   const connectorsQuery = useQuery({ queryKey: ["connectors"], queryFn: listConnectors });
+
+  const runsQuery = useQuery({
+    queryKey: ["ingestion-runs", viewing?.id],
+    queryFn: () => listIngestionRuns(viewing!.id),
+    enabled: Boolean(viewing),
+  });
 
   const syncMutation = useMutation({
     mutationFn: (connector: Connector) => triggerConnectorSync(connector.id),
@@ -70,7 +83,13 @@ export function ConnectorsPage() {
         title="Connectors"
         description="Integrations that feed knowledge and incident context into EKIP."
         actions={
-          <Button variant="primary" className="gap-1.5" onClick={() => setIsConnectOpen(true)}>
+          <Button
+            variant="primary"
+            className="gap-1.5"
+            onClick={() => setIsConnectOpen(true)}
+            disabled={!canManage}
+            title={canManage ? undefined : "Requires the tenancy:manage permission"}
+          >
             <Plus className="h-4 w-4" />
             Connect a source
           </Button>
@@ -85,10 +104,12 @@ export function ConnectorsPage() {
           title="No connectors configured"
           description="Connect GitHub or Slack to start ingesting data EKIP can answer questions about."
           action={
-            <Button variant="primary" className="gap-1.5" onClick={() => setIsConnectOpen(true)}>
-              <Plus className="h-4 w-4" />
-              Connect a source
-            </Button>
+            canManage ? (
+              <Button variant="primary" className="gap-1.5" onClick={() => setIsConnectOpen(true)}>
+                <Plus className="h-4 w-4" />
+                Connect a source
+              </Button>
+            ) : undefined
           }
         />
       )}
@@ -102,6 +123,7 @@ export function ConnectorsPage() {
               onView={setViewing}
               onSync={(c) => syncMutation.mutate(c)}
               isSyncing={syncMutation.isPending && syncMutation.variables?.id === connector.id}
+              canManage={canManage}
             />
           ))}
         </div>
@@ -145,6 +167,41 @@ export function ConnectorsPage() {
             <p className="text-xs text-ink-subtle">
               Ingested content from this source appears on the Knowledge page.
             </p>
+
+            <div>
+              <p className="mb-2 text-xs text-ink-muted">Run history</p>
+              {runsQuery.isLoading && <LoadingState label="Loading run history…" />}
+              {runsQuery.isError && <ErrorState onRetry={() => runsQuery.refetch()} />}
+              {runsQuery.data && runsQuery.data.length === 0 && (
+                <p className="rounded-md border border-dashed border-border px-3 py-4 text-center text-xs text-ink-subtle">
+                  No ingestion runs recorded yet for this connector.
+                </p>
+              )}
+              {runsQuery.data && runsQuery.data.length > 0 && (
+                <ul className="flex flex-col gap-2">
+                  {runsQuery.data.map((run) => (
+                    <li
+                      key={run.id}
+                      className="flex flex-col gap-1 rounded-md border border-border px-3 py-2 text-xs"
+                    >
+                      <div className="flex items-center justify-between">
+                        <StatusBadge status={run.status} />
+                        <span className="text-ink-muted">
+                          {run.startedAt ? formatRelativeTime(run.startedAt) : "Not started"}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between text-ink-muted">
+                        <span>{run.documentsProcessed} documents processed</span>
+                        {run.completedAt && <span>{formatDateTime(run.completedAt)}</span>}
+                      </div>
+                      {run.status === "failed" && run.failedStage && (
+                        <p className="text-critical">Failed at stage: {run.failedStage}</p>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </div>
         )}
       </Drawer>

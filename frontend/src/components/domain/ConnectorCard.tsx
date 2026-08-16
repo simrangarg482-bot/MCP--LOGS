@@ -45,9 +45,10 @@ interface ConnectorCardProps {
   onSync: (connector: Connector) => void;
   onView: (connector: Connector) => void;
   isSyncing?: boolean;
+  canManage?: boolean;
 }
 
-export function ConnectorCard({ connector, onSync, onView, isSyncing }: ConnectorCardProps) {
+export function ConnectorCard({ connector, onSync, onView, isSyncing, canManage = true }: ConnectorCardProps) {
   const Icon = SOURCE_ICON[connector.source];
   const summary = configSummary(connector);
 
@@ -84,7 +85,8 @@ export function ConnectorCard({ connector, onSync, onView, isSyncing }: Connecto
             size="sm"
             onClick={() => onSync(connector)}
             isLoading={isSyncing}
-            disabled={connector.status === "disconnected"}
+            disabled={connector.status === "disconnected" || !canManage}
+            title={canManage ? undefined : "Requires the tenancy:manage permission"}
             className="gap-1.5"
           >
             <RefreshCw className="h-3.5 w-3.5" />

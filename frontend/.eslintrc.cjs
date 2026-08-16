@@ -7,7 +7,7 @@ module.exports = {
   ],
   parser: "@typescript-eslint/parser",
   plugins: ["react-refresh"],
-  ignorePatterns: ["dist", "*.cjs"],
+  ignorePatterns: ["dist", "*.cjs", "e2e-report", "playwright-report", "test-results"],
   parserOptions: { ecmaVersion: "latest", sourceType: "module" },
   rules: {
     "react-refresh/only-export-components": [
@@ -16,4 +16,10 @@ module.exports = {
     ],
     "@typescript-eslint/no-unused-vars": ["warn", { argsIgnorePattern: "^_" }],
   },
+  overrides: [
+    {
+      files: ["playwright.config.ts", "e2e/**/*.ts"],
+      env: { node: true, browser: true },
+    },
+  ],
 };

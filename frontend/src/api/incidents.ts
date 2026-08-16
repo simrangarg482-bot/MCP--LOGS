@@ -1,19 +1,14 @@
 import { apiRequest, mockDelay } from "./client";
 import { USE_MOCK_DATA } from "./config";
 import type {
-  AiInvestigation,
   Incident,
-  IncidentComment,
   IncidentCreatePayload,
   IncidentFilters,
+  IncidentUpdatePayload,
   TimelineEntry,
+  TimelineNoteCreatePayload,
 } from "@/types/incident";
-import {
-  mockAiInvestigations,
-  mockComments,
-  mockIncidents,
-  mockTimeline,
-} from "@/mocks/data/incidents";
+import { mockIncidents, mockTimeline } from "@/mocks/data/incidents";
 
 function applyFilters(items: Incident[], filters: IncidentFilters): Incident[] {
   let result = [...items];
@@ -94,35 +89,31 @@ export async function getIncidentTimeline(id: string): Promise<TimelineEntry[]> 
   return apiRequest<TimelineEntry[]>(`/incidents/${id}/timeline`);
 }
 
-export async function getIncidentComments(id: string): Promise<IncidentComment[]> {
+/**
+ * `POST /incidents/{id}/timeline` (`app.core.incidents.schemas.
+ * TimelineNoteCreate` -- the field is `note`, matching the payload type).
+ * There is no separate "add a comment" endpoint; a human note IS a
+ * timeline entry (`event_type="note"`), which is why this returns a real
+ * `TimelineEntry`, not a bespoke comment shape.
+ */
+export async function addIncidentNote(id: string, note: string): Promise<TimelineEntry> {
   if (USE_MOCK_DATA) {
-    return mockDelay(mockComments[id] ?? []);
-  }
-  return apiRequest<IncidentComment[]>(`/incidents/${id}/comments`);
-}
-
-export async function addIncidentNote(id: string, body: string): Promise<IncidentComment> {
-  if (USE_MOCK_DATA) {
-    const comment: IncidentComment = {
-      id: `c-${Date.now()}`,
+    const entry: TimelineEntry = {
+      id: `tl-${Date.now()}`,
+      organizationId: "org-1",
       incidentId: id,
-      author: "You",
-      body,
-      createdAt: new Date().toISOString(),
+      eventType: "note",
+      eventData: { note },
+      actor: "user:you@example.com",
+      occurredAt: new Date().toISOString(),
     };
-    return mockDelay(comment, 200);
+    return mockDelay(entry, 200);
   }
-  return apiRequest<IncidentComment>(`/incidents/${id}/timeline`, { method: "POST", body: { body } });
+  const payload: TimelineNoteCreatePayload = { note };
+  return apiRequest<TimelineEntry>(`/incidents/${id}/timeline`, { method: "POST", body: payload });
 }
 
-export async function getAiInvestigation(id: string): Promise<AiInvestigation | null> {
-  if (USE_MOCK_DATA) {
-    return mockDelay(mockAiInvestigations[id] ?? null, 500);
-  }
-  return apiRequest<AiInvestigation>(`/incidents/${id}/investigate`);
-}
-
-export async function updateIncident(id: string, patch: Partial<Incident>): Promise<Incident> {
+export async function updateIncident(id: string, patch: IncidentUpdatePayload): Promise<Incident> {
   if (USE_MOCK_DATA) {
     const incident = mockIncidents.find((i) => i.id === id);
     if (!incident) throw { status: 404, message: "Incident not found" };

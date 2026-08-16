@@ -96,6 +96,7 @@ export function KnowledgeListPage() {
           }}
         >
           <Select
+            aria-label="Filter by source"
             value={source}
             onChange={(e) => {
               setSource(e.target.value as KnowledgeSource | "");

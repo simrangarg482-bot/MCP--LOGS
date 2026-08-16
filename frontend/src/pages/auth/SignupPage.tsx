@@ -45,8 +45,7 @@ export function SignupPage() {
       navigate("/ask");
     } catch (err) {
       const apiError = err as ApiError;
-      const message =
-        typeof apiError?.detail === "string" ? apiError.detail : "Please check your details and try again.";
+      const message = apiError?.message || "Please check your details and try again.";
       toast({ variant: "error", title: "Sign up failed", description: message });
     } finally {
       setIsSubmitting(false);
@@ -55,6 +54,7 @@ export function SignupPage() {
 
   return (
     <div className="rounded-lg border border-border bg-surface px-6 py-6 shadow-panel">
+      <h1 className="mb-4 text-center text-lg font-semibold text-ink">Create your EKIP account</h1>
       <form onSubmit={handleSubmit} className="flex flex-col gap-3">
         <div>
           <label htmlFor="displayName" className="mb-1.5 block text-xs font-medium text-ink-muted">

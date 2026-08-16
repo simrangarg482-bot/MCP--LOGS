@@ -34,7 +34,17 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     };
     try {
       const payload = await response.json();
-      error.detail = payload?.detail ?? payload?.message;
+      // Every real `EKIPError` body is `{error_code, message, detail}`
+      // (app/api/errors.py) -- previously only a generic `response.
+      // statusText` ("Conflict", "Not Found") reached the UI, and
+      // `error_code` was dropped entirely, making it impossible for a
+      // caller to distinguish two different 409s (e.g. "postmortem already
+      // exists" vs "incident not resolved yet") from each other.
+      if (typeof payload?.message === "string") {
+        error.message = payload.message;
+      }
+      error.errorCode = payload?.error_code;
+      error.detail = payload?.detail;
     } catch {
       // response had no JSON body
     }

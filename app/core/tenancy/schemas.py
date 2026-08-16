@@ -223,6 +223,40 @@ class ConnectorConfig(BaseModel):
     updated_at: datetime
 
 
+# Matches `app.shared.schemas.common.IngestionJobStatus` exactly.
+IngestionRunStatus = Literal["queued", "running", "succeeded", "failed"]
+
+
+class IngestionRun(BaseModel):
+    """One ingestion run (full or incremental sync) of a `ConnectorConfig`,
+    as returned by the read surface (`GET /tenancy/connectors/{id}/runs`,
+    Phase 2D).
+
+    Deliberately a distinct type from `app.ingestion.schemas.IngestionJob`
+    (which this mirrors field-for-field) rather than that type reused
+    directly: `app.api` and `app.core` are both import-linter-forbidden from
+    depending on `app.ingestion` (see this repo's pyproject.toml contracts
+    "api does not depend on mcp or ingestion internals" / "core does not
+    depend on mcp or ingestion") -- core/tenancy reads the `ingestion_jobs`
+    table directly via its own repository function instead, the same
+    "read the raw table directly rather than reach through another module's
+    service layer" precedent `app.ingestion.repository` itself already
+    established for reading `connector_configs`.
+    """
+
+    model_config = ConfigDict(from_attributes=True, frozen=True)
+
+    id: uuid.UUID
+    organization_id: uuid.UUID
+    connector_config_id: uuid.UUID
+    status: IngestionRunStatus
+    failed_stage: str | None
+    documents_processed: int
+    started_at: datetime | None
+    completed_at: datetime | None
+    created_at: datetime
+
+
 # --- Organization access rules (domain / group auto-join) --------------------
 
 

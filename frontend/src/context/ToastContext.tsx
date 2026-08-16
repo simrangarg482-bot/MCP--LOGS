@@ -53,13 +53,14 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           return (
             <div
               key={t.id}
-              role="status"
+              role={t.variant === "error" || t.variant === "warning" ? "alert" : "status"}
+              aria-live={t.variant === "error" || t.variant === "warning" ? "assertive" : "polite"}
               className={cn(
                 "flex items-start gap-2.5 rounded-md border px-3.5 py-3 shadow-panel",
                 classes,
               )}
             >
-              <Icon className="mt-0.5 h-4 w-4 shrink-0" />
+              <Icon className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium text-ink">{t.title}</p>
                 {t.description && <p className="mt-0.5 text-xs text-ink-muted">{t.description}</p>}

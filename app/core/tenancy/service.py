@@ -47,6 +47,7 @@ from app.core.tenancy.schemas import (
     AccessRuleCreate,
     ConnectorConfig,
     ConnectorConfigCreate,
+    IngestionRun,
     Invitation,
     InvitationCreate,
     Organization,
@@ -482,6 +483,35 @@ async def get_connector(
         require_permission(actor, _MANAGE_PERMISSION)
 
     return ConnectorConfig.model_validate(row)
+
+
+async def list_ingestion_runs(
+    session: AsyncSession,
+    actor: Identity,
+    organization_id: uuid.UUID,
+    connector_config_id: uuid.UUID,
+    *,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[IngestionRun]:
+    """List `connector_config_id`'s ingestion run history, newest first.
+
+    Phase 2D addition -- backs `GET /tenancy/connectors/{id}/runs`, the
+    frontend's ingestion-monitoring page. No new permission was introduced:
+    `tenancy:manage` already gates everything else about a connector
+    (`register_connector`, `list_connectors`, `get_connector`) -- ingestion
+    run history is the same kind of connector-configuration-adjacent data,
+    not a separately-owned resource, so reusing the existing permission is
+    correct per this codebase's own "don't invent a permission a real one
+    already covers" convention. `get_connector` already applies exactly the
+    ownership + permission check this needs, so this reuses it rather than
+    duplicating that check a third time.
+    """
+    connector = await get_connector(session, actor, organization_id, connector_config_id)
+    rows = await repository.list_ingestion_runs(
+        session, organization_id, connector.id, limit=limit, offset=offset
+    )
+    return [IngestionRun.model_validate(row) for row in rows]
 
 
 async def update_connector_sync_status(

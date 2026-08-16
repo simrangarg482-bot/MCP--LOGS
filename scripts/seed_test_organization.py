@@ -58,6 +58,7 @@ _ALL_PERMISSION_CODES = [
     "postmortem:approve",
     "knowledge:review",
     "observability:read",
+    "audit:read",
 ]
 
 _TEST_ORG_NAME = "Test Org"

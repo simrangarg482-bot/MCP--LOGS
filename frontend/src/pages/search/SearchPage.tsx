@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
-import { useSearchParams, Link } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { AlertCircle, BookOpen, Github, MessageSquare, Search as SearchIcon } from "lucide-react";
+import { FileCode, FileText, MessageSquare, Search as SearchIcon } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { SearchBar } from "@/components/data/SearchBar";
@@ -10,17 +10,20 @@ import { LoadingState } from "@/components/ui/LoadingState";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { useDebounce } from "@/hooks/useDebounce";
 import { globalSearch } from "@/api/search";
-import type { SearchResult, SearchResultType } from "@/types/search";
-import { formatRelativeTime } from "@/utils/date";
+import type { ScoredChunk } from "@/types/ask";
+import { formatPercent } from "@/utils/format";
 
-const TYPE_META: Record<SearchResultType, { label: string; icon: LucideIcon }> = {
-  incident: { label: "Incidents", icon: AlertCircle },
-  knowledge: { label: "Knowledge", icon: BookOpen },
-  slack: { label: "Slack", icon: MessageSquare },
-  github: { label: "GitHub", icon: Github },
+// Real `CollectionName` values (`app.retrieval.schemas.CollectionName`) --
+// the only real grouping dimension `ScoredChunk` carries. The previous
+// page grouped by an invented "incident/knowledge/slack/github" taxonomy
+// that no real search response has ever returned.
+const COLLECTION_META: Record<ScoredChunk["collection"], { label: string; icon: LucideIcon }> = {
+  documentation: { label: "Documentation", icon: FileText },
+  code: { label: "Code", icon: FileCode },
+  conversations: { label: "Conversations", icon: MessageSquare },
 };
 
-const TYPE_ORDER: SearchResultType[] = ["incident", "knowledge", "slack", "github"];
+const COLLECTION_ORDER: ScoredChunk["collection"][] = ["documentation", "code", "conversations"];
 
 export function SearchPage() {
   const [params, setParams] = useSearchParams();
@@ -35,13 +38,12 @@ export function SearchPage() {
 
   const grouped = useMemo(() => {
     const results = searchQuery.data ?? [];
-    const groups: Record<SearchResultType, SearchResult[]> = {
-      incident: [],
-      knowledge: [],
-      slack: [],
-      github: [],
+    const groups: Record<ScoredChunk["collection"], ScoredChunk[]> = {
+      documentation: [],
+      code: [],
+      conversations: [],
     };
-    for (const result of results) groups[result.type].push(result);
+    for (const chunk of results) groups[chunk.collection].push(chunk);
     return groups;
   }, [searchQuery.data]);
 
@@ -55,7 +57,10 @@ export function SearchPage() {
 
   return (
     <div className="flex flex-col gap-5">
-      <PageHeader title="Search" description="Unified search across incidents, knowledge, Slack, and GitHub." />
+      <PageHeader
+        title="Search"
+        description="Searches the knowledge base (documentation, code, and conversations already ingested)."
+      />
 
       <SearchBar
         value={query}
@@ -69,11 +74,14 @@ export function SearchPage() {
         <EmptyState
           icon={SearchIcon}
           title="Search across your engineering environment"
-          description="Try an incident ID, error message, service name, or a question."
+          description="Try an error message, service name, or a question."
         />
       )}
 
       {hasQuery && searchQuery.isLoading && <LoadingState label="Searching…" />}
+      {hasQuery && searchQuery.isError && (
+        <EmptyState title="Search failed" description="Please try again." />
+      )}
 
       {hasQuery && !searchQuery.isLoading && totalResults === 0 && (
         <EmptyState title="No results found" description="Try a different search term." />
@@ -81,18 +89,18 @@ export function SearchPage() {
 
       {hasQuery && !searchQuery.isLoading && totalResults > 0 && (
         <div className="flex flex-col gap-6">
-          {TYPE_ORDER.filter((type) => grouped[type].length > 0).map((type) => {
-            const { label, icon: Icon } = TYPE_META[type];
+          {COLLECTION_ORDER.filter((collection) => grouped[collection].length > 0).map((collection) => {
+            const { label, icon: Icon } = COLLECTION_META[collection];
             return (
-              <section key={type}>
+              <section key={collection}>
                 <div className="mb-2 flex items-center gap-2 border-b border-border pb-2">
                   <Icon className="h-4 w-4 text-ink-muted" />
                   <h2 className="text-sm font-semibold text-ink">{label}</h2>
-                  <Badge tone="neutral">{grouped[type].length}</Badge>
+                  <Badge tone="neutral">{grouped[collection].length}</Badge>
                 </div>
                 <ul className="flex flex-col gap-1">
-                  {grouped[type].map((result) => (
-                    <SearchResultRow key={result.id} result={result} />
+                  {grouped[collection].map((chunk) => (
+                    <SearchResultRow key={chunk.chunkId} chunk={chunk} />
                   ))}
                 </ul>
               </section>
@@ -104,29 +112,21 @@ export function SearchPage() {
   );
 }
 
-function SearchResultRow({ result }: { result: SearchResult }) {
-  const href =
-    result.type === "incident"
-      ? `/incidents/${result.id}`
-      : result.type === "knowledge"
-        ? `/knowledge/${result.id}`
-        : result.url ?? "#";
-
+function SearchResultRow({ chunk }: { chunk: ScoredChunk }) {
   return (
     <li>
-      <Link
-        to={href}
+      <a
+        href={chunk.sourceUrl ?? "#"}
+        target={chunk.sourceUrl ? "_blank" : undefined}
+        rel="noreferrer"
         className="flex flex-col gap-1 rounded-md px-3 py-2.5 hover:bg-slate-50"
       >
         <div className="flex items-center justify-between gap-3">
-          <p className="text-sm font-medium text-ink">{result.title}</p>
-          {result.timestamp && (
-            <span className="shrink-0 text-xs text-ink-subtle">{formatRelativeTime(result.timestamp)}</span>
-          )}
+          <p className="text-sm font-medium text-ink">{chunk.title ?? "Untitled"}</p>
+          <span className="shrink-0 text-xs text-ink-subtle">{formatPercent(chunk.score)} match</span>
         </div>
-        <p className="line-clamp-2 text-sm text-ink-muted">{result.snippet}</p>
-        <span className="text-xs text-ink-subtle">{result.source}</span>
-      </Link>
+        <p className="line-clamp-2 text-sm text-ink-muted">{chunk.content}</p>
+      </a>
     </li>
   );
 }
