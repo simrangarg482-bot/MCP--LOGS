@@ -46,7 +46,7 @@ async def get_registered_client(session: AsyncSession, client_id: str) -> dict[s
 
     client_secret = None
     if row.client_secret_encrypted is not None:
-        client_secret = decrypt_secret(get_kms(), row.client_secret_encrypted)
+        client_secret = await decrypt_secret(get_kms(), row.client_secret_encrypted)
 
     return {
         **row.client_metadata,
@@ -68,7 +68,9 @@ async def register_oauth_client(session: AsyncSession, client_info: dict[str, An
     encryption, not hashing, is required here.
     """
     client_secret = client_info.get("client_secret")
-    client_secret_encrypted = encrypt_secret(get_kms(), client_secret) if client_secret else None
+    client_secret_encrypted = (
+        await encrypt_secret(get_kms(), client_secret) if client_secret else None
+    )
     client_metadata = {k: v for k, v in client_info.items() if k not in _COLUMN_BACKED_FIELDS}
 
     await repository.upsert_oauth_client(

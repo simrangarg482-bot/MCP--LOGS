@@ -7,6 +7,7 @@ call) since `fetch_batch`/`normalize` only ever receive that object back.
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
@@ -14,6 +15,8 @@ import pytest
 
 from app.ingestion.connectors import confluence as confluence_module
 from app.ingestion.connectors.confluence import ConfluenceConnector, _ConfluenceClient
+from app.ingestion.schemas import ResolvedConnectorConfig
+from app.ingestion.url_safety import UnsafeConnectorUrlError
 
 
 class _FakeResponse:
@@ -372,3 +375,22 @@ def test_decode_cursor_defaults_to_first_space() -> None:
 def test_decode_cursor_parses_envelope() -> None:
     cursor = json.dumps({"space_index": 2, "start": 50})
     assert ConfluenceConnector._decode_cursor(cursor) == (2, 50)
+
+
+@pytest.mark.asyncio
+async def test_authenticate_rejects_an_ssrf_base_url_before_any_network_call() -> None:
+    """Phase 3 production-hardening regression -- see the matching test in
+    test_jira.py for the full rationale.
+    """
+    config = ResolvedConnectorConfig(
+        connector_config_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        project_id=None,
+        source="confluence",
+        credential_ref="someone@example.com:fake-token",
+        config={"base_url": "http://127.0.0.1:8000", "spaces": ["ENG"]},
+    )
+    connector = ConfluenceConnector()
+
+    with pytest.raises(UnsafeConnectorUrlError):
+        await connector.authenticate(config)

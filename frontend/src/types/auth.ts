@@ -32,3 +32,9 @@ export interface LoginPayload {
   email: string;
   password: string;
 }
+
+export interface InvitationAcceptPayload {
+  token: string;
+  password: string;
+  displayName?: string;
+}

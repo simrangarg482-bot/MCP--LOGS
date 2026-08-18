@@ -28,6 +28,7 @@ from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 
+from app.agents.prompt_safety import build_messages
 from app.shared.config.logging import get_logger
 from app.shared.schemas import EvidenceItem, RootCauseHypothesis
 
@@ -97,26 +98,28 @@ async def generate_hypotheses(
     for `_UngroundedAnswerError`.
     """
     evidence_block = _build_evidence_block(evidence)
-    prompt = (
-        "You are investigating an incident using ONLY the evidence listed "
-        "below. Do not use outside knowledge and do not invent evidence.\n\n"
-        f"Evidence:\n{evidence_block}\n\n"
-        f"Incident: {query}\n\n"
-        "Respond with ONLY a single JSON object (no markdown code fences, no "
-        "commentary before or after it) with exactly this shape:\n"
-        '{"hypotheses": [{"description": "...", "confidence": 0.0, '
-        '"supporting_evidence_ids": ["..."]}], '
-        '"suggested_owner_team": "team name, or null if unclear", '
-        '"suggested_next_steps": ["short actionable step", "..."]}\n\n'
-        "Rules: `confidence` is a number from 0.0 to 1.0. Every "
-        "`supporting_evidence_ids` entry MUST be copied verbatim from one of "
-        "the bracketed reference strings above (the text inside the square "
-        "brackets) -- never invent a reference that isn't listed. Every "
-        "hypothesis MUST cite at least one such reference; if the evidence "
-        "doesn't support any hypothesis, return an empty `hypotheses` list "
-        "rather than a weakly-supported guess."
+    messages = build_messages(
+        system_instructions=(
+            "You are investigating an incident using ONLY the evidence listed "
+            "below. Do not use outside knowledge and do not invent evidence.\n\n"
+            "Respond with ONLY a single JSON object (no markdown code fences, no "
+            "commentary before or after it) with exactly this shape:\n"
+            '{"hypotheses": [{"description": "...", "confidence": 0.0, '
+            '"supporting_evidence_ids": ["..."]}], '
+            '"suggested_owner_team": "team name, or null if unclear", '
+            '"suggested_next_steps": ["short actionable step", "..."]}\n\n'
+            "Rules: `confidence` is a number from 0.0 to 1.0. Every "
+            "`supporting_evidence_ids` entry MUST be copied verbatim from one of "
+            "the bracketed reference strings in the evidence (the text inside "
+            "the square brackets) -- never invent a reference that isn't "
+            "listed. Every hypothesis MUST cite at least one such reference; "
+            "if the evidence doesn't support any hypothesis, return an empty "
+            "`hypotheses` list rather than a weakly-supported guess."
+        ),
+        evidence_block=evidence_block,
+        task=f"Incident: {query}",
     )
-    response = await llm.ainvoke(prompt)
+    response = await llm.ainvoke(messages)
     raw_text = str(response.content).strip()
 
     parsed = _parse_response(raw_text)

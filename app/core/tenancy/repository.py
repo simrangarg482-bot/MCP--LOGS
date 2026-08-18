@@ -20,8 +20,9 @@ from __future__ import annotations
 import uuid
 from collections.abc import Sequence
 from datetime import datetime
+from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models.ingestion_models import IngestionJob
@@ -277,6 +278,50 @@ async def list_ingestion_runs(
     return result.scalars().all()
 
 
+async def get_ingestion_job_stats(
+    session: AsyncSession, organization_id: uuid.UUID, *, since: datetime | None = None
+) -> list[Any]:
+    """Aggregate `ingestion_jobs` by `connector_config_id` for
+    `organization_id` (Phase 5.6): count, succeeded/failed counts, average
+    duration, total documents processed -- the ingestion-side counterpart to
+    `app.agents.repository.get_agent_execution_stats`/`core.observability.
+    repository.get_mcp_tool_stats`. Same "read `ingestion_jobs` directly"
+    precedent as `list_ingestion_runs` above (see that function's own
+    docstring for why core/tenancy, not `app.ingestion`, owns this read).
+
+    Returns raw SQLAlchemy `Row` objects -- `service.py` builds
+    `IngestionJobStats` directly from these labeled columns, same
+    convention as the two aggregate functions named above.
+    """
+    succeeded_case = case((IngestionJob.status == "succeeded", 1), else_=0)
+    failed_case = case((IngestionJob.status == "failed", 1), else_=0)
+    duration_seconds_case = case(
+        (
+            IngestionJob.completed_at.is_not(None) & IngestionJob.started_at.is_not(None),
+            func.extract("epoch", IngestionJob.completed_at - IngestionJob.started_at),
+        ),
+        else_=None,
+    )
+
+    stmt = (
+        select(
+            IngestionJob.connector_config_id.label("connector_config_id"),
+            func.count().label("run_count"),
+            func.sum(succeeded_case).label("succeeded_count"),
+            func.sum(failed_case).label("failed_count"),
+            func.avg(duration_seconds_case).label("avg_duration_seconds"),
+            func.sum(IngestionJob.documents_processed).label("total_documents_processed"),
+        )
+        .where(IngestionJob.organization_id == organization_id)
+        .group_by(IngestionJob.connector_config_id)
+    )
+    if since is not None:
+        stmt = stmt.where(IngestionJob.created_at >= since)
+
+    result = await session.execute(stmt)
+    return list(result.all())
+
+
 async def update_connector_config_sync_status(
     session: AsyncSession,
     connector_config_id: uuid.UUID,
@@ -408,9 +453,15 @@ async def insert_invitation(
     grants_role_id: uuid.UUID,
     invited_by: uuid.UUID,
     expires_at: datetime,
+    token_hash: str | None = None,
 ) -> Invitation:
     """Create one invitation row (status defaults to `"pending"`, per the
     model's column default) and return it with server defaults populated.
+
+    `token_hash` (Phase 7.5) is optional -- `None` is a legitimate value,
+    not an omission: see `Invitation.token_hash`'s own column comment for
+    when a `NULL` token is correct (pre-Phase-7.5 rows; this codebase has no
+    other caller that leaves it unset going forward).
 
     Does not itself enforce "at most one pending invitation per email" --
     that is the database's partial unique index
@@ -425,6 +476,7 @@ async def insert_invitation(
         grants_role_id=grants_role_id,
         invited_by=invited_by,
         expires_at=expires_at,
+        token_hash=token_hash,
     )
     session.add(row)
     await session.flush()

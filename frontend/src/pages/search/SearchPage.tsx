@@ -8,6 +8,7 @@ import { SearchBar } from "@/components/data/SearchBar";
 import { Badge } from "@/components/ui/Badge";
 import { LoadingState } from "@/components/ui/LoadingState";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { ErrorState } from "@/components/ui/ErrorState";
 import { useDebounce } from "@/hooks/useDebounce";
 import { globalSearch } from "@/api/search";
 import type { ScoredChunk } from "@/types/ask";
@@ -79,15 +80,16 @@ export function SearchPage() {
       )}
 
       {hasQuery && searchQuery.isLoading && <LoadingState label="Searching…" />}
+
       {hasQuery && searchQuery.isError && (
-        <EmptyState title="Search failed" description="Please try again." />
+        <ErrorState title="Search failed" onRetry={() => searchQuery.refetch()} />
       )}
 
-      {hasQuery && !searchQuery.isLoading && totalResults === 0 && (
+      {hasQuery && !searchQuery.isLoading && !searchQuery.isError && totalResults === 0 && (
         <EmptyState title="No results found" description="Try a different search term." />
       )}
 
-      {hasQuery && !searchQuery.isLoading && totalResults > 0 && (
+      {hasQuery && !searchQuery.isLoading && !searchQuery.isError && totalResults > 0 && (
         <div className="flex flex-col gap-6">
           {COLLECTION_ORDER.filter((collection) => grouped[collection].length > 0).map((collection) => {
             const { label, icon: Icon } = COLLECTION_META[collection];

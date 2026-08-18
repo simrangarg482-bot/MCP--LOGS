@@ -626,11 +626,16 @@ def _load_report(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _compare_reports(before: dict, after: dict) -> None:
+def _compare_reports(before: dict, after: dict) -> bool:
     """Prints a before/after diff for every headline metric this harness
     tracks, explicitly flagging any metric that got worse -- per this
     task's own instruction not to declare success from an aggregate score
     without checking every category for regressions.
+
+    Returns `True` if any tracked metric regressed -- `main()` uses this to
+    exit non-zero when `--compare-to` was given, so a CI job running this
+    (`.github/workflows/e2e-and-eval.yml`) actually fails on a real
+    regression instead of only ever printing one for a human to notice.
     """
     print("\n" + "=" * 78, flush=True)
     print("BEFORE / AFTER COMPARISON", flush=True)
@@ -709,6 +714,7 @@ def _compare_reports(before: dict, after: dict) -> None:
         )
     else:
         print("\n  No regressions on any tracked metric.", flush=True)
+    return bool(regressions)
 
 
 # --------------------------------------------------------------------------
@@ -716,7 +722,10 @@ def _compare_reports(before: dict, after: dict) -> None:
 # --------------------------------------------------------------------------
 
 
-async def _run(args) -> dict:
+async def _run(args) -> tuple[dict, bool]:
+    """Returns `(report, regressed)` -- `regressed` is always `False` when
+    `--compare-to` wasn't given (nothing to compare against, so nothing can
+    have regressed)."""
     dataset = json.loads(_DATASET_PATH.read_text(encoding="utf-8"))
     questions = dataset["questions"]
     if args.category:
@@ -852,10 +861,11 @@ async def _run(args) -> dict:
     args.report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(f"\nFull report written to: {args.report_path}", flush=True)
 
+    regressed = False
     if args.compare_to:
-        _compare_reports(_load_report(args.compare_to), report)
+        regressed = _compare_reports(_load_report(args.compare_to), report)
 
-    return report
+    return report, regressed
 
 
 def _parse_thresholds(raw: str | None) -> list[float]:
@@ -901,8 +911,12 @@ def main() -> int:
     args = parser.parse_args()
     if args.thresholds is None:
         args.thresholds = list(_CANDIDATE_THRESHOLDS)
-    asyncio.run(_run(args))
-    return 0
+    _report, regressed = asyncio.run(_run(args))
+    # Non-zero exit on a real regression (only possible when --compare-to
+    # was given) is what lets a CI job actually fail on this, rather than
+    # only ever printing "REGRESSIONS DETECTED" for a human to notice --
+    # see .github/workflows/e2e-and-eval.yml's ai-evaluation job.
+    return 1 if regressed else 0
 
 
 if __name__ == "__main__":

@@ -37,6 +37,18 @@ export function AgentStatusCard({ agent }: AgentStatusProps) {
             {agent.avgLatencySeconds !== null ? `${agent.avgLatencySeconds.toFixed(1)}s` : "—"}
           </dd>
         </div>
+        <div>
+          <dt className="text-ink-subtle">Tokens used</dt>
+          <dd className="font-medium text-ink">
+            {agent.totalTokens !== null ? agent.totalTokens.toLocaleString() : "n/a"}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-ink-subtle">Est. cost</dt>
+          <dd className="font-medium text-ink">
+            {agent.estimatedCostUsd !== null ? `$${agent.estimatedCostUsd.toFixed(4)}` : "n/a"}
+          </dd>
+        </div>
       </dl>
       {agent.failedCount > 0 && (
         <p className="text-xs text-critical">{agent.failedCount} failed execution{agent.failedCount === 1 ? "" : "s"}</p>

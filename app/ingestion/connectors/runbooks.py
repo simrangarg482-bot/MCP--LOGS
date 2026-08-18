@@ -39,10 +39,18 @@ rather than papers over:
    `ingestion -> core.tenancy` edge `ingestion.service`'s own module
    docstring discusses (for `connector_config` access) -- PROJECT_PLAN.md
    section 9.8 lists ingestion's dependencies as retrieval/database/shared
-   only. No import-linter contract forbids it (`pyproject.toml`'s
-   "ingestion does not depend on agents or mcp" contract names only those
-   two modules), so this is a documented gap in the plan, not a violation of
-   an enforced rule.
+   only. Unlike that `core.tenancy` edge, this one originally imported
+   `core.incidents.service` -- which has its own deferred, module-scoped
+   `app.agents.service` import (needed to break a real `agents` <->
+   `core.incidents` circular import; see `generate_postmortem`'s docstring)
+   -- so it transitively broke the "ingestion does not depend on agents or
+   mcp" import-linter contract. Phase 3 fixed this by importing
+   `core.incidents.reads` instead: a narrow, agents-free read surface
+   exposing only `list_postmortems_for_ingestion`, which this connector
+   actually needs. The `ingestion -> core.incidents` edge itself remains a
+   documented gap in PROJECT_PLAN.md section 9.8's dependency list, not
+   something this fix tries to eliminate -- only the transitive `agents`
+   reach is what the enforced contract actually forbids.
 
 Expected `ResolvedConnectorConfig.config` shape for this source: `{}` (no
 per-connector-config filtering options exist yet -- every approved/
@@ -60,7 +68,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from app.core.incidents import service as incidents_service
+from app.core.incidents import reads as incidents_reads
 from app.database.session import session_scope
 from app.ingestion.schemas import FetchResult, RawDocument, ResolvedConnectorConfig
 from app.shared.config.logging import get_logger
@@ -134,7 +142,7 @@ class RunbooksConnector:
         offset = self._decode_cursor(cursor)
 
         async with session_scope() as session:
-            postmortems = await incidents_service.list_postmortems_for_ingestion(
+            postmortems = await incidents_reads.list_postmortems_for_ingestion(
                 session,
                 client.organization_id,
                 since=since,

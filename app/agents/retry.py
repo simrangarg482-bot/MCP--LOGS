@@ -15,6 +15,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from typing import TypeVar
 
+from app.shared.backoff import full_jitter_backoff_seconds
 from app.shared.config.logging import get_logger
 
 logger = get_logger(__name__)
@@ -24,6 +25,12 @@ T = TypeVar("T")
 # AGENT_WORKFLOWS.md section 4: "up to 2 retries per node with exponential
 # backoff."
 _MAX_RETRIES = 2
+# The largest a single backoff could ever be at `_MAX_RETRIES` attempts --
+# passed as `full_jitter_backoff_seconds`'s `cap`, though at this small
+# exponent range (1s, 2s) it never actually binds; present for the same
+# self-documenting reason every other jittered backoff site states its cap
+# explicitly rather than leaving it implicit in the exponent alone.
+_MAX_BACKOFF_SECONDS = float(2**_MAX_RETRIES)
 
 
 async def call_with_retry(
@@ -33,7 +40,9 @@ async def call_with_retry(
     retry_count: dict[str, int],
 ) -> T:
     """Run `operation()`, retrying up to `_MAX_RETRIES` times with
-    exponential backoff (1s, 2s, ...) on any exception.
+    full-jitter exponential backoff (up to 1s, then up to 2s, ...) on any
+    exception -- see `app.shared.backoff.full_jitter_backoff_seconds` for
+    why the actual delay is randomized within that envelope, not exact.
 
     Mutates `retry_count[node_name]` in place (the caller's
     `GraphState.retry_count` dict) with the number of attempts made so far,
@@ -63,7 +72,11 @@ async def call_with_retry(
                     error=str(exc),
                 )
                 raise
-            backoff_seconds = 2**attempt
+            # Phase 6.2: full jitter -- many concurrent user requests
+            # hitting the same transient downstream failure (an OpenAI
+            # blip) previously all retried at the exact same 1s/2s
+            # intervals; see `app.shared.backoff`'s own docstring.
+            backoff_seconds = full_jitter_backoff_seconds(attempt, cap=_MAX_BACKOFF_SECONDS)
             logger.info(
                 "node_retrying",
                 node_name=node_name,

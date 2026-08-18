@@ -5,19 +5,23 @@ import { Sparkles, Link2 } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { SeverityBadge } from "@/components/data/SeverityBadge";
 import { StatusBadge } from "@/components/data/StatusBadge";
-import { Tabs } from "@/components/ui/Tabs";
+import { Tabs, TabPanel } from "@/components/ui/Tabs";
 import { Card, CardContent } from "@/components/ui/Card";
 import { LoadingState } from "@/components/ui/LoadingState";
 import { ErrorState } from "@/components/ui/ErrorState";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Button } from "@/components/ui/Button";
+import { Select } from "@/components/ui/Select";
 import { Timeline } from "@/components/domain/Timeline";
 import { InvestigationPanel } from "@/components/domain/InvestigationPanel";
 import { PostmortemPanel } from "@/components/domain/PostmortemPanel";
-import { getIncident, getIncidentTimeline, addIncidentNote } from "@/api/incidents";
+import { getIncident, getIncidentTimeline, addIncidentNote, updateIncident } from "@/api/incidents";
 import { investigateIncident, searchSimilarIncidents } from "@/api/ask";
+import type { IncidentStatus } from "@/types/incident";
 import { useAuth } from "@/context/AuthContext";
 import { formatDateTime, formatRelativeTime } from "@/utils/date";
+
+const STATUS_OPTIONS: IncidentStatus[] = ["open", "investigating", "resolved", "closed"];
 
 const TABS = [
   { key: "timeline", label: "Timeline" },
@@ -67,6 +71,20 @@ export function IncidentDetailPage() {
     },
   });
 
+  // `PATCH /incidents/{id}` (`core.incidents.service.update_incident`,
+  // gated by `incident:write`) already existed with a real, complete
+  // implementation but had no UI caller anywhere -- which meant there was
+  // no way to ever move an incident to resolved/closed through the app,
+  // the precondition `PostmortemPanel` requires before it will let anyone
+  // generate a postmortem at all. Closing that gap here, not inventing a
+  // new backend capability.
+  const updateStatusMutation = useMutation({
+    mutationFn: (status: IncidentStatus) => updateIncident(id, { status }),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(["incident", id], updated);
+    },
+  });
+
   if (incidentQuery.isLoading) return <LoadingState label="Loading incident…" />;
   if (incidentQuery.isError || !incidentQuery.data) {
     return <ErrorState onRetry={() => incidentQuery.refetch()} />;
@@ -83,10 +101,31 @@ export function IncidentDetailPage() {
         actions={
           <>
             <SeverityBadge severity={incident.severity} />
-            <StatusBadge status={incident.status} />
+            {canWrite ? (
+              <Select
+                aria-label="Incident status"
+                value={incident.status}
+                disabled={updateStatusMutation.isPending}
+                onChange={(e) => updateStatusMutation.mutate(e.target.value as IncidentStatus)}
+                className="w-36"
+              >
+                {STATUS_OPTIONS.map((s) => (
+                  <option key={s} value={s}>
+                    {s[0].toUpperCase() + s.slice(1)}
+                  </option>
+                ))}
+              </Select>
+            ) : (
+              <StatusBadge status={incident.status} />
+            )}
           </>
         }
       />
+      {updateStatusMutation.isError && (
+        <p role="alert" className="text-xs text-critical">
+          Failed to update status. Please try again.
+        </p>
+      )}
 
       <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-ink-muted">
         <span>
@@ -102,9 +141,10 @@ export function IncidentDetailPage() {
         )}
       </div>
 
-      <Tabs items={TABS} activeKey={activeTab} onChange={setActiveTab} />
+      <Tabs items={TABS} activeKey={activeTab} onChange={setActiveTab} idPrefix="incident-detail" />
 
       {activeTab === "timeline" && (
+        <TabPanel idPrefix="incident-detail" tabKey="timeline">
         <Card>
           <CardContent className="flex flex-col gap-4">
             {timelineQuery.isLoading && <LoadingState label="Loading timeline…" />}
@@ -143,9 +183,11 @@ export function IncidentDetailPage() {
             )}
           </CardContent>
         </Card>
+        </TabPanel>
       )}
 
       {activeTab === "investigation" && (
+        <TabPanel idPrefix="incident-detail" tabKey="investigation">
         <div className="flex flex-col gap-3">
           {investigateMutation.isIdle && (
             <Card>
@@ -185,9 +227,11 @@ export function IncidentDetailPage() {
             </Button>
           )}
         </div>
+        </TabPanel>
       )}
 
       {activeTab === "related" && (
+        <TabPanel idPrefix="incident-detail" tabKey="related">
         <Card>
           <CardContent>
             {relatedEvidenceQuery.isLoading && <LoadingState label="Searching the knowledge base…" />}
@@ -219,9 +263,14 @@ export function IncidentDetailPage() {
             )}
           </CardContent>
         </Card>
+        </TabPanel>
       )}
 
-      {activeTab === "postmortem" && <PostmortemPanel incident={incident} />}
+      {activeTab === "postmortem" && (
+        <TabPanel idPrefix="incident-detail" tabKey="postmortem">
+          <PostmortemPanel incident={incident} />
+        </TabPanel>
+      )}
     </div>
   );
 }

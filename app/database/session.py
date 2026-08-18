@@ -77,6 +77,25 @@ class Base(DeclarativeBase):
     """
 
 
+# Phase 6.1: bounds how long any single query/statement may run once a
+# connection is established -- asyncpg's own `command_timeout`, distinct
+# from the connection-establishment timeout (asyncpg's own `connect()`
+# default, 60s, already bounded independently of this codebase). Without
+# this, a hung/slow query (a lock wait, a runaway analytical query) had no
+# application-level bound at all. 30s matches the flat timeout every
+# ingestion connector already uses (`httpx.AsyncClient(..., timeout=30.0)`)
+# -- generous for this application's normal OLTP-shaped queries, not
+# generous enough to let a truly stuck connection hold a pool slot forever.
+_COMMAND_TIMEOUT_SECONDS = 30.0
+# Recycle pooled connections after 30 minutes -- `pool_pre_ping=True`
+# already tests a connection is alive before handing it out, but does not
+# bound how *old* a still-alive connection is; a managed Postgres provider
+# (Neon) can terminate idle server-side connections on its own schedule
+# independent of what the client believes is still open. Recycling
+# proactively avoids relying solely on pre-ping's reactive detection.
+_POOL_RECYCLE_SECONDS = 1800
+
+
 def _build_engine() -> AsyncEngine:
     """Create the async engine from settings.
 
@@ -90,6 +109,7 @@ def _build_engine() -> AsyncEngine:
         _normalize_database_url(str(settings.database_url)),
         echo=settings.environment == "development",
         pool_pre_ping=True,
+        pool_recycle=_POOL_RECYCLE_SECONDS,
         # Neon requires SSL; asyncpg wants it as a connect-time keyword, not
         # a URL query parameter (see _normalize_database_url above).
         # NOTE: unconditional today because Neon is the only target this
@@ -97,7 +117,7 @@ def _build_engine() -> AsyncEngine:
         # Postgres (docker/docker-compose.yml, not yet created) is wired up
         # for development, this will need to become conditional -- a local,
         # non-SSL Postgres would fail to connect with `ssl=True` forced on.
-        connect_args={"ssl": True},
+        connect_args={"ssl": True, "command_timeout": _COMMAND_TIMEOUT_SECONDS},
     )
 
 

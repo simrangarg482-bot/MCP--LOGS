@@ -15,6 +15,7 @@ from app.api import main as api_main
 from app.api.deps import get_current_identity
 from app.api.routers import observability as observability_router
 from app.core.observability.schemas import McpToolStats
+from app.core.tenancy.schemas import IngestionJobStats
 from app.database.session import get_db_session
 from app.shared.schemas import ActorKind, Identity
 
@@ -53,6 +54,10 @@ def test_get_agent_execution_stats_returns_stats(client, monkeypatch) -> None:
         failed_count=1,
         avg_confidence_score=0.8,
         avg_latency_seconds=1.2,
+        total_prompt_tokens=1000,
+        total_completion_tokens=200,
+        total_tokens=1200,
+        estimated_cost_usd=0.00027,
     )
 
     async def fake_get_agent_execution_stats(session, passed_actor, *, since=None):
@@ -116,3 +121,36 @@ def test_get_mcp_dashboard_returns_stats(client, monkeypatch) -> None:
     assert response.status_code == 200
     assert response.json()[0]["tool_name"] == "ask_question"
     assert response.json()[0]["error_count"] == 1
+
+
+def test_get_ingestion_job_stats_returns_stats(client, monkeypatch) -> None:
+    test_client, actor = client
+    connector_config_id = uuid.uuid4()
+    stats = IngestionJobStats(
+        connector_config_id=connector_config_id,
+        run_count=12,
+        succeeded_count=10,
+        failed_count=2,
+        avg_duration_seconds=45.5,
+        total_documents_processed=340,
+    )
+
+    async def fake_get_ingestion_job_stats(session, passed_actor, *, since=None):
+        assert passed_actor is actor
+        assert since is None
+        return [stats]
+
+    monkeypatch.setattr(
+        observability_router.tenancy_service,
+        "get_ingestion_job_stats",
+        fake_get_ingestion_job_stats,
+    )
+
+    response = test_client.get("/observability/ingestion")
+
+    assert response.status_code == 200
+    body = response.json()[0]
+    assert body["connector_config_id"] == str(connector_config_id)
+    assert body["run_count"] == 12
+    assert body["failed_count"] == 2
+    assert body["total_documents_processed"] == 340

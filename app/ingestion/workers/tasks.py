@@ -12,10 +12,12 @@ from __future__ import annotations
 
 import uuid
 
+import structlog
 from arq.worker import Retry
 
 from app.database.session import session_scope
 from app.ingestion import repository, service
+from app.shared.backoff import full_jitter_backoff_seconds
 from app.shared.config.logging import get_logger
 
 logger = get_logger(__name__)
@@ -51,25 +53,44 @@ async def run_ingestion_job_task(ctx: dict, connector_config_id: str) -> None:
        outcome into the same `Retry` behavior.
     """
     attempt = ctx["job_try"]
+    # Phase 5.2: same request-correlation shape as the REST/MCP entry
+    # points -- arq's own `job_id` is the natural request_id here (already
+    # unique per enqueued job, no need to mint a second one), bound before
+    # `service.run_ingestion_job` runs so every log line inside it (and any
+    # retrieval/embedding call it makes) carries it automatically.
+    structlog.contextvars.clear_contextvars()
+    structlog.contextvars.bind_contextvars(
+        request_id=str(ctx.get("job_id", "")) or None,
+        connector_config_id=connector_config_id,
+    )
     try:
-        async with session_scope() as session:
-            job = await service.run_ingestion_job(session, uuid.UUID(connector_config_id))
-    except Exception as exc:
-        _schedule_retry(connector_config_id, attempt, error=str(exc), cause=exc)
-        return
+        try:
+            async with session_scope() as session:
+                job = await service.run_ingestion_job(session, uuid.UUID(connector_config_id))
+        except Exception as exc:
+            _schedule_retry(connector_config_id, attempt, error=str(exc), cause=exc)
+            return
 
-    if job.status == "failed":
-        _schedule_retry(
-            connector_config_id, attempt, error=f"job failed at stage '{job.failed_stage}'"
-        )
-        return
-    logger.info("ingestion_job_task_completed", job_id=str(job.id), status=job.status)
+        if job.status == "failed":
+            _schedule_retry(
+                connector_config_id, attempt, error=f"job failed at stage '{job.failed_stage}'"
+            )
+            return
+        logger.info("ingestion_job_task_completed", job_id=str(job.id), status=job.status)
+    finally:
+        structlog.contextvars.clear_contextvars()
 
 
 def _schedule_retry(
     connector_config_id: str, attempt: int, *, error: str, cause: BaseException | None = None
 ) -> None:
-    defer_seconds = min(2**attempt, _MAX_BACKOFF_SECONDS)
+    # Phase 6.2: full jitter, not a bare `min(2**attempt, cap)` -- a
+    # correlated failure (a connector-wide outage affecting every
+    # organization syncing it at once) previously meant every affected job
+    # retried at the exact same intervals, arriving back in synchronized
+    # waves rather than spread out. See `app.shared.backoff`'s own
+    # docstring for why "full jitter" specifically.
+    defer_seconds = full_jitter_backoff_seconds(attempt, cap=_MAX_BACKOFF_SECONDS)
     logger.warning(
         "ingestion_job_task_retry_scheduled",
         connector_config_id=connector_config_id,
@@ -91,7 +112,7 @@ async def scheduled_reconciliation(ctx: dict) -> None:
     connectors. Each enqueued job is rate-limited per `connector_config` and
     per organization (PROJECT_PLAN.md section 4.5/Milestone 10) inside
     `ingestion.service._execute_ingestion_job` itself, via
-    `app.ingestion.rate_limiter` -- not attempted here, since this function
+    `app.shared.rate_limiter` -- not attempted here, since this function
     only enqueues jobs, it never runs one.
 
     Milestone 10 RLS note: `repository.list_active_connector_config_ids`

@@ -1,0 +1,30 @@
+# Gitleaks configuration (Phase 3 Batch 4.5 — CI secret scanning).
+#
+# Extends gitleaks' own default ruleset (provider-specific patterns + generic
+# high-entropy detection) with one project-specific rule: this repo's own
+# incident (a DATABASE_URL/REDIS_URL with an embedded credential briefly
+# reaching tool output) is exactly the "connection string with inline
+# credentials" shape, which gitleaks' defaults don't dedicate a named rule to.
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "connection-string-with-credentials"
+description = "Database/cache connection string with an inline username:password"
+regex = '''(postgres(?:ql)?|mysql|redis|rediss|mongodb(?:\+srv)?)://[^\s"'/:@]+:[^\s"'/@]+@[^\s"'/]+'''
+tags = ["connection-string", "credentials"]
+
+[allowlist]
+description = "Known-safe placeholder values used in tests/CI/local examples"
+regexes = [
+  '''ekip_local_dev_only''',
+  '''ekip_ci_only''',
+  '''ci-only-placeholder''',
+  '''sk-ci-placeholder''',
+  '''00112233445566778899aabbccddeeff00112233445566778899aabbccddee''',
+]
+paths = [
+  '''\.env\.example$''',
+  '''\.env\.docker\.example$''',
+]

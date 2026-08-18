@@ -47,6 +47,7 @@ from app.core.tenancy.schemas import (
     AccessRuleCreate,
     ConnectorConfig,
     ConnectorConfigCreate,
+    IngestionJobStats,
     IngestionRun,
     Invitation,
     InvitationCreate,
@@ -62,11 +63,19 @@ from app.core.users import repository as users_repository
 from app.core.users.service import require_permission, require_project_permission
 from app.shared.config.logging import get_logger
 from app.shared.schemas import Identity
-from app.shared.security import encrypt_secret, get_kms
+from app.shared.security import encrypt_secret, generate_opaque_token, get_kms, hash_opaque_token
 
 logger = get_logger(__name__)
 
 _MANAGE_PERMISSION = "tenancy:manage"
+# Same permission as `agents.service.get_agent_execution_stats`/`core.
+# observability.service.get_mcp_dashboard` -- an aggregate health dashboard
+# is an observability concern, not connector configuration, so it reuses
+# `observability:read` rather than `tenancy:manage` (unlike
+# `list_ingestion_runs` above, whose per-connector run *history* is closer
+# to a configuration drill-down and correctly reuses `_MANAGE_PERMISSION`
+# instead -- these are two different questions about the same table).
+_OBSERVABILITY_READ_PERMISSION = "observability:read"
 # Applied when InvitationCreate.expires_at is omitted -- not yet a Settings
 # field, same accepted gap as core/auth/service.py's _REFRESH_TOKEN_LIFETIME.
 _DEFAULT_INVITATION_LIFETIME = timedelta(days=14)
@@ -243,6 +252,44 @@ async def get_organization_sso_config(
     return SSOConfiguration.model_validate(sso_row)
 
 
+_REDACTED_CLIENT_SECRET = "••••••••"  # noqa: RUF001 -- intentional bullet glyphs, not a lookalike-character bug
+
+
+def _redact_client_secret(config: SSOConfiguration) -> SSOConfiguration:
+    """Never let a caller's actual `client_secret_ref` column value --
+    envelope-encrypted ciphertext, not a human-readable reference -- reach
+    the wire. Every read of an `SSOConfiguration` (both the write response
+    below and `get_sso_config`) goes through this before returning.
+    """
+    return config.model_copy(update={"client_secret_ref": _REDACTED_CLIENT_SECRET})
+
+
+async def get_sso_config(
+    session: AsyncSession, actor: Identity, organization_id: uuid.UUID
+) -> SSOConfiguration:
+    """Read back `organization_id`'s SSO configuration for display in
+    settings UI (`SsoSettingsPage.tsx`'s `getSsoConfig`, previously pointed
+    at a GET endpoint that never existed on the backend at all).
+
+    Requires `tenancy:manage` -- unlike most org-scoped reads (e.g.
+    `list_projects`), viewing IdP configuration (issuer URL, client id) is
+    treated the same as changing it, not as a general-membership read.
+    Raises NotFoundError if SSO hasn't been configured yet (same error code
+    `get_organization_sso_config`'s pre-login lookup already uses).
+    """
+    _ensure_same_organization(actor, organization_id)
+    require_permission(actor, _MANAGE_PERMISSION)
+
+    row = await repository.get_sso_configuration_by_organization_id(session, organization_id)
+    if row is None:
+        raise NotFoundError(
+            "This organization has not configured SSO yet.",
+            error_code="sso_configuration.not_found",
+            detail={"organization_id": str(organization_id)},
+        )
+    return _redact_client_secret(SSOConfiguration.model_validate(row))
+
+
 async def configure_sso(
     session: AsyncSession,
     actor: Identity,
@@ -277,7 +324,7 @@ async def configure_sso(
             detail={"organization_id": str(organization_id)},
         )
 
-    encrypted_client_secret_ref = encrypt_secret(get_kms(), data.client_secret_ref)
+    encrypted_client_secret_ref = await encrypt_secret(get_kms(), data.client_secret_ref)
     row = await repository.insert_sso_configuration(
         session,
         organization_id=organization_id,
@@ -295,7 +342,7 @@ async def configure_sso(
         resource_id=row.id,
         metadata={"organization_id": str(organization_id), "provider": data.provider},
     )
-    return SSOConfiguration.model_validate(row)
+    return _redact_client_secret(SSOConfiguration.model_validate(row))
 
 
 # --- Projects ----------------------------------------------------------------
@@ -365,6 +412,20 @@ async def create_project(
 
 # --- Connector configuration ----------------------------------------------------
 
+_REDACTED_CREDENTIAL = "••••••••"  # noqa: RUF001 -- intentional bullet glyphs, matching _REDACTED_CLIENT_SECRET above
+
+
+def _redact_credential(config: ConnectorConfig) -> ConnectorConfig:
+    """Never let a caller's actual `credential_ref` column value --
+    envelope-encrypted ciphertext, not a human-readable reference -- reach
+    the wire. Every read of a `ConnectorConfig` goes through this before
+    returning, the same treatment `_redact_client_secret` already gives
+    `SSOConfiguration.client_secret_ref` (this field was the one
+    inconsistency a Phase 3 security audit found: identical sensitivity,
+    previously returned unredacted here).
+    """
+    return config.model_copy(update={"credential_ref": _REDACTED_CREDENTIAL})
+
 
 async def register_connector(
     session: AsyncSession,
@@ -412,7 +473,7 @@ async def register_connector(
     else:
         require_permission(actor, _MANAGE_PERMISSION)
 
-    encrypted_credential_ref = encrypt_secret(get_kms(), data.credential_ref)
+    encrypted_credential_ref = await encrypt_secret(get_kms(), data.credential_ref)
     row = await repository.insert_connector_config(
         session,
         organization_id=organization_id,
@@ -429,7 +490,7 @@ async def register_connector(
         resource_id=row.id,
         metadata={"organization_id": str(organization_id), "source": data.source},
     )
-    return ConnectorConfig.model_validate(row)
+    return _redact_credential(ConnectorConfig.model_validate(row))
 
 
 async def list_connectors(
@@ -449,7 +510,7 @@ async def list_connectors(
     require_permission(actor, _MANAGE_PERMISSION)
 
     rows = await repository.list_connector_configs(session, organization_id)
-    return [ConnectorConfig.model_validate(row) for row in rows]
+    return [_redact_credential(ConnectorConfig.model_validate(row)) for row in rows]
 
 
 async def get_connector(
@@ -482,7 +543,7 @@ async def get_connector(
     else:
         require_permission(actor, _MANAGE_PERMISSION)
 
-    return ConnectorConfig.model_validate(row)
+    return _redact_credential(ConnectorConfig.model_validate(row))
 
 
 async def list_ingestion_runs(
@@ -512,6 +573,33 @@ async def list_ingestion_runs(
         session, organization_id, connector.id, limit=limit, offset=offset
     )
     return [IngestionRun.model_validate(row) for row in rows]
+
+
+async def get_ingestion_job_stats(
+    session: AsyncSession, actor: Identity, *, since: datetime | None = None
+) -> list[IngestionJobStats]:
+    """Per-connector ingestion run aggregate for `actor.organization_id`
+    (Phase 5.6) -- backs `GET /observability/ingestion`, the
+    `ingestion_jobs`-side counterpart to `agents.service.
+    get_agent_execution_stats`/`core.observability.service.
+    get_mcp_dashboard`. See `_OBSERVABILITY_READ_PERMISSION`'s own comment
+    for why this reuses `observability:read`, not `tenancy:manage`.
+    """
+    require_permission(actor, _OBSERVABILITY_READ_PERMISSION)
+    rows = await repository.get_ingestion_job_stats(session, organization_id=actor.organization_id, since=since)
+    return [
+        IngestionJobStats(
+            connector_config_id=row.connector_config_id,
+            run_count=row.run_count,
+            succeeded_count=int(row.succeeded_count or 0),
+            failed_count=int(row.failed_count or 0),
+            avg_duration_seconds=(
+                float(row.avg_duration_seconds) if row.avg_duration_seconds is not None else None
+            ),
+            total_documents_processed=int(row.total_documents_processed or 0),
+        )
+        for row in rows
+    ]
 
 
 async def update_connector_sync_status(
@@ -576,7 +664,7 @@ async def update_connector_sync_status(
         resource_id=connector_config_id,
         metadata={"status": status},
     )
-    return ConnectorConfig.model_validate(row)
+    return _redact_credential(ConnectorConfig.model_validate(row))
 
 
 # --- Organization access rules (domain / group auto-join) --------------------
@@ -701,6 +789,16 @@ async def create_invitation(
     Raises ConflictError if a pending invitation for this email already
     exists (the partial unique index's application-level counterpart, for a
     clean domain error instead of a raw integrity-error surface).
+
+    Phase 7.5: generates a random, single-use token, stores only its hash
+    (`token_hash`), and returns the raw value exactly once via the response
+    `Invitation.token` field -- the caller (an admin UI, or whatever sends
+    the actual invitation email) is responsible for including it in the
+    invitation link. This is what `POST /invitations/{id}/accept`'s
+    password-organization flow (`core.auth.service.
+    accept_invitation_with_password`) checks as proof the accepter controls
+    the invited email address -- previously the invitation's own database id
+    was the only "token," provable by anyone who merely learned it.
     """
     _ensure_same_organization(actor, organization_id)
     require_permission(actor, _MANAGE_PERMISSION)
@@ -722,6 +820,7 @@ async def create_invitation(
     role_id = await _resolve_role_id(session, data.grants_role)
     expires_at = data.expires_at or (datetime.now(timezone.utc) + _DEFAULT_INVITATION_LIFETIME)
 
+    raw_token = generate_opaque_token()
     row = await repository.insert_invitation(
         session,
         organization_id=organization_id,
@@ -729,16 +828,19 @@ async def create_invitation(
         grants_role_id=role_id,
         invited_by=actor.user_id,
         expires_at=expires_at,
+        token_hash=hash_opaque_token(raw_token),
     )
     await record_audit_event(
         session,
         actor,
         action="invitation.create",
         resource_type="invitation",
-        resource_id=row.id,
+        # Never the raw token -- see this function's own docstring on why
+        # it must be exposed exactly once, in the response only.
         metadata={"organization_id": str(organization_id), "email": data.email},
+        resource_id=row.id,
     )
-    return Invitation.model_validate(row)
+    return Invitation.model_validate(row).model_copy(update={"token": raw_token})
 
 
 async def list_invitations(
@@ -811,25 +913,24 @@ async def accept_invitation(session: AsyncSession, invitation_id: uuid.UUID) -> 
     same pre-session login flow as `evaluate_provisioning`, not as an
     admin-facing action.
 
-    Guards added for its second caller, `POST /invitations/{invitation_id}/
-    accept` (a REST entry point added alongside this comment, for a caller
-    that -- unlike `evaluate_provisioning` -- has not already verified the
-    invitation is pending and unexpired): raises NotFoundError for an unknown
-    id, and ConflictError if the invitation is not currently `"pending"` (already
-    accepted/revoked) or has passed its `expires_at`. `evaluate_provisioning`
-    only ever passes an id it just confirmed satisfies both conditions, so
-    these checks are a no-op, defense-in-depth addition for that call path,
-    not a behavior change for it.
+    Guards added for its second caller, `auth_service.
+    accept_invitation_with_password` (Phase 7.5 -- itself behind
+    `POST /invitations/{invitation_id}/accept`, which verifies the caller's
+    `token` against `Invitation.token_hash` *before* ever reaching here):
+    raises NotFoundError for an unknown id, and ConflictError if the
+    invitation is not currently `"pending"` (already accepted/revoked) or has
+    passed its `expires_at`. `evaluate_provisioning` only ever passes an id it
+    just confirmed satisfies both conditions, so these checks are a no-op,
+    defense-in-depth addition for that call path, not a behavior change for
+    it; for the password-acceptance path they're deliberately re-checked here
+    too, rather than trusted to still hold from the caller's own earlier
+    check, in case anything changed between the two.
 
-    Known limitation, stated plainly: `invitations` has no separate secret
-    token column (`Invitation`'s schema exposes only its opaque `id`) --
-    unlike a real "click this emailed link" flow, possessing this id alone is
-    sufficient to accept here, with no proof the caller controls the invited
-    email address. Adding a real single-use secret token is a schema/
-    migration change, out of scope for wiring up the REST surface this
-    guards; the same limitation already applies to how `create_invitation`
-    itself is delivered (no email-sending exists in this codebase at all --
-    see docs/USER_TESTING_GUIDE.md section 3).
+    Does not itself check `token_hash` -- that proof-of-control check happens
+    once, in `auth_service.accept_invitation_with_password`, before user
+    provisioning even starts. This function only flips `status`; it has no
+    token to check for its other caller (`evaluate_provisioning`'s SSO path),
+    where a signed `id_token` already proved identity.
     """
     invitation = await repository.get_invitation_by_id(session, invitation_id)
     if invitation is None:

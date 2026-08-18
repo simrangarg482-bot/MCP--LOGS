@@ -95,7 +95,7 @@ class _RecordingConnector:
 async def test_execute_ingestion_job_decrypts_credential_before_authenticating(monkeypatch) -> None:
     organization_id = uuid.uuid4()
     plaintext_credential = "xoxb-11725744885042-fake-slack-bot-token"
-    encrypted_credential_ref = encrypt_secret(get_kms(), plaintext_credential)
+    encrypted_credential_ref = await encrypt_secret(get_kms(), plaintext_credential)
 
     config_row = _FakeConnectorConfigRow(
         organization_id=organization_id,
@@ -166,7 +166,7 @@ async def test_execute_ingestion_job_sets_tenant_context_before_reading_full_con
     id -> set_tenant_context -> read the full row.
     """
     organization_id = uuid.uuid4()
-    encrypted_credential_ref = encrypt_secret(get_kms(), "irrelevant-for-this-test")
+    encrypted_credential_ref = await encrypt_secret(get_kms(), "irrelevant-for-this-test")
     config_row = _FakeConnectorConfigRow(
         organization_id=organization_id,
         source="fake_source",
@@ -244,7 +244,7 @@ async def test_reindex_sets_tenant_context_before_reading_full_document(monkeypa
     connector_config_row = _FakeConnectorConfigRow(
         organization_id=organization_id,
         source="fake_source",
-        credential_ref=encrypt_secret(get_kms(), "irrelevant-for-this-test"),
+        credential_ref=await encrypt_secret(get_kms(), "irrelevant-for-this-test"),
     )
     fake_connector = _RecordingConnector()
     call_order: list[str] = []
@@ -359,7 +359,7 @@ class _ResumeTokenConnector:
 @pytest.mark.asyncio
 async def test_execute_ingestion_job_reads_and_persists_resume_token(monkeypatch) -> None:
     organization_id = uuid.uuid4()
-    encrypted_credential_ref = encrypt_secret(get_kms(), "irrelevant-for-this-test")
+    encrypted_credential_ref = await encrypt_secret(get_kms(), "irrelevant-for-this-test")
     config_row = _FakeConnectorConfigRow(
         organization_id=organization_id,
         source="fake_resume_source",
@@ -434,7 +434,7 @@ async def test_execute_ingestion_job_ignores_resume_token_for_unsupporting_conne
     written before this feature existed keeps working unchanged.
     """
     organization_id = uuid.uuid4()
-    encrypted_credential_ref = encrypt_secret(get_kms(), "irrelevant-for-this-test")
+    encrypted_credential_ref = await encrypt_secret(get_kms(), "irrelevant-for-this-test")
     config_row = _FakeConnectorConfigRow(
         organization_id=organization_id,
         source="fake_source",
@@ -521,7 +521,7 @@ async def test_failed_ingestion_job_leaves_a_durable_failure_record(monkeypatch)
     config_row = _FakeConnectorConfigRow(
         organization_id=organization_id,
         source="exploding_source",
-        credential_ref=encrypt_secret(get_kms(), "irrelevant-for-this-test"),
+        credential_ref=await encrypt_secret(get_kms(), "irrelevant-for-this-test"),
     )
     fake_connector = _ExplodingConnector()
     job_updates: list[dict] = []
@@ -602,7 +602,7 @@ async def test_failed_ingestion_job_does_not_report_documents_processed(monkeypa
     config_row = _FakeConnectorConfigRow(
         organization_id=organization_id,
         source="exploding_source",
-        credential_ref=encrypt_secret(get_kms(), "irrelevant-for-this-test"),
+        credential_ref=await encrypt_secret(get_kms(), "irrelevant-for-this-test"),
     )
     job_updates: list[dict] = []
 
@@ -657,7 +657,7 @@ async def _async_return(value):
 @pytest.mark.asyncio
 async def test_execute_ingestion_job_acquires_both_rate_limit_buckets(monkeypatch) -> None:
     organization_id = uuid.uuid4()
-    encrypted_credential_ref = encrypt_secret(get_kms(), "irrelevant-for-this-test")
+    encrypted_credential_ref = await encrypt_secret(get_kms(), "irrelevant-for-this-test")
 
     config_row = _FakeConnectorConfigRow(
         organization_id=organization_id,

@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from app.api import main as api_main
 from app.api.deps import get_current_identity
 from app.api.routers import tenancy as tenancy_router
+from app.core.auth.schemas import SessionTokens
 from app.core.tenancy.schemas import (
     AccessRule,
     ConnectorConfig,
@@ -261,6 +262,24 @@ def test_list_projects_under_organization(client, monkeypatch) -> None:
     assert len(response.json()) == 1
 
 
+def test_get_sso_config_under_organization(client, monkeypatch) -> None:
+    test_client, actor = client
+    result = _sso_configuration(actor.organization_id)
+    captured: dict[str, object] = {}
+
+    async def fake_get_sso_config(session, passed_actor, organization_id):
+        captured["organization_id"] = organization_id
+        return result
+
+    monkeypatch.setattr(tenancy_router.tenancy_service, "get_sso_config", fake_get_sso_config)
+
+    response = test_client.get(f"/organizations/{actor.organization_id}/sso")
+
+    assert response.status_code == 200
+    assert captured["organization_id"] == actor.organization_id
+    assert response.json()["client_secret_ref"] == "encrypted-ref"
+
+
 def test_configure_sso_under_organization(client, monkeypatch) -> None:
     test_client, actor = client
     result = _sso_configuration(actor.organization_id)
@@ -379,20 +398,43 @@ def test_accept_invitation_requires_no_authentication(client, monkeypatch) -> No
     """Deliberately unauthenticated -- see router docstring. Uses the same
     `client` fixture purely for its `TestClient`; the identity override in
     play is simply never consulted by this endpoint.
+
+    Phase 7.5: the endpoint now delegates to `auth_service.
+    accept_invitation_with_password` (not `tenancy_service.accept_invitation`
+    directly) and requires a `token`/`password` body, returning `SessionTokens`
+    rather than 204.
     """
     test_client, _actor = client
     invitation_id = uuid.uuid4()
     captured: dict[str, object] = {}
 
-    async def fake_accept_invitation(session, passed_invitation_id):
+    async def fake_accept_invitation_with_password(session, passed_invitation_id, data):
         captured["invitation_id"] = passed_invitation_id
+        captured["data"] = data
+        return SessionTokens(
+            access_token="access-token",
+            refresh_token="refresh-token",
+            expires_in=900,
+        )
 
-    monkeypatch.setattr(tenancy_router.tenancy_service, "accept_invitation", fake_accept_invitation)
+    monkeypatch.setattr(
+        tenancy_router.auth_service,
+        "accept_invitation_with_password",
+        fake_accept_invitation_with_password,
+    )
 
-    response = test_client.post(f"/invitations/{invitation_id}/accept")
+    response = test_client.post(
+        f"/invitations/{invitation_id}/accept",
+        json={"token": "raw-token", "password": "correct horse battery staple"},
+    )
 
-    assert response.status_code == 204
+    assert response.status_code == 200
+    body = response.json()
+    assert body["access_token"] == "access-token"
+    assert body["refresh_token"] == "refresh-token"
     assert captured["invitation_id"] == invitation_id
+    assert captured["data"].token == "raw-token"
+    assert captured["data"].password == "correct horse battery staple"
 
 
 def test_revoke_invitation_uses_callers_own_organization(client, monkeypatch) -> None:

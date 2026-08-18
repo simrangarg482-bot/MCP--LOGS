@@ -41,16 +41,20 @@ Two `APIRouter` instances live in this one file:
       that makes sense for a caller whose `Identity` is itself scoped to
       exactly one organization.
     - `POST /invitations/{invitation_id}/accept` is deliberately
-      unauthenticated (no `CurrentIdentity` dependency), matching
-      `core.tenancy.service.accept_invitation`'s own pre-login signature --
-      the same function core/auth calls mid-SSO-login, before any session
-      exists. The path parameter is named `invitation_id` here (the
-      invitation's real, only identifier) rather than a separate secret
-      "token": `invitations` has no dedicated single-use token column today
-      (see `accept_invitation`'s own docstring for this limitation, and
-      `docs/USER_TESTING_GUIDE.md` section 3 for why no invitation email
-      exists to deliver one through in the first place). Treat an
-      invitation id as sensitive until a real token column exists.
+      unauthenticated (no `CurrentIdentity` dependency) -- there is no
+      session yet to authenticate with. As of Phase 7.5 it requires a
+      single-use `token` in the request body (`InvitationAcceptRequest`,
+      hashed and compared against `Invitation.token_hash` by
+      `auth_service.accept_invitation_with_password`), not just the
+      `invitation_id` path parameter: the path parameter alone identifies
+      *which* invitation, the body token proves the caller is the person it
+      was actually sent to. This calls `core.auth.service.
+      accept_invitation_with_password`, not `core.tenancy.service.
+      accept_invitation` directly -- the latter is still used, but only
+      internally, by both this flow's last step and the unrelated
+      mid-SSO-login acceptance path (`core.auth`'s
+      `_resolve_or_provision_user`), neither of which needs a REST caller
+      here.
 """
 
 from __future__ import annotations
@@ -61,8 +65,11 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 
 from app.api.deps import ArqPool, CurrentIdentity, DbSession
+from app.api.rate_limit import rate_limit_by_ip, rate_limit_by_org
 from app.core.audit import service as audit_service
 from app.core.audit.schemas import AuditLogEntry, AuditLogQuery
+from app.core.auth import service as auth_service
+from app.core.auth.schemas import SessionTokens
 from app.core.tenancy import service as tenancy_service
 from app.core.tenancy.schemas import (
     AccessRule,
@@ -71,6 +78,7 @@ from app.core.tenancy.schemas import (
     ConnectorConfigCreate,
     IngestionRun,
     Invitation,
+    InvitationAcceptRequest,
     InvitationCreate,
     Organization,
     OrganizationCreate,
@@ -97,7 +105,19 @@ async def list_connectors(actor: CurrentIdentity, session: DbSession) -> list[Co
     return await tenancy_service.list_connectors(session, actor, actor.organization_id)
 
 
-@router.post("/connectors/{connector_config_id}/sync", status_code=202)
+# Phase 6.5: per-organization, not per-user -- five different users in one
+# organization each triggering a sync is still one organization's ingestion
+# load against the same connector rate budgets (`app.shared.rate_limiter`)
+# and the same worker queue, so the aggregate matters more than any one
+# user's individual trigger rate.
+_SYNC_RATE_LIMIT = rate_limit_by_org(scope="tenancy.connector_sync", requests_per_minute=10)
+
+
+@router.post(
+    "/connectors/{connector_config_id}/sync",
+    status_code=202,
+    dependencies=[Depends(_SYNC_RATE_LIMIT)],
+)
 async def sync_connector(
     connector_config_id: uuid.UUID, actor: CurrentIdentity, session: DbSession, arq_pool: ArqPool
 ) -> dict[str, str]:
@@ -233,6 +253,22 @@ async def query_audit_log(
 # --- SSO -------------------------------------------------------------------------
 
 
+@admin_router.get(
+    "/organizations/{organization_id}/sso",
+    response_model=SSOConfiguration,
+)
+async def get_sso_config(
+    organization_id: uuid.UUID,
+    actor: CurrentIdentity,
+    session: DbSession,
+) -> SSOConfiguration:
+    """`SsoSettingsPage.tsx`'s real, previously-unimplemented read-back --
+    see `core.tenancy.service.get_sso_config`'s docstring for the
+    `tenancy:manage` gate and why `client_secret_ref` always comes back
+    redacted, never the caller's actual encrypted column value."""
+    return await tenancy_service.get_sso_config(session, actor, organization_id)
+
+
 @admin_router.post(
     "/organizations/{organization_id}/sso/configure",
     response_model=SSOConfiguration,
@@ -309,10 +345,31 @@ async def list_invitations(
     return await tenancy_service.list_invitations(session, actor, organization_id)
 
 
-@admin_router.post("/invitations/{invitation_id}/accept", status_code=204)
-async def accept_invitation(invitation_id: uuid.UUID, session: DbSession) -> None:
-    """Deliberately unauthenticated -- see this module's docstring."""
-    await tenancy_service.accept_invitation(session, invitation_id)
+# Deliberately per-IP, not per-invitation-id: the caller has no session yet
+# for `rate_limit_by_org`/`rate_limit_by_user` to key on, and this endpoint
+# now checks a caller-supplied token against a stored hash (Phase 7.5) --
+# the same brute-force/guessing surface `_LOGIN_RATE_LIMIT` in
+# `app/api/routers/auth.py` exists to bound, so it gets the same treatment.
+_INVITATION_ACCEPT_RATE_LIMIT = rate_limit_by_ip(
+    scope="tenancy.invitation_accept", requests_per_minute=10
+)
+
+
+@admin_router.post(
+    "/invitations/{invitation_id}/accept",
+    response_model=SessionTokens,
+    dependencies=[Depends(_INVITATION_ACCEPT_RATE_LIMIT)],
+)
+async def accept_invitation(
+    invitation_id: uuid.UUID, data: InvitationAcceptRequest, session: DbSession
+) -> SessionTokens:
+    """Deliberately unauthenticated -- see this module's docstring. Requires
+    the single-use token returned exactly once by `create_invitation`
+    (`Invitation.token`), not just the invitation id, since Phase 7.5 (see
+    `auth_service.accept_invitation_with_password`'s docstring for why this
+    orchestration lives in `core.auth`, not here or in `core.tenancy`).
+    """
+    return await auth_service.accept_invitation_with_password(session, invitation_id, data)
 
 
 @admin_router.post("/invitations/{invitation_id}/revoke", response_model=Invitation)

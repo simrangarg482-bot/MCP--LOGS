@@ -10,6 +10,7 @@ import uuid
 
 import pytest
 
+from app.database import session as session_module
 from app.database.session import set_tenant_context
 
 
@@ -62,3 +63,30 @@ async def test_set_tenant_context_stringifies_the_uuid() -> None:
     _statement, params = session.executed[0]
     assert isinstance(params["org_id"], str)
     assert params["org_id"] == str(organization_id)
+
+
+def test_build_engine_sets_a_bounded_command_timeout(monkeypatch) -> None:
+    """Phase 6.1 regression: asyncpg's own `command_timeout` bounds how
+    long any single query may run once connected -- distinct from (and
+    previously entirely absent alongside) the connection-establishment
+    timeout. Without this, a hung/slow query had no application-level
+    bound at all.
+
+    Monkeypatches `create_async_engine` itself to capture exactly what
+    `_build_engine` passes it -- more robust than reverse-engineering where
+    SQLAlchemy stores `connect_args` on the constructed engine object
+    afterward (an internal detail, not a stable public attribute).
+    """
+    captured: dict[str, object] = {}
+
+    def fake_create_async_engine(url, **kwargs):
+        captured.update(kwargs)
+        return object()  # _build_engine only constructs and returns this; never calls anything on it
+
+    monkeypatch.setattr(session_module, "create_async_engine", fake_create_async_engine)
+
+    session_module._build_engine()
+
+    assert captured["connect_args"]["command_timeout"] == 30.0
+    assert captured["connect_args"]["ssl"] is True
+    assert captured["pool_recycle"] == 1800

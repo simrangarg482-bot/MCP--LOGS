@@ -1,0 +1,92 @@
+"""OpenTelemetry tracing configuration (Phase 5.3).
+
+Owned by: shared/ (cross-cutting, no business meaning of its own -- same
+category as `logging.py`).
+
+`opentelemetry-sdk`/`opentelemetry-instrumentation-fastapi` have been
+dependencies of this project since before this phase (`pyproject.toml`) but
+were never imported or initialized anywhere in `app/` until now -- this
+module is what actually wires them up.
+
+Deliberately minimal: `FastAPIInstrumentor.instrument_app` auto-creates one
+span per HTTP request (method, route, status code) with zero manual
+instrumentation needed anywhere else in the codebase -- this alone already
+satisfies "trace API request" from Phase 5.3's list. Deeper per-stage spans
+(dense retrieval, lexical retrieval, reranking, confidence evaluation) are
+NOT added in this pass: `opentelemetry-instrumentation-fastapi` only
+instruments the HTTP boundary, and hand-instrumenting every retrieval/agent
+stage with `tracer.start_as_current_span(...)` calls is real, separate work
+this module doesn't attempt to fake by claiming here.
+
+No real trace backend (Jaeger/Tempo/Azure Monitor/etc.) is deployed
+anywhere for this project yet -- see `docs/operations/observability.md`.
+Exporting is therefore configuration-gated: set `OTEL_EXPORTER_OTLP_ENDPOINT`
+once a real collector exists; until then, spans are created (so the
+instrumentation itself is exercised and won't silently rot unused) but
+never exported anywhere in production, and printed to the console in
+development for local visibility.
+"""
+
+from __future__ import annotations
+
+from fastapi import FastAPI
+from opentelemetry import trace
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.sdk.resources import SERVICE_NAME, Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import (
+    BatchSpanProcessor,
+    ConsoleSpanExporter,
+    SimpleSpanProcessor,
+)
+
+from app.shared.config.settings import get_settings
+
+
+def configure_tracing(app: FastAPI) -> None:
+    """Set up a `TracerProvider` and instrument `app`. Call once, at process
+    startup, after `configure_logging()`.
+
+    Safe to call in every environment (test/development/production) --
+    unlike `configure_logging`, there's no meaningful "safe to call twice"
+    concern here since this project only ever calls it once, from
+    `app.api.main.create_app`.
+    """
+    settings = get_settings()
+    provider = TracerProvider(
+        resource=Resource.create({SERVICE_NAME: "ekip-api"}),
+    )
+
+    if settings.otel_exporter_otlp_endpoint:
+        # Deferred import: `opentelemetry-exporter-otlp` is an optional
+        # dependency, only needed once a real endpoint is actually
+        # configured -- avoids adding a hard dependency this project has no
+        # deployed collector to point at yet.
+        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
+            OTLPSpanExporter,
+        )
+
+        provider.add_span_processor(
+            BatchSpanProcessor(OTLPSpanExporter(endpoint=settings.otel_exporter_otlp_endpoint))
+        )
+    elif settings.environment == "development":
+        # `SimpleSpanProcessor`, not `BatchSpanProcessor`, deliberately:
+        # `BatchSpanProcessor` spawns a background daemon thread that
+        # periodically flushes on its own schedule, independent of process
+        # lifecycle -- fine in a long-running server, but in a short-lived
+        # process (or a pytest run that never sets `environment=production`/
+        # `test` explicitly, so falls through to this same branch) that
+        # thread can still be mid-flush after `sys.stdout` is already
+        # closed, raising "I/O operation on closed file" from a background
+        # thread pytest has no way to associate with any test. Console
+        # export is low-volume by nature (developer-visible tracing, not a
+        # production sink) -- synchronous, in-process export costs nothing
+        # meaningful here and removes the dangling-thread failure mode
+        # entirely.
+        provider.add_span_processor(SimpleSpanProcessor(ConsoleSpanExporter()))
+    # else (test, or production with no endpoint configured): spans are
+    # created but never exported -- a `TracerProvider` with no processors is
+    # a valid, inert no-op, not an error.
+
+    trace.set_tracer_provider(provider)
+    FastAPIInstrumentor.instrument_app(app)

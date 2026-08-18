@@ -34,6 +34,8 @@ import asyncio
 
 from app.core.auth.service import _hash_password
 from app.core.exceptions import ConflictError
+from app.core.knowledge import service as knowledge_service
+from app.core.knowledge.schemas import DocumentProposalCreate
 from app.core.tenancy import repository as tenancy_repository
 from app.core.tenancy import service as tenancy_service
 from app.core.tenancy.schemas import Organization, OrganizationCreate
@@ -41,6 +43,7 @@ from app.core.users import repository as users_repository
 from app.core.users import service as users_service
 from app.database.session import session_scope, set_tenant_context
 from app.shared.config.logging import configure_logging
+from app.shared.schemas import ActorKind, Identity
 
 configure_logging()
 
@@ -64,9 +67,24 @@ RESTRICTED_USER_EMAIL = "e2e-restricted@example.com"
 RESTRICTED_USER_NAME = "E2E Restricted"
 RESTRICTED_USER_PASSWORD = "E2eTest123!"
 RESTRICTED_ROLE_NAME = "e2e_incident_writer"
-# Deliberately narrow: enough to prove the RBAC suite's "has one permission,
-# lacks the rest" assertions, without granting anything close to admin.
-RESTRICTED_PERMISSION_CODES = ["incident:write"]
+# Deliberately narrow: enough to prove the RBAC suite's "has these, lacks
+# the rest" assertions, without granting anything close to admin.
+# `incident:read` is included alongside `incident:write` (not "the one
+# permission" the role name implies) because `rbac.spec.ts`'s own "a
+# restricted user can create an incident" test immediately navigates to and
+# reads back the incident it just created -- Phase 4.7.2's incident:read
+# gate (app.core.incidents.service.get_incident) would otherwise deny that
+# read with the exact same role that was just allowed to write it, which is
+# not what this fixture is testing for.
+RESTRICTED_PERMISSION_CODES = ["incident:write", "incident:read"]
+
+# Knowledge Review E2E fixture: `propose_document` is MCP/agent-only, not
+# REST-exposed (`app.api.routers.knowledge` has no `POST /knowledge`) -- so
+# there is no way for a Playwright spec to create its own proposed document
+# through the running application the way it creates its own incidents.
+# Seeded here instead, once, with a fixed title so the spec can find it
+# deterministically across runs.
+PROPOSED_DOCUMENT_TITLE = "E2E Seeded Proposal: Checkout Retry Runbook"
 
 
 async def _get_or_create_organization(session, *, name: str, slug: str) -> Organization:
@@ -128,6 +146,35 @@ async def main() -> None:
         await _ensure_admin_member(
             session, organization=org_beta, email=BETA_ADMIN_EMAIL, display_name=BETA_ADMIN_NAME, password=BETA_ADMIN_PASSWORD
         )
+
+        # One proposed document in Org Alpha, for the Knowledge Review E2E
+        # spec -- see PROPOSED_DOCUMENT_TITLE's own comment for why this
+        # can't be created through the running application instead.
+        await set_tenant_context(session, org_alpha.id)
+        review_actor = Identity(
+            kind=ActorKind.AGENT,
+            subject="e2e_seed",
+            organization_id=org_alpha.id,
+            permissions=frozenset({"knowledge:review"}),
+        )
+        existing_proposals = await knowledge_service.list_proposed_documents(session, review_actor, org_alpha.id)
+        if any(doc.title == PROPOSED_DOCUMENT_TITLE for doc in existing_proposals):
+            print(f"Proposed document already exists in {org_alpha.slug}: {PROPOSED_DOCUMENT_TITLE!r}")
+        else:
+            proposal = await knowledge_service.propose_document(
+                session,
+                review_actor,
+                org_alpha.id,
+                DocumentProposalCreate(
+                    title=PROPOSED_DOCUMENT_TITLE,
+                    content=(
+                        "Draft runbook: when checkout payment retries exceed 3 attempts, "
+                        "page the payments on-call rotation and check the provider status page "
+                        "before escalating further."
+                    ),
+                ),
+            )
+            print(f"Proposed document created in {org_alpha.slug}: {proposal.id} ({proposal.title!r})")
 
 
 if __name__ == "__main__":

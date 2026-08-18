@@ -37,10 +37,13 @@ Milestone 10 additions (PROJECT_PLAN.md section 12.5/section 10): (1)
 `config_row.credential_ref` is decrypted via `app.shared.security` exactly
 once per job, immediately before `connector.authenticate()` needs it --
 see `_execute_ingestion_job`'s own docstring; (2) every `fetch_batch` call
-acquires from two `app.ingestion.rate_limiter.TokenBucketRateLimiter`
+acquires from two `app.shared.rate_limiter.TokenBucketRateLimiter`
 budgets first (per-connector_config and per-organization), closing the gap
 `app.ingestion.workers.tasks.scheduled_reconciliation`'s docstring used to
-flag as "not attempted here."
+flag as "not attempted here." (Phase 6.5 relocated this shared class from
+`app.ingestion.rate_limiter` to `app.shared.rate_limiter` when API-level
+rate limiting needed the identical algorithm and `app.api` cannot depend on
+`app.ingestion` at all -- see that module's own docstring.)
 """
 
 from __future__ import annotations
@@ -65,12 +68,12 @@ from app.ingestion.connectors.sharepoint import SharePointConnector
 from app.ingestion.connectors.slack import SlackConnector
 from app.ingestion.connectors.teams import TeamsConnector
 from app.ingestion.processors.pipeline import process_document
-from app.ingestion.rate_limiter import TokenBucketRateLimiter
 from app.ingestion.schemas import ContentType, IngestionJob, ResolvedConnectorConfig
 from app.retrieval import service as retrieval_service
 from app.retrieval.schemas import CollectionName, UpsertChunk
 from app.shared.config.logging import get_logger
 from app.shared.config.settings import get_settings
+from app.shared.rate_limiter import TokenBucketRateLimiter
 from app.shared.schemas import Identity
 from app.shared.security import decrypt_secret, get_kms
 
@@ -93,7 +96,7 @@ _CONNECTOR_REGISTRY: dict[str, Connector] = {
 }
 
 # One shared, in-process limiter for every job this worker process runs --
-# see `app.ingestion.rate_limiter`'s module docstring for exactly what this
+# see `app.shared.rate_limiter`'s module docstring for exactly what this
 # does and does not guarantee (per-process, not cross-process/distributed).
 _rate_limiter = TokenBucketRateLimiter()
 
@@ -249,7 +252,7 @@ async def _execute_ingestion_job(
         )
 
     actor = Identity.for_agent("ingestion_worker", config_row.organization_id)
-    plaintext_credential = decrypt_secret(get_kms(), config_row.credential_ref)
+    plaintext_credential = await decrypt_secret(get_kms(), config_row.credential_ref)
     resolved_config = ResolvedConnectorConfig(
         connector_config_id=config_row.id,
         organization_id=config_row.organization_id,

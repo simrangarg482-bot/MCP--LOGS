@@ -5,8 +5,10 @@ import { Card } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
 import { DataTable, type DataTableColumn } from "@/components/data/DataTable";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { ErrorState } from "@/components/ui/ErrorState";
 import { listAuditLog } from "@/api/audit";
 import type { AuditLogEntry } from "@/types/audit";
+import type { ApiError } from "@/types/common";
 import { useTenant } from "@/context/TenantContext";
 import { useDebounce } from "@/hooks/useDebounce";
 import { formatDateTime, formatRelativeTime } from "@/utils/date";
@@ -33,6 +35,7 @@ export function AuditPage() {
     queryFn: () => listAuditLog(organization!.id, filters),
     enabled: Boolean(organization),
   });
+  const queryError = auditQuery.error as ApiError | null;
 
   const columns: DataTableColumn<AuditLogEntry>[] = [
     {
@@ -57,6 +60,18 @@ export function AuditPage() {
       ),
     },
   ];
+
+  if (queryError?.status === 403) {
+    return (
+      <div className="flex flex-col gap-4">
+        <PageHeader title="Audit log" />
+        <ErrorState
+          title="You don't have access to the audit log"
+          description="Viewing audit events requires the audit:read permission."
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-4">

@@ -3,6 +3,7 @@ import { AppLayout } from "@/layouts/AppLayout";
 import { AuthLayout } from "@/layouts/AuthLayout";
 import { ProtectedRoute } from "./ProtectedRoute";
 
+import { AcceptInvitationPage } from "@/pages/auth/AcceptInvitationPage";
 import { LoginPage } from "@/pages/auth/LoginPage";
 import { SignupPage } from "@/pages/auth/SignupPage";
 import { AskPage } from "@/pages/ask/AskPage";
@@ -12,6 +13,7 @@ import { IncidentCreatePage } from "@/pages/incidents/IncidentCreatePage";
 import { IncidentDetailPage } from "@/pages/incidents/IncidentDetailPage";
 import { KnowledgeGapsPage } from "@/pages/knowledge-gaps/KnowledgeGapsPage";
 import { KnowledgeListPage } from "@/pages/knowledge/KnowledgeListPage";
+import { KnowledgeReviewPage } from "@/pages/knowledge/KnowledgeReviewPage";
 import { KnowledgeDetailPage } from "@/pages/knowledge/KnowledgeDetailPage";
 import { SearchPage } from "@/pages/search/SearchPage";
 import { ConnectorsPage } from "@/pages/connectors/ConnectorsPage";
@@ -24,6 +26,7 @@ import { ProjectSettingsPage } from "@/pages/settings/ProjectSettingsPage";
 import { UsersSettingsPage } from "@/pages/settings/UsersSettingsPage";
 import { SsoSettingsPage } from "@/pages/settings/SsoSettingsPage";
 import { ConnectorsSettingsPage } from "@/pages/settings/ConnectorsSettingsPage";
+import { AccessRulesSettingsPage } from "@/pages/settings/AccessRulesSettingsPage";
 import { NotFoundPage } from "@/pages/misc/NotFoundPage";
 
 export const router = createBrowserRouter([
@@ -32,6 +35,7 @@ export const router = createBrowserRouter([
     children: [
       { path: "/login", element: <LoginPage /> },
       { path: "/signup", element: <SignupPage /> },
+      { path: "/invitations/:invitationId/accept", element: <AcceptInvitationPage /> },
     ],
   },
   {
@@ -47,6 +51,7 @@ export const router = createBrowserRouter([
           { path: "/incidents/new", element: <IncidentCreatePage /> },
           { path: "/incidents/:id", element: <IncidentDetailPage /> },
           { path: "/knowledge", element: <KnowledgeListPage /> },
+          { path: "/knowledge/review", element: <KnowledgeReviewPage /> },
           { path: "/knowledge/:id", element: <KnowledgeDetailPage /> },
           { path: "/knowledge-gaps", element: <KnowledgeGapsPage /> },
           { path: "/search", element: <SearchPage /> },
@@ -64,6 +69,7 @@ export const router = createBrowserRouter([
               { path: "users", element: <UsersSettingsPage /> },
               { path: "sso", element: <SsoSettingsPage /> },
               { path: "connectors", element: <ConnectorsSettingsPage /> },
+              { path: "access-rules", element: <AccessRulesSettingsPage /> },
             ],
           },
           { path: "*", element: <NotFoundPage /> },

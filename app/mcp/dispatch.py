@@ -31,9 +31,11 @@ contract, not just a loose aspiration.
 from __future__ import annotations
 
 import time
+import uuid
 from collections.abc import Awaitable, Callable
 from typing import TypeVar
 
+import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import EKIPError
@@ -123,11 +125,24 @@ async def run_mcp_tool(
     status_code = 200
     identity_tag = "unresolved"
     outcome_error: BaseException | None = None
+    # Phase 5.2: MCP's own request-correlation id -- there's no HTTP header
+    # to accept one from the way `RequestContextMiddleware` does for REST,
+    # so one is always minted fresh per tool call. Bound alongside
+    # organization_id/user_id once identity resolves, same shape as the
+    # REST dependency's binding, so a log line looks the same regardless of
+    # which entry point produced it.
+    request_id = str(uuid.uuid4())
+    structlog.contextvars.clear_contextvars()
+    structlog.contextvars.bind_contextvars(request_id=request_id, mcp_tool=tool_name)
 
     try:
         async with session_factory() as session:
             identity = await resolve_mcp_identity(session, raw_token)
             identity_tag = identity.audit_tag
+            structlog.contextvars.bind_contextvars(
+                organization_id=str(identity.organization_id),
+                user_id=str(identity.user_id) if identity.user_id else None,
+            )
             # Milestone 10 RLS backstop: every table `handler` might query
             # from here on is RLS-protected against `organization_id` --
             # this must run before `handler` does anything else on `session`.
@@ -147,6 +162,7 @@ async def run_mcp_tool(
         outcome_error = exc
         raise
     finally:
+        structlog.contextvars.clear_contextvars()
         latency_ms = int((time.monotonic() - start) * 1000)
         try:
             async with session_factory() as log_session:

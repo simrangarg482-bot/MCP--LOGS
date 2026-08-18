@@ -116,6 +116,13 @@ async def get_agent_execution_stats(
             func.sum(_FAILED_CASE).label("failed_count"),
             func.avg(AgentExecution.confidence_score).label("avg_confidence_score"),
             func.avg(_LATENCY_SECONDS_CASE).label("avg_latency_seconds"),
+            # Phase 5.7: `func.sum` over a nullable column already skips NULLs
+            # (not treats them as zero) -- exactly the "not captured" vs
+            # "zero tokens spent" distinction `AgentExecution`'s own column
+            # comments require, carried through to this aggregate for free.
+            func.sum(AgentExecution.prompt_tokens).label("total_prompt_tokens"),
+            func.sum(AgentExecution.completion_tokens).label("total_completion_tokens"),
+            func.sum(AgentExecution.total_tokens).label("total_tokens"),
         )
         .where(AgentExecution.organization_id == organization_id)
         .group_by(AgentExecution.agent_name)
@@ -125,6 +132,34 @@ async def get_agent_execution_stats(
 
     result = await session.execute(stmt)
     return list(result.all())
+
+
+async def get_organization_token_usage_since(
+    session: AsyncSession, organization_id: uuid.UUID, since: datetime
+) -> tuple[int, int]:
+    """Sum `prompt_tokens`/`completion_tokens` across *every* agent for
+    `organization_id` since `since` (Phase 6.6, `app.agents.cost_budget`) --
+    deliberately not grouped by `agent_name` the way `get_agent_execution_stats`
+    is: a cost budget caps the organization's *total* spend across every
+    agent combined, not each agent's spend independently.
+
+    Returns `(0, 0)` for an organization with no captured usage in the
+    window, never `(None, None)` -- unlike the dashboard-facing aggregate
+    above, a budget *check* needs a concrete number to compare against a
+    threshold, and "no usage yet" and "zero usage" both mean the same thing
+    for that comparison (an organization that hasn't spent anything is,
+    correctly, nowhere near its budget).
+    """
+    stmt = select(
+        func.sum(AgentExecution.prompt_tokens),
+        func.sum(AgentExecution.completion_tokens),
+    ).where(
+        AgentExecution.organization_id == organization_id,
+        AgentExecution.started_at >= since,
+    )
+    result = await session.execute(stmt)
+    prompt_tokens, completion_tokens = result.one()
+    return int(prompt_tokens or 0), int(completion_tokens or 0)
 
 
 async def list_agent_executions_for_user(

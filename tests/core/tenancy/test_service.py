@@ -80,12 +80,14 @@ async def test_register_connector_encrypts_credential_before_storing(monkeypatch
 
     # The stored value is a real, working envelope -- round-trips back to
     # the original plaintext via the same KMS `ingestion.service` uses.
-    assert decrypt_secret(get_kms(), stored_credential_ref) == plaintext_credential
+    assert await decrypt_secret(get_kms(), stored_credential_ref) == plaintext_credential
 
-    # The returned read-model reflects whatever was actually persisted
-    # (the encrypted value), not the plaintext the caller submitted --
-    # matches `ConnectorConfig.credential_ref`'s own documented contract.
-    assert result.credential_ref == stored_credential_ref
+    # The response never echoes back the encrypted column value either --
+    # `register_connector` redacts it the same way `core.tenancy.service.
+    # _redact_client_secret` already does for `SSOConfiguration` (a Phase 3
+    # security-audit fix: identical sensitivity, previously inconsistent).
+    assert result.credential_ref == tenancy_service._REDACTED_CREDENTIAL
+    assert result.credential_ref != stored_credential_ref
 
 
 @pytest.mark.asyncio
@@ -620,6 +622,71 @@ class _FakeInsertedSSOConfigurationRow:
 
 
 @pytest.mark.asyncio
+async def test_get_sso_config_requires_tenancy_manage_permission() -> None:
+    organization_id = uuid.uuid4()
+    actor = _member_no_permissions(organization_id)
+
+    with pytest.raises(PermissionDeniedError):
+        await tenancy_service.get_sso_config(None, actor, organization_id)
+
+
+@pytest.mark.asyncio
+async def test_get_sso_config_rejects_a_different_organization() -> None:
+    actor = _admin(uuid.uuid4())
+
+    with pytest.raises(PermissionDeniedError):
+        await tenancy_service.get_sso_config(None, actor, uuid.uuid4())
+
+
+@pytest.mark.asyncio
+async def test_get_sso_config_raises_not_found_when_unconfigured(monkeypatch) -> None:
+    organization_id = uuid.uuid4()
+    actor = _admin(organization_id)
+
+    async def fake_get_sso_configuration_by_organization_id(session, org_id):
+        return None
+
+    monkeypatch.setattr(
+        tenancy_service.repository,
+        "get_sso_configuration_by_organization_id",
+        fake_get_sso_configuration_by_organization_id,
+    )
+
+    with pytest.raises(NotFoundError):
+        await tenancy_service.get_sso_config(None, actor, organization_id)
+
+
+@pytest.mark.asyncio
+async def test_get_sso_config_never_returns_the_real_client_secret_ref_column_value(
+    monkeypatch,
+) -> None:
+    """`sso_configurations.client_secret_ref` holds envelope-encrypted
+    ciphertext (see `configure_sso`), not a human-readable reference -- this
+    must never reach the wire, redacted or not decrypted.
+    """
+    organization_id = uuid.uuid4()
+    actor = _admin(organization_id)
+    sso_row = _FakeSSOConfigurationRow(organization_id)
+
+    async def fake_get_sso_configuration_by_organization_id(session, org_id):
+        assert org_id == organization_id
+        return sso_row
+
+    monkeypatch.setattr(
+        tenancy_service.repository,
+        "get_sso_configuration_by_organization_id",
+        fake_get_sso_configuration_by_organization_id,
+    )
+
+    result = await tenancy_service.get_sso_config(None, actor, organization_id)
+
+    assert result.organization_id == organization_id
+    assert result.provider == "okta"
+    assert result.client_secret_ref == tenancy_service._REDACTED_CLIENT_SECRET
+    assert result.client_secret_ref != sso_row.client_secret_ref
+
+
+@pytest.mark.asyncio
 async def test_configure_sso_encrypts_client_secret_before_storing(monkeypatch) -> None:
     """Regression test for the SSO client-secret KMS bypass: `configure_sso`
     must envelope-encrypt `client_secret_ref` before persisting it, matching
@@ -667,8 +734,12 @@ async def test_configure_sso_encrypts_client_secret_before_storing(monkeypatch) 
     stored_client_secret_ref = captured["client_secret_ref"]
     assert stored_client_secret_ref != plaintext_secret
     assert plaintext_secret not in stored_client_secret_ref
-    assert decrypt_secret(get_kms(), stored_client_secret_ref) == plaintext_secret
-    assert result.client_secret_ref == stored_client_secret_ref
+    assert await decrypt_secret(get_kms(), stored_client_secret_ref) == plaintext_secret
+    # The response never echoes back the encrypted column value either --
+    # `configure_sso` redacts it the same way `get_sso_config` does, so
+    # nothing that ever touched a real (or fake) secret crosses the wire.
+    assert result.client_secret_ref == tenancy_service._REDACTED_CLIENT_SECRET
+    assert result.client_secret_ref != stored_client_secret_ref
 
 
 @pytest.mark.asyncio
@@ -785,3 +856,121 @@ async def test_list_ingestion_runs_succeeds_and_maps_rows(monkeypatch) -> None:
     assert captured["organization_id"] == organization_id
     assert captured["connector_config_id"] == connector_config_id
     assert captured["limit"] == 10
+
+
+def _observability_reader(organization_id: uuid.UUID) -> Identity:
+    return Identity(
+        kind=ActorKind.USER,
+        subject=str(uuid.uuid4()),
+        organization_id=organization_id,
+        user_id=uuid.uuid4(),
+        permissions=frozenset({"observability:read"}),
+    )
+
+
+class _FakeIngestionJobStatsRow:
+    def __init__(self, **kwargs: object) -> None:
+        self.connector_config_id = kwargs["connector_config_id"]
+        self.run_count = kwargs.get("run_count", 0)
+        self.succeeded_count = kwargs.get("succeeded_count", 0)
+        self.failed_count = kwargs.get("failed_count", 0)
+        self.avg_duration_seconds = kwargs.get("avg_duration_seconds")
+        self.total_documents_processed = kwargs.get("total_documents_processed", 0)
+
+
+@pytest.mark.asyncio
+async def test_get_ingestion_job_stats_requires_observability_read_permission() -> None:
+    """Phase 5.6: this is a new aggregate dashboard, not a pre-existing
+    ungated read -- unlike `list_ingestion_runs`'s history, deliberately
+    gated by `observability:read` from the start, matching `agents.service.
+    get_agent_execution_stats`/`core.observability.service.
+    get_mcp_dashboard`'s existing convention for this exact class of data.
+    """
+    organization_id = uuid.uuid4()
+    actor = _member_no_permissions(organization_id)
+
+    with pytest.raises(PermissionDeniedError):
+        await tenancy_service.get_ingestion_job_stats(None, actor)
+
+
+@pytest.mark.asyncio
+async def test_tenancy_manage_alone_does_not_grant_ingestion_stats_access() -> None:
+    """`tenancy:manage` gates connector configuration/history
+    (`list_ingestion_runs`); it must NOT also satisfy this dashboard's
+    distinct `observability:read` requirement -- these are two different
+    questions about the same table, per `_OBSERVABILITY_READ_PERMISSION`'s
+    own comment.
+    """
+    organization_id = uuid.uuid4()
+    actor = _admin(organization_id)  # holds only "tenancy:manage"
+
+    with pytest.raises(PermissionDeniedError):
+        await tenancy_service.get_ingestion_job_stats(None, actor)
+
+
+@pytest.mark.asyncio
+async def test_get_ingestion_job_stats_maps_aggregate_rows(monkeypatch) -> None:
+    organization_id = uuid.uuid4()
+    actor = _observability_reader(organization_id)
+    connector_config_id = uuid.uuid4()
+    row = _FakeIngestionJobStatsRow(
+        connector_config_id=connector_config_id,
+        run_count=12,
+        succeeded_count=10,
+        failed_count=2,
+        avg_duration_seconds=45.5,
+        total_documents_processed=340,
+    )
+    captured: dict[str, object] = {}
+
+    async def fake_get_ingestion_job_stats(session, *, organization_id, since=None):
+        captured["organization_id"] = organization_id
+        captured["since"] = since
+        return [row]
+
+    monkeypatch.setattr(
+        tenancy_service.repository, "get_ingestion_job_stats", fake_get_ingestion_job_stats
+    )
+
+    result = await tenancy_service.get_ingestion_job_stats(None, actor)
+
+    assert len(result) == 1
+    assert result[0].connector_config_id == connector_config_id
+    assert result[0].run_count == 12
+    assert result[0].succeeded_count == 10
+    assert result[0].failed_count == 2
+    assert result[0].avg_duration_seconds == 45.5
+    assert result[0].total_documents_processed == 340
+    assert captured["organization_id"] == organization_id
+
+
+@pytest.mark.asyncio
+async def test_get_ingestion_job_stats_handles_null_aggregates(monkeypatch) -> None:
+    """A connector with zero completed runs yet (all `queued`/`running`)
+    produces `NULL` averages/sums from SQL, not zero -- must map to `None`/
+    `0` correctly rather than crashing on arithmetic against `None`.
+    """
+    organization_id = uuid.uuid4()
+    actor = _observability_reader(organization_id)
+    row = _FakeIngestionJobStatsRow(
+        connector_config_id=uuid.uuid4(),
+        run_count=1,
+        succeeded_count=None,
+        failed_count=None,
+        avg_duration_seconds=None,
+        total_documents_processed=None,
+    )
+
+    async def fake_get_ingestion_job_stats(session, *, organization_id, since=None):
+        return [row]
+
+    monkeypatch.setattr(
+        tenancy_service.repository, "get_ingestion_job_stats", fake_get_ingestion_job_stats
+    )
+
+    result = await tenancy_service.get_ingestion_job_stats(None, actor)
+
+    assert result[0].succeeded_count == 0
+    assert result[0].failed_count == 0
+    assert result[0].avg_duration_seconds is None
+    assert result[0].total_documents_processed == 0

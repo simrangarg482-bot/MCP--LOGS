@@ -11,7 +11,9 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { Drawer } from "@/components/ui/Drawer";
 import { StatusBadge } from "@/components/data/StatusBadge";
 import {
+  createConfluenceConnector,
   createGithubConnector,
+  createJiraConnector,
   createSlackConnector,
   listConnectors,
   triggerConnectorSync,
@@ -77,6 +79,30 @@ export function ConnectorsPage() {
     },
   });
 
+  const jiraMutation = useMutation({
+    mutationFn: ({ token, baseUrl, projects }: { token: string; baseUrl: string; projects: string[] }) =>
+      createJiraConnector({ token, baseUrl, projects }),
+    onSuccess: () => {
+      toast({ variant: "success", title: "Jira connector added" });
+      queryClient.invalidateQueries({ queryKey: ["connectors"] });
+    },
+    onError: () => {
+      toast({ variant: "error", title: "Failed to add Jira connector" });
+    },
+  });
+
+  const confluenceMutation = useMutation({
+    mutationFn: ({ token, baseUrl, spaces }: { token: string; baseUrl: string; spaces: string[] }) =>
+      createConfluenceConnector({ token, baseUrl, spaces }),
+    onSuccess: () => {
+      toast({ variant: "success", title: "Confluence connector added" });
+      queryClient.invalidateQueries({ queryKey: ["connectors"] });
+    },
+    onError: () => {
+      toast({ variant: "error", title: "Failed to add Confluence connector" });
+    },
+  });
+
   return (
     <div className="flex flex-col gap-5">
       <PageHeader
@@ -102,7 +128,7 @@ export function ConnectorsPage() {
         <EmptyState
           icon={Plug}
           title="No connectors configured"
-          description="Connect GitHub or Slack to start ingesting data EKIP can answer questions about."
+          description="Connect GitHub, Slack, Jira, or Confluence to start ingesting data EKIP can answer questions about."
           action={
             canManage ? (
               <Button variant="primary" className="gap-1.5" onClick={() => setIsConnectOpen(true)}>
@@ -132,12 +158,23 @@ export function ConnectorsPage() {
       <ConnectConnectorModal
         open={isConnectOpen}
         onClose={() => setIsConnectOpen(false)}
-        isSubmitting={githubMutation.isPending || slackMutation.isPending}
+        isSubmitting={
+          githubMutation.isPending ||
+          slackMutation.isPending ||
+          jiraMutation.isPending ||
+          confluenceMutation.isPending
+        }
         onSubmitGithub={async (token, repos) => {
           await githubMutation.mutateAsync({ token, repos });
         }}
         onSubmitSlack={async (token, channelIds) => {
           await slackMutation.mutateAsync({ token, channelIds });
+        }}
+        onSubmitJira={async (token, baseUrl, projects) => {
+          await jiraMutation.mutateAsync({ token, baseUrl, projects });
+        }}
+        onSubmitConfluence={async (token, baseUrl, spaces) => {
+          await confluenceMutation.mutateAsync({ token, baseUrl, spaces });
         }}
       />
 

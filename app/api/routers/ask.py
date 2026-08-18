@@ -15,16 +15,29 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from app.agents import service as agents_service
 from app.agents.schemas import AgentExecution
 from app.api.deps import CurrentIdentity, DbSession
+from app.api.rate_limit import rate_limit_by_user
 from app.retrieval.schemas import CollectionName, ScoredChunk
 from app.shared.schemas import AskResponse
 
 router = APIRouter(tags=["ask"])
+
+# Phase 6.5: per-user, not per-org or per-IP -- each real human asking
+# questions should get their own budget, matching how these endpoints'
+# actual cost (an LLM call per request) scales with individual usage, not
+# with how many other users share an organization. `/ask`'s limit is looser
+# than `/investigate`'s: a full investigation runs the heavier Investigation
+# Agent graph (broader evidence gathering, more LLM calls per request), so
+# a caller can reasonably ask more plain questions per minute than trigger
+# full investigations.
+_ASK_RATE_LIMIT = rate_limit_by_user(scope="ask.question", requests_per_minute=20)
+_INVESTIGATE_RATE_LIMIT = rate_limit_by_user(scope="ask.investigate", requests_per_minute=10)
+_SEARCH_RATE_LIMIT = rate_limit_by_user(scope="ask.search", requests_per_minute=30)
 
 
 class AskRequest(BaseModel):
@@ -32,7 +45,7 @@ class AskRequest(BaseModel):
     incident_id: uuid.UUID | None = None
 
 
-@router.post("/ask", response_model=AskResponse)
+@router.post("/ask", response_model=AskResponse, dependencies=[Depends(_ASK_RATE_LIMIT)])
 async def ask_question(data: AskRequest, actor: CurrentIdentity, session: DbSession) -> AskResponse:
     return await agents_service.answer_question(session, data.query, data.incident_id, actor)
 
@@ -48,7 +61,11 @@ async def get_ask_history(
     return await agents_service.get_question_history(session, actor, limit=limit, offset=offset)
 
 
-@router.post("/incidents/{incident_id}/investigate", response_model=AskResponse)
+@router.post(
+    "/incidents/{incident_id}/investigate",
+    response_model=AskResponse,
+    dependencies=[Depends(_INVESTIGATE_RATE_LIMIT)],
+)
 async def investigate_incident(
     incident_id: uuid.UUID, actor: CurrentIdentity, session: DbSession
 ) -> AskResponse:
@@ -67,7 +84,11 @@ class SimilarIncidentsRequest(BaseModel):
     top_k: int = 10
 
 
-@router.post("/search/similar-incidents", response_model=list[ScoredChunk])
+@router.post(
+    "/search/similar-incidents",
+    response_model=list[ScoredChunk],
+    dependencies=[Depends(_SEARCH_RATE_LIMIT)],
+)
 async def search_similar_incidents(
     data: SimilarIncidentsRequest, actor: CurrentIdentity, session: DbSession
 ) -> list[ScoredChunk]:
@@ -87,7 +108,11 @@ class RecentChangesRequest(BaseModel):
     collection: CollectionName = "code"
 
 
-@router.post("/search/recent-changes", response_model=list[ScoredChunk])
+@router.post(
+    "/search/recent-changes",
+    response_model=list[ScoredChunk],
+    dependencies=[Depends(_SEARCH_RATE_LIMIT)],
+)
 async def search_recent_changes(
     data: RecentChangesRequest, actor: CurrentIdentity, session: DbSession
 ) -> list[ScoredChunk]:

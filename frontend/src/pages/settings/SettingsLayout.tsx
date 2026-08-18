@@ -12,6 +12,9 @@ const SETTINGS_TABS = [
   // hide this tab for anyone lacking it, matching the real /connectors
   // nav item's gate (see routes/nav.ts).
   { label: "Connectors", path: "/settings/connectors", permission: "tenancy:manage" },
+  // `core.tenancy.service.list_access_rules`/`create_access_rule`/
+  // `deactivate_access_rule` all gate on `tenancy:manage` too.
+  { label: "Access Rules", path: "/settings/access-rules", permission: "tenancy:manage" },
 ];
 
 export function SettingsLayout() {

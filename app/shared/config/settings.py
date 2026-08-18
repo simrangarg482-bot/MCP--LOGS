@@ -53,6 +53,18 @@ class Settings(BaseSettings):
     environment: Literal["development", "test", "production"] = "development"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
+    # --- Tracing (Phase 5.3, app.shared.config.tracing) --------------------
+    otel_exporter_otlp_endpoint: str | None = Field(
+        default=None,
+        description=(
+            "OTLP collector endpoint (e.g. 'http://localhost:4317') spans "
+            "are exported to. No real collector is deployed for this "
+            "project yet -- leave unset (the default) to still create spans "
+            "locally (console-printed in development, silently dropped "
+            "otherwise) without needing one."
+        ),
+    )
+
     # --- Database (DATABASE_DESIGN.md) ------------------------------------
     database_url: PostgresDsn = Field(
         description="Neon Postgres connection string, asyncpg driver."
@@ -114,6 +126,24 @@ class Settings(BaseSettings):
         default=0.6,
         ge=0.0,
         le=1.0,
+    )
+
+    # --- AI cost budget enforcement (Phase 6.6, app.agents.cost_budget) ----
+    max_organization_cost_usd_per_day: float | None = Field(
+        default=None,
+        gt=0.0,
+        description=(
+            "If set, the maximum estimated LLM spend (app.agents.telemetry."
+            "get_estimated_cost_usd's pricing table, not real OpenAI billing "
+            "data) one organization may accumulate across a rolling 24-hour "
+            "window before answer_question/triage_incident/generate_postmortem/"
+            "detect_knowledge_gaps refuse to make a further LLM call for that "
+            "organization (CostBudgetExceededError, 429). Left unset (the "
+            "default) means no enforcement -- this codebase does not invent "
+            "a 'reasonable' default dollar cap for a deployment it knows "
+            "nothing about; an operator who wants this protection sets an "
+            "explicit value for their own actual usage/budget expectations."
+        ),
     )
 
     # --- Auth (API_DESIGN.md section 1) -------------------------------------
@@ -244,7 +274,7 @@ class Settings(BaseSettings):
     )
 
     # --- Ingestion rate limiting (PROJECT_PLAN.md sections 4.5/10,
-    # app/ingestion/rate_limiter.py) ------------------------------------------
+    # app/shared/rate_limiter.py) ------------------------------------------
     ingestion_org_max_requests_per_second: float = Field(
         default=5.0,
         gt=0.0,
@@ -254,25 +284,98 @@ class Settings(BaseSettings):
             "tenant' half of section 4.5's 'per connector, per tenant' "
             "rate-limiting requirement. Independent of (and in addition to) "
             "each individual connector's own declared `requests_per_second` "
-            "ceiling; see `app.ingestion.rate_limiter`'s module docstring."
+            "ceiling; see `app.shared.rate_limiter`'s module docstring."
         ),
     )
 
-    # --- Secret management (PROJECT_PLAN.md section 12.5, Milestone 10) -----
-    connector_secret_master_key: str = Field(
+    # --- Secret management (PROJECT_PLAN.md section 12.5, Milestone 10;
+    # Azure Key Vault provider added Phase 3) --------------------------------
+    kms_provider: Literal["local", "azure"] = Field(
+        default="local",
+        description=(
+            "Which app.shared.security.kms.KeyManagementService implementation "
+            "get_kms() constructs. 'local' (the default) is development/test "
+            "only -- see LocalKeyManagementService's docstring for exactly what "
+            "security property it lacks versus a real KMS. 'azure' uses Azure "
+            "Key Vault (AzureKeyVaultKeyManagementService) and requires "
+            "azure_key_vault_url/azure_key_vault_key_name to also be set. "
+            "Refused outright when environment=production and this is still "
+            "'local' -- see _reject_local_kms_in_production below."
+        ),
+    )
+    azure_key_vault_url: str | None = Field(
+        default=None,
+        description=(
+            "e.g. 'https://ekip-prod.vault.azure.net' -- required when "
+            "kms_provider=azure. Not a secret itself (it's a vault's public "
+            "DNS name), so it's fine as a plain env var/App Service setting, "
+            "unlike anything that would actually authenticate against it."
+        ),
+    )
+    azure_key_vault_key_name: str | None = Field(
+        default=None,
+        description=(
+            "Name of the RSA key inside the vault used to wrap/unwrap every "
+            "connector-credential and SSO-client-secret DEK -- required when "
+            "kms_provider=azure. Not the key material itself, just which named "
+            "key to ask Key Vault to use; rotating it to a new *version* (same "
+            "name) needs no config change at all, see kms.py's module docstring."
+        ),
+    )
+    connector_secret_master_key: str | None = Field(
+        default=None,
         description=(
             "Hex-encoded 32-byte AES key -- the key-encryption-key (KEK) "
             "`app.shared.security.kms.LocalKeyManagementService` uses to wrap "
-            "each per-secret data-encryption-key (DEK). This is a platform "
-            "secret (like `jwt_secret_key` above), injected from the "
-            "environment/secrets-manager, never committed -- it is NOT a "
-            "per-tenant connector credential itself. `LocalKeyManagementService` "
-            "is explicitly a pre-production stand-in for a real cloud KMS "
-            "(AWS KMS / GCP Cloud KMS / Azure Key Vault); see that class's "
-            "own docstring for exactly what swapping to one would change "
-            "(the `KeyManagementService` protocol, not any caller)."
+            "each per-secret data-encryption-key (DEK). Required only when "
+            "kms_provider=local (the default); ignored/unnecessary entirely "
+            "when kms_provider=azure. This is a platform secret (like "
+            "jwt_secret_key above), injected from the environment, never "
+            "committed -- it is NOT a per-tenant connector credential itself."
         ),
     )
+
+    @model_validator(mode="after")
+    def _require_provider_specific_kms_settings(self) -> "Settings":
+        """Each `kms_provider` value needs its own, different settings
+        populated -- checked here, once, rather than letting a misconfigured
+        deployment discover the gap the first time `get_kms()` (or an Azure
+        SDK call inside it) fails at request time.
+        """
+        if self.kms_provider == "azure":
+            missing = [
+                name
+                for name, value in (
+                    ("azure_key_vault_url", self.azure_key_vault_url),
+                    ("azure_key_vault_key_name", self.azure_key_vault_key_name),
+                )
+                if not value
+            ]
+            if missing:
+                raise ValueError(
+                    f"kms_provider=azure requires {', '.join(missing)} to also be set."
+                )
+        elif not self.connector_secret_master_key:
+            raise ValueError(
+                "kms_provider=local requires connector_secret_master_key to be set."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _reject_local_kms_in_production(self) -> "Settings":
+        """PROJECT_PLAN.md's explicit requirement: production must never
+        silently run with the development/test-only local KMS stand-in.
+        Failing here, at settings-construction time (i.e. at process
+        startup), means a misconfigured production deployment never even
+        finishes booting -- not a runtime surprise the first time a
+        connector is registered.
+        """
+        if self.environment == "production" and self.kms_provider == "local":
+            raise ValueError(
+                "kms_provider=local is not permitted when environment=production. "
+                "Set KMS_PROVIDER=azure and its required azure_key_vault_* settings."
+            )
+        return self
 
     @field_validator("cors_allowed_origins", mode="before")
     @classmethod
@@ -284,6 +387,29 @@ class Settings(BaseSettings):
         """
         if isinstance(value, str):
             return [origin.strip() for origin in value.split(",") if origin.strip()]
+        return value
+
+    @field_validator("cors_allowed_origins", mode="after")
+    @classmethod
+    def _reject_wildcard_origin(cls, value: list[str]) -> list[str]:
+        """`app.api.main.create_app` hardcodes `allow_credentials=True` on
+        `CORSMiddleware` -- Starlette's actual behavior for
+        `allow_origins=["*"]` combined with `allow_credentials=True` is to
+        echo the request's real `Origin` header back verbatim (browsers
+        forbid a literal `*` `Access-Control-Allow-Origin` alongside
+        credentials, so Starlette works around that by reflecting whatever
+        origin asked), which defeats the allowlist entirely -- any site can
+        then make a credentialed, cookie/token-bearing request. Failing fast
+        at settings-load time is safer than only catching this in a security
+        review of the deployed config.
+        """
+        if "*" in value:
+            raise ValueError(
+                "cors_allowed_origins must not contain '*' -- combined with "
+                "this app's allow_credentials=True, a wildcard origin lets "
+                "Starlette reflect any requesting origin back as allowed, "
+                "which defeats the allowlist. List explicit origins instead."
+            )
         return value
 
     _DEFAULT_LOCAL_PUBLIC_BASE_URL: ClassVar[str] = "http://localhost:8001"

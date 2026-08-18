@@ -1,0 +1,13 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "namePrefix": { "value": "ekip-dev" },
+    "location": { "value": "eastus" },
+    "postgresAdminLogin": { "value": "ekip_admin" },
+    "backendImage": { "value": "REPLACE_ME.azurecr.io/ekip-backend:latest" },
+    "frontendImage": { "value": "REPLACE_ME.azurecr.io/ekip-frontend:latest" },
+    "environmentTag": { "value": "dev" },
+    "postgresPublicNetworkAccessEnabled": { "value": true }
+  }
+}

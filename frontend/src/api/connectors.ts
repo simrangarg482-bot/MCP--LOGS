@@ -1,6 +1,12 @@
 import { apiRequest, mockDelay } from "./client";
 import { USE_MOCK_DATA } from "./config";
-import type { Connector, CreateGithubConnectorInput, CreateSlackConnectorInput } from "@/types/connector";
+import type {
+  Connector,
+  CreateConfluenceConnectorInput,
+  CreateGithubConnectorInput,
+  CreateJiraConnectorInput,
+  CreateSlackConnectorInput,
+} from "@/types/connector";
 import { mockConnectors } from "@/mocks/data/connectors";
 
 export async function listConnectors(): Promise<Connector[]> {
@@ -52,6 +58,52 @@ export async function createSlackConnector(input: CreateSlackConnectorInput): Pr
       source: "slack",
       credentialRef: input.token,
       config: { channels: input.channelIds },
+    },
+  });
+}
+
+export async function createJiraConnector(input: CreateJiraConnectorInput): Promise<Connector> {
+  if (USE_MOCK_DATA) {
+    return mockDelay(
+      {
+        ...mockConnectors[0],
+        id: `conn-jira-${Date.now()}`,
+        source: "jira",
+        status: "connecting",
+        config: { baseUrl: input.baseUrl, projects: input.projects },
+      },
+      400,
+    );
+  }
+  return apiRequest<Connector>(`/tenancy/connectors`, {
+    method: "POST",
+    body: {
+      source: "jira",
+      credentialRef: input.token,
+      config: { baseUrl: input.baseUrl, projects: input.projects },
+    },
+  });
+}
+
+export async function createConfluenceConnector(input: CreateConfluenceConnectorInput): Promise<Connector> {
+  if (USE_MOCK_DATA) {
+    return mockDelay(
+      {
+        ...mockConnectors[0],
+        id: `conn-confluence-${Date.now()}`,
+        source: "confluence",
+        status: "connecting",
+        config: { baseUrl: input.baseUrl, spaces: input.spaces },
+      },
+      400,
+    );
+  }
+  return apiRequest<Connector>(`/tenancy/connectors`, {
+    method: "POST",
+    body: {
+      source: "confluence",
+      credentialRef: input.token,
+      config: { baseUrl: input.baseUrl, spaces: input.spaces },
     },
   });
 }

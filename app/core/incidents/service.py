@@ -45,6 +45,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit.service import record_audit_event
 from app.core.exceptions import ConflictError, NotFoundError, PermissionDeniedError, ValidationError
 from app.core.incidents import repository
+from app.core.incidents.reads import (
+    list_postmortems_for_ingestion as list_postmortems_for_ingestion,
+)
 from app.core.incidents.schemas import (
     ActionItem,
     Incident,
@@ -63,6 +66,7 @@ from app.shared.schemas import Identity, InvestigationResult
 
 logger = get_logger(__name__)
 
+_INCIDENT_READ_PERMISSION = "incident:read"
 _INCIDENT_WRITE_PERMISSION = "incident:write"
 _POSTMORTEM_WRITE_PERMISSION = "postmortem:write"
 _POSTMORTEM_APPROVE_PERMISSION = "postmortem:approve"
@@ -183,9 +187,20 @@ async def get_incident(
 ) -> Incident:
     """Fetch one incident. Raises NotFoundError if it doesn't exist (or
     belongs to a different organization).
+
+    Gated by `incident:read` (project-scoped, org-level fallback) -- until
+    this fix, any organization member could read any incident's full detail
+    regardless of role (2026-08 audit "H4"; see
+    `EKIP_TENANT_ISOLATION_SECURITY_REVIEW.md` recommendation #3). The
+    permission-existence check happens after `_get_owned_incident` (same
+    order `update_incident` already uses), so a cross-organization/
+    nonexistent incident id still 404s before any permission is evaluated --
+    never leaking "this id exists, you just can't read it" to a caller who
+    can't see the row at all.
     """
     _ensure_same_organization(actor, organization_id)
     row = await _get_owned_incident(session, organization_id, incident_id)
+    require_project_permission(actor, row.project_id, _INCIDENT_READ_PERMISSION)
     return Incident.model_validate(row)
 
 
@@ -194,8 +209,14 @@ async def list_incidents(
 ) -> list[Incident]:
     """Return incidents belonging to `organization_id`, filtered/paginated
     per `query` (API_DESIGN.md: `GET /incidents`).
+
+    Gated by an org-level `incident:read` check (no `project_id` --
+    `IncidentFilter` has no project scoping, so this always spans every
+    project in the organization; see `get_incident`'s docstring for the
+    vulnerability this closes).
     """
     _ensure_same_organization(actor, organization_id)
+    require_permission(actor, _INCIDENT_READ_PERMISSION)
     rows = await repository.list_incidents(session, organization_id, query)
     return [Incident.model_validate(row) for row in rows]
 
@@ -290,9 +311,16 @@ async def add_timeline_note(
 async def get_timeline(
     session: AsyncSession, actor: Identity, organization_id: uuid.UUID, incident_id: uuid.UUID
 ) -> list[TimelineEntry]:
-    """Return an incident's timeline, in chronological order."""
+    """Return an incident's timeline, in chronological order.
+
+    Gated by the same `incident:read` check as `get_incident` -- a
+    timeline entry can include investigation evidence and root-cause detail,
+    so it must not be readable by anyone who couldn't read the incident
+    itself.
+    """
     _ensure_same_organization(actor, organization_id)
-    await _get_owned_incident(session, organization_id, incident_id)
+    incident = await _get_owned_incident(session, organization_id, incident_id)
+    require_project_permission(actor, incident.project_id, _INCIDENT_READ_PERMISSION)
 
     rows = await repository.list_timeline_entries(session, incident_id)
     return [TimelineEntry.model_validate(row) for row in rows]
@@ -603,40 +631,10 @@ async def list_recent_postmortems(
     return [Postmortem.model_validate(row) for row in rows]
 
 
-async def list_postmortems_for_ingestion(
-    session: AsyncSession,
-    organization_id: uuid.UUID,
-    *,
-    since: datetime | None,
-    offset: int,
-    limit: int,
-) -> list[Postmortem]:
-    """Return approved/published postmortems for `organization_id`,
-    oldest-first, offset-paginated -- backs the Milestone 9 runbooks/
-    incident-report ingestion connector (`app.ingestion.connectors.runbooks`),
-    the source `agents.investigation.evidence`'s own docstring already flags
-    as missing ("no 'postmortems' retrieval collection exists yet").
-
-    Deliberately no `actor: Identity` parameter -- a rare, explicit exception
-    to this module's "every function takes an actor" rule, in the same
-    spirit as `core.tenancy.service.list_organizations`/`get_organization_
-    sso_config`: the caller is `ingestion`'s worker, a scheduled system job
-    with no per-request human identity (see `ingestion.service`'s own module
-    docstring: it already constructs `Identity.for_agent("ingestion_worker",
-    organization_id)` purely for audit-tagging, not for permission checks --
-    there is no permission check to gate here either, matching
-    `list_recent_postmortems`'s "read-only lookup, no require_permission
-    gate" precedent immediately above).
-    """
-    rows = await repository.list_postmortems_for_ingestion(
-        session,
-        organization_id,
-        statuses=("approved", "published"),
-        since=since,
-        offset=offset,
-        limit=limit,
-    )
-    return [Postmortem.model_validate(row) for row in rows]
+# `list_postmortems_for_ingestion` used to be defined here; it now lives in
+# `core.incidents.reads` (imported and re-exported at the top of this file)
+# so `ingestion.connectors.runbooks` can depend on a module that never
+# imports `agents` -- see that module's docstring for the full reasoning.
 
 
 async def update_postmortem(

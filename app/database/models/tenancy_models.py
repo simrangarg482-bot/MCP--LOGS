@@ -289,12 +289,28 @@ class OrganizationAccessRule(Base):
 class Invitation(Base):
     """A time-boxed, per-person invitation to join an organization.
 
-    Status lifecycle: `pending` -> `accepted` (consumed at the invitee's
-    successful first SSO login matching `email`) | `expired` (past
-    `expires_at`, never accepted) | `revoked` (an admin cancelled it before
-    acceptance or expiry). Unlike `OrganizationAccessRule`, this grants access
-    to exactly one email, once -- `grants_role_id` mirrors that table's
-    "which role does a match receive" field.
+    Status lifecycle: `pending` -> `accepted` (consumed either at the
+    invitee's successful first SSO login matching `email`, or -- Phase 7.5 --
+    via `POST /invitations/{id}/accept` with a matching `token_hash` for a
+    password-auth organization) | `expired` (past `expires_at`, never
+    accepted) | `revoked` (an admin cancelled it before acceptance or
+    expiry). Unlike `OrganizationAccessRule`, this grants access to exactly
+    one email, once -- `grants_role_id` mirrors that table's "which role
+    does a match receive" field.
+
+    `token_hash` (Phase 7.5/7.6): `NULL` for every invitation created before
+    this column existed, and for the SSO-auto-provisioned acceptance path,
+    which proves identity via the IdP's own signed `id_token` instead and
+    never needs a separate token. Populated only by `create_invitation` for
+    the password-acceptance flow -- a SHA-256 hash of a random token shown
+    to the caller exactly once (`app.shared.security.generate_opaque_token`/
+    `hash_opaque_token`), never the raw value itself (section 12.1's "never
+    stored in plaintext" discipline, the same one `refresh_tokens.token_hash`
+    already follows). Before this column existed, the invitation's own
+    database `id` was the only "token" -- a UUID4 primary key anyone who
+    learned it (a leaked log line, another org member, an admin API
+    response) could use to consume the invitation with no proof of email
+    ownership at all.
 
     `invited_by` uses RESTRICT, not this file's usual CASCADE for
     organization-scoped rows: an invitation is itself a small audit record of
@@ -327,6 +343,7 @@ class Invitation(Base):
     )
     email: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="pending")
+    token_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
     grants_role_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("roles.id", ondelete="RESTRICT"), nullable=False
     )

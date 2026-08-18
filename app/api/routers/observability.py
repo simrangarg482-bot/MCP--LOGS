@@ -1,15 +1,19 @@
 """Observability dashboard router -- Milestone 10's "agent_executions/
 mcp_requests dashboards, latency metrics" requirement (PROJECT_PLAN.md
 section 10), the first REST-facing surface either of those tables has ever
-had.
+had. `/observability/ingestion` (Phase 5.6) fills the equivalent gap for
+`ingestion_jobs`, which had no aggregate dashboard at all before this.
 
-Owned by: app/api. Both handlers are thin pass-throughs, same as every
+Owned by: app/api. All three handlers are thin pass-throughs, same as every
 other router here -- `/observability/agents` into `agents.service.
 get_agent_execution_stats`, `/observability/mcp` into `core.observability.
-service.get_mcp_dashboard`. `since` is an optional query parameter on both,
-passed straight through as a `datetime` (FastAPI/Pydantic parses an ISO 8601
-query string automatically); omitting it means "all time," matching each
-service function's own `since: datetime | None = None` default.
+service.get_mcp_dashboard`, `/observability/ingestion` into `core.tenancy.
+service.get_ingestion_job_stats` (not `app.ingestion` -- `app.api` is
+import-linter-forbidden from depending on it; see that function's own
+docstring). `since` is an optional query parameter on all three, passed
+straight through as a `datetime` (FastAPI/Pydantic parses an ISO 8601 query
+string automatically); omitting it means "all time," matching each service
+function's own `since: datetime | None = None` default.
 
 `/observability/mcp` deliberately takes no `organization_id`-shaped
 path/query parameter at all, unlike every other router in this package --
@@ -29,6 +33,8 @@ from app.agents.schemas import AgentExecutionStats
 from app.api.deps import CurrentIdentity, DbSession
 from app.core.observability import service as observability_service
 from app.core.observability.schemas import McpToolStats
+from app.core.tenancy import service as tenancy_service
+from app.core.tenancy.schemas import IngestionJobStats
 
 router = APIRouter(prefix="/observability", tags=["observability"])
 
@@ -49,3 +55,12 @@ async def get_mcp_dashboard(
     since: datetime | None = None,
 ) -> list[McpToolStats]:
     return await observability_service.get_mcp_dashboard(session, actor, since=since)
+
+
+@router.get("/ingestion", response_model=list[IngestionJobStats])
+async def get_ingestion_job_stats(
+    actor: CurrentIdentity,
+    session: DbSession,
+    since: datetime | None = None,
+) -> list[IngestionJobStats]:
+    return await tenancy_service.get_ingestion_job_stats(session, actor, since=since)

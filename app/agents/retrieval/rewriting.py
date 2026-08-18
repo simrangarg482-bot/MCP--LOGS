@@ -20,8 +20,10 @@ from __future__ import annotations
 import uuid
 
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.prompt_safety import build_messages
 from app.agents.retry import call_with_retry
 from app.core.incidents import service as incidents_service
 from app.shared.config.logging import get_logger
@@ -88,12 +90,12 @@ async def rewrite_query(
     if incident_id is None and not _looks_vague(query):
         return query
 
-    prompt = _build_prompt(query, incident_description)
+    messages = _build_prompt(query, incident_description)
 
     try:
         response = await call_with_retry(
             "retrieval_agent.rewrite_query",
-            lambda: llm.ainvoke(prompt),
+            lambda: llm.ainvoke(messages),
             retry_count=retry_count,
         )
     except Exception as exc:
@@ -104,20 +106,30 @@ async def rewrite_query(
     return rewritten_text or query
 
 
-def _build_prompt(query: str, incident_description: str | None) -> str:
+def _build_prompt(query: str, incident_description: str | None) -> list[BaseMessage]:
     if incident_description is not None:
-        return (
-            "Rewrite the following question into a self-contained, specific "
-            "search query. Expand any abbreviations. Resolve vague "
-            "references (e.g. 'this error', 'that issue') using the incident "
-            "context below. Return only the rewritten query, no "
-            "explanation.\n\n"
-            f"Incident context: {incident_description}\n\n"
-            f"Question: {query}"
+        # `incident_description` is human-authored, org-internal text but not
+        # EKIP-authored -- fenced as evidence via `build_messages` the same
+        # as every other agents/ prompt that mixes fixed instructions with
+        # content the caller doesn't control.
+        return build_messages(
+            system_instructions=(
+                "Rewrite the following question into a self-contained, specific "
+                "search query. Expand any abbreviations. Resolve vague "
+                "references (e.g. 'this error', 'that issue') using the incident "
+                "context below. Return only the rewritten query, no "
+                "explanation."
+            ),
+            evidence_block=f"Incident context: {incident_description}",
+            task=f"Question: {query}",
         )
-    return (
-        "Rewrite the following question into a self-contained, specific "
-        "search query. Expand any abbreviations. Return only the rewritten "
-        "query, no explanation.\n\n"
-        f"Question: {query}"
-    )
+    return [
+        SystemMessage(
+            content=(
+                "Rewrite the following question into a self-contained, specific "
+                "search query. Expand any abbreviations. Return only the rewritten "
+                "query, no explanation."
+            )
+        ),
+        HumanMessage(content=f"Question: {query}"),
+    ]

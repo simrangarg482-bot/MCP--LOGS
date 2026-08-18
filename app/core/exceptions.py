@@ -89,3 +89,46 @@ class ConflictError(EKIPError):
 
     status_hint = 409
     default_error_code = "conflict"
+
+
+class ServiceUnavailableError(EKIPError):
+    """A dependency this specific request needs (e.g. the Redis-backed arq
+    queue) is temporarily unreachable -- distinct from `EKIPError`'s base
+    500 because a caller/monitoring system should treat this as "retry
+    later", not "this request is broken." See `app.api.main._lifespan`'s
+    docstring for the concrete case this exists for.
+    """
+
+    status_hint = 503
+    default_error_code = "service_unavailable"
+
+
+class RateLimitedError(EKIPError):
+    """The caller (by IP, user, or organization -- see `app.api.rate_limit`)
+    exceeded a request-rate budget for this endpoint (Phase 6.5).
+
+    Distinct from `PermissionDeniedError` (403): this isn't "you may never
+    do this," it's "not right now" -- a caller should treat this as
+    retryable after backing off, the same "retry later" framing
+    `ServiceUnavailableError` already establishes for a different cause.
+    """
+
+    status_hint = 429
+    default_error_code = "rate_limited"
+
+
+class CostBudgetExceededError(EKIPError):
+    """The calling organization has exceeded its configured AI usage/cost
+    budget for the current window (Phase 6.6) -- see
+    `app.agents.cost_budget`.
+
+    A distinct 429 from `RateLimitedError`, not a reuse of it: this is a
+    spend ceiling (an organization-level setting, checked against real
+    accumulated token usage), not a request-frequency ceiling -- the two
+    can be hit independently and a caller needs to tell them apart (backing
+    off briefly fixes a rate limit; it does nothing for an exhausted daily
+    budget, which only resets on `app.agents.cost_budget`'s own window).
+    """
+
+    status_hint = 429
+    default_error_code = "cost_budget_exceeded"

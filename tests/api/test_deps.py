@@ -12,8 +12,8 @@ import uuid
 import pytest
 
 from app.api import deps as deps_module
-from app.api.deps import _extract_bearer_token, get_current_identity
-from app.core.exceptions import PermissionDeniedError
+from app.api.deps import _extract_bearer_token, get_arq_pool, get_current_identity
+from app.core.exceptions import PermissionDeniedError, ServiceUnavailableError
 from app.shared.schemas import ActorKind, Identity
 
 
@@ -89,3 +89,41 @@ async def test_get_current_identity_sets_tenant_context_after_resolving_identity
 
     assert result is identity
     assert tenant_context_calls == [(session, organization_id)]
+
+
+class _FakeAppState:
+    def __init__(self, arq_pool: object | None) -> None:
+        self.arq_pool = arq_pool
+
+
+class _FakeApp:
+    def __init__(self, arq_pool: object | None) -> None:
+        self.state = _FakeAppState(arq_pool)
+
+
+class _FakeRequest:
+    def __init__(self, arq_pool: object | None) -> None:
+        self.app = _FakeApp(arq_pool)
+
+
+def test_get_arq_pool_raises_service_unavailable_when_redis_was_unreachable_at_startup() -> None:
+    """`app.api.main._lifespan` leaves `arq_pool` `None` (rather than
+    failing the whole app's startup) when Redis was unreachable when the
+    process started -- this is where that degraded state must surface, as a
+    clean 503, not an `AttributeError`/`None` leaking to whichever endpoint
+    happened to need it.
+    """
+    request = _FakeRequest(arq_pool=None)
+
+    with pytest.raises(ServiceUnavailableError) as exc_info:
+        get_arq_pool(request)  # type: ignore[arg-type]
+
+    assert exc_info.value.status_hint == 503
+    assert exc_info.value.error_code == "service.queue_unavailable"
+
+
+def test_get_arq_pool_returns_the_real_pool_when_available() -> None:
+    sentinel_pool = object()
+    request = _FakeRequest(arq_pool=sentinel_pool)
+
+    assert get_arq_pool(request) is sentinel_pool  # type: ignore[arg-type]

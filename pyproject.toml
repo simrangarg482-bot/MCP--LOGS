@@ -42,6 +42,14 @@ dependencies = [
     # MCP
     "mcp>=1.0",
 
+    # Production KMS (Phase 3 -- app/shared/security/kms.py's Azure Key
+    # Vault provider). Only imported by that one module, lazily, when
+    # KMS_PROVIDER=azure is actually selected -- a local/test deployment
+    # never touches these, but they're a normal (non-optional) dependency so
+    # a real production deployment can never be missing them.
+    "azure-identity>=1.17",
+    "azure-keyvault-keys>=4.9",
+
     # Observability
     "opentelemetry-sdk>=1.27",
     "opentelemetry-instrumentation-fastapi>=0.48b0",

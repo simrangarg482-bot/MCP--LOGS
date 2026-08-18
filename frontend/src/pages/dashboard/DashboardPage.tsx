@@ -20,6 +20,8 @@ import { DataTable, type DataTableColumn } from "@/components/data/DataTable";
 import { SeverityBadge } from "@/components/data/SeverityBadge";
 import { StatusBadge } from "@/components/data/StatusBadge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
+import { LoadingState } from "@/components/ui/LoadingState";
+import { ErrorState } from "@/components/ui/ErrorState";
 import { listIncidents } from "@/api/incidents";
 import { listConnectors } from "@/api/connectors";
 import { listAgentStats } from "@/api/agents";
@@ -135,7 +137,11 @@ export function DashboardPage() {
             <CardTitle>Severity distribution</CardTitle>
           </CardHeader>
           <CardContent className="h-64">
-            {severityBreakdown.length > 0 ? (
+            {breakdownIncidentsQuery.isLoading ? (
+              <LoadingState label="Loading incidents…" />
+            ) : breakdownIncidentsQuery.isError ? (
+              <ErrorState onRetry={() => breakdownIncidentsQuery.refetch()} />
+            ) : severityBreakdown.length > 0 ? (
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
                   <Pie
@@ -166,7 +172,11 @@ export function DashboardPage() {
             <CardTitle>Incidents by owner team</CardTitle>
           </CardHeader>
           <CardContent className="h-64">
-            {ownerTeamBreakdown.length > 0 ? (
+            {breakdownIncidentsQuery.isLoading ? (
+              <LoadingState label="Loading incidents…" />
+            ) : breakdownIncidentsQuery.isError ? (
+              <ErrorState onRetry={() => breakdownIncidentsQuery.refetch()} />
+            ) : ownerTeamBreakdown.length > 0 ? (
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={ownerTeamBreakdown} margin={{ left: -20, right: 8 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" vertical={false} />

@@ -70,6 +70,7 @@ from typing import Literal
 from langchain_core.language_models import BaseChatModel
 
 from app.agents.answer.generation import build_context_block
+from app.agents.prompt_safety import build_messages
 from app.retrieval.schemas import ScoredChunk
 from app.shared.config.logging import get_logger
 
@@ -79,13 +80,8 @@ SufficiencyVerdict = Literal["sufficient", "partial", "insufficient"]
 
 _VALID_VERDICTS: tuple[SufficiencyVerdict, ...] = ("sufficient", "partial", "insufficient")
 
-_PROMPT_TEMPLATE = """You are checking whether the evidence below is enough to answer a question with a \
+_SYSTEM_INSTRUCTIONS = """You are checking whether the evidence below is enough to answer a question with a \
 specific, correct, non-conflicting fact. Do NOT answer the question yourself -- only judge the evidence.
-
-Evidence:
-{context_block}
-
-Question: {query}
 
 Work through this before deciding:
 1. What is the ONE specific fact/value this question is actually asking for?
@@ -146,8 +142,12 @@ async def assess_sufficiency(
     is the single most damaging failure mode").
     """
     context_block = build_context_block(chunks)
-    prompt = _PROMPT_TEMPLATE.format(context_block=context_block, query=query)
-    response = await llm.ainvoke(prompt)
+    messages = build_messages(
+        system_instructions=_SYSTEM_INSTRUCTIONS,
+        evidence_block=context_block,
+        task=f"Question: {query}",
+    )
+    response = await llm.ainvoke(messages)
     raw = str(response.content).strip()
 
     for line in reversed(raw.splitlines()):

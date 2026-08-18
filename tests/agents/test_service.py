@@ -307,6 +307,9 @@ async def test_get_agent_execution_stats_maps_aggregate_rows(monkeypatch) -> Non
             failed_count=2,
             avg_confidence_score=0.72,
             avg_latency_seconds=1.5,
+            total_prompt_tokens=12000,
+            total_completion_tokens=3000,
+            total_tokens=15000,
         ),
         SimpleNamespace(
             agent_name="detect_knowledge_gaps",
@@ -315,6 +318,9 @@ async def test_get_agent_execution_stats_maps_aggregate_rows(monkeypatch) -> Non
             failed_count=0,
             avg_confidence_score=None,
             avg_latency_seconds=None,
+            total_prompt_tokens=None,
+            total_completion_tokens=None,
+            total_tokens=None,
         ),
     ]
 
@@ -333,5 +339,12 @@ async def test_get_agent_execution_stats_maps_aggregate_rows(monkeypatch) -> Non
     assert result[0].succeeded_count == 18
     assert result[0].failed_count == 2
     assert result[0].avg_confidence_score == 0.72
+    assert result[0].total_prompt_tokens == 12000
+    assert result[0].total_completion_tokens == 3000
+    assert result[0].total_tokens == 15000
+    # gpt-4o-mini pricing: (12000/1e6)*0.15 + (3000/1e6)*0.60 = 0.0018 + 0.0018
+    assert result[0].estimated_cost_usd == 0.0036
     assert result[1].avg_confidence_score is None
     assert result[1].avg_latency_seconds is None
+    assert result[1].total_tokens is None
+    assert result[1].estimated_cost_usd is None

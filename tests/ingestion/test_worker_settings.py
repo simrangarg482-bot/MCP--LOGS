@@ -62,6 +62,19 @@ def test_every_worker_sets_an_explicit_queue_name() -> None:
         assert queue_name != "arq:queue", f"{settings.__module__} is still on arq's default queue"
 
 
+def test_every_worker_sets_an_explicit_job_timeout() -> None:
+    """Phase 6.1/6.3 regression: the agents worker previously left this
+    unset (arq's own 300s default applied silently), an undocumented
+    asymmetry against the ingestion worker's deliberately-widened 1800s for
+    an analogous "could scale with organization volume" concern. Both must
+    now set an explicit value -- pins down "explicit," not any specific
+    number, since the right value legitimately differs per workload shape.
+    """
+    for settings in _ALL_WORKERS:
+        job_timeout = getattr(settings, "job_timeout", None)
+        assert job_timeout, f"{settings.__module__} does not set an explicit job_timeout"
+
+
 def test_worker_function_sets_are_disjoint() -> None:
     """Why sharing a queue is actively harmful rather than merely untidy: no
     function is registered on both workers, so a misrouted job can never be

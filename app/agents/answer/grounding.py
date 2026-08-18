@@ -31,6 +31,7 @@ import re
 from langchain_core.language_models import BaseChatModel
 
 from app.agents.answer.markers import strip_markers
+from app.agents.prompt_safety import build_messages
 from app.retrieval import embedding
 from app.retrieval.schemas import ScoredChunk
 from app.shared.config.logging import get_logger
@@ -118,11 +119,13 @@ async def _llm_grounding_check(llm: BaseChatModel, sentence: str, chunk_texts: l
     generation pass.
     """
     context = "\n\n".join(chunk_texts)
-    prompt = (
-        f"Context:\n{context}\n\n"
-        f"Claim: {sentence}\n\n"
-        "Is this claim directly supported by the context above? Answer with "
-        "exactly one word: yes or no."
+    messages = build_messages(
+        system_instructions=(
+            "Is the claim below directly supported by the retrieved evidence? "
+            "Answer with exactly one word: yes or no."
+        ),
+        evidence_block=context,
+        task=f"Claim: {sentence}",
     )
-    response = await llm.ainvoke(prompt)
+    response = await llm.ainvoke(messages)
     return str(response.content).strip().lower().startswith("y")

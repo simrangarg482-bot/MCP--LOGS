@@ -1,5 +1,5 @@
 """Tests for `app.ingestion.connectors.runbooks` -- monkeypatches
-`incidents_service.list_postmortems_for_ingestion` and `session_scope`
+`incidents_reads.list_postmortems_for_ingestion` and `session_scope`
 (this connector's own workaround for the `Connector` protocol having no
 `AsyncSession` parameter -- see the module's docstring) rather than hitting
 a real database, the same "monkeypatch the module-level dependency" style
@@ -90,7 +90,7 @@ async def test_fetch_batch_partial_page_ends_sync(monkeypatch) -> None:
         return [postmortem]
 
     monkeypatch.setattr(
-        runbooks_module.incidents_service, "list_postmortems_for_ingestion", fake_list
+        runbooks_module.incidents_reads, "list_postmortems_for_ingestion", fake_list
     )
 
     connector = RunbooksConnector()
@@ -117,7 +117,7 @@ async def test_fetch_batch_full_page_advances_offset(monkeypatch) -> None:
         return postmortems
 
     monkeypatch.setattr(
-        runbooks_module.incidents_service, "list_postmortems_for_ingestion", fake_list
+        runbooks_module.incidents_reads, "list_postmortems_for_ingestion", fake_list
     )
 
     connector = RunbooksConnector()
@@ -144,7 +144,7 @@ async def test_fetch_batch_resumes_from_cursor(monkeypatch) -> None:
         return []
 
     monkeypatch.setattr(
-        runbooks_module.incidents_service, "list_postmortems_for_ingestion", fake_list
+        runbooks_module.incidents_reads, "list_postmortems_for_ingestion", fake_list
     )
 
     connector = RunbooksConnector()

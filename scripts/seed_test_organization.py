@@ -49,10 +49,16 @@ configure_logging()
 
 # Every permission code actually checked anywhere in the app today (grep for
 # `require_permission(actor, "...")` / `_..._PERMISSION = "..."` across app/).
-# There is no seed migration for these -- nothing exists in `permissions`
-# until a script like this one creates it.
+# Most have no seed migration -- nothing exists in `permissions` until a
+# script like this one creates it. `incident:read` is the one exception:
+# `app/database/migrations/versions/d706a360fc2a_seed_incident_read_permission.py`
+# already seeds it and backfills it to every role that existed *at migration
+# time* -- but this script's own "admin" role is created fresh, after
+# migrations already ran, so it still needs granting here explicitly, the
+# same as every other code in this list.
 _ALL_PERMISSION_CODES = [
     "tenancy:manage",
+    "incident:read",
     "incident:write",
     "postmortem:write",
     "postmortem:approve",

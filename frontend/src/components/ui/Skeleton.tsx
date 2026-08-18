@@ -6,7 +6,8 @@ export function Skeleton({ className }: { className?: string }) {
 
 export function TableSkeleton({ rows = 6, columns = 5 }: { rows?: number; columns?: number }) {
   return (
-    <div className="divide-y divide-border">
+    <div role="status" aria-live="polite" className="divide-y divide-border">
+      <span className="sr-only">Loading…</span>
       {Array.from({ length: rows }).map((_, rowIndex) => (
         <div key={rowIndex} className="flex items-center gap-4 px-4 py-3">
           {Array.from({ length: columns }).map((_, colIndex) => (

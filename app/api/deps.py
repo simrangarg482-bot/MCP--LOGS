@@ -35,13 +35,14 @@ from __future__ import annotations
 
 from typing import Annotated
 
+import structlog
 from arq import ArqRedis
 from fastapi import Depends, Header, Request, Security
 from fastapi.security import HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import service as auth_service
-from app.core.exceptions import PermissionDeniedError
+from app.core.exceptions import PermissionDeniedError, ServiceUnavailableError
 from app.core.users import service as users_service
 from app.database.session import get_db_session, set_tenant_context
 from app.shared.schemas import Identity
@@ -54,7 +55,18 @@ def get_arq_pool(request: Request) -> ArqRedis:
     -- for enqueueing jobs onto the same queue `app.ingestion.workers.main`'s
     worker process consumes (`POST /tenancy/connectors/{id}/sync` is the
     first, and so far only, caller).
+
+    Raises `ServiceUnavailableError` (503) if Redis was unreachable at
+    startup (`_lifespan` leaves this `None` rather than failing the whole
+    app) -- this is the one request path that actually needs it, so this is
+    where that degraded state should surface, not at every unrelated
+    endpoint.
     """
+    if request.app.state.arq_pool is None:
+        raise ServiceUnavailableError(
+            "The background job queue is temporarily unavailable. Please try again shortly.",
+            error_code="service.queue_unavailable",
+        )
     return request.app.state.arq_pool
 
 
@@ -124,6 +136,15 @@ async def get_current_identity(
     claims = auth_service.verify_access_token(token)
     identity = await users_service.resolve_identity(session, claims.user_id, claims.organization_id)
     await set_tenant_context(session, identity.organization_id)
+
+    # Phase 5.1: bound alongside (not instead of) `RequestContextMiddleware`'s
+    # `request_id` -- every log line for the rest of this request now
+    # carries both, without any downstream service/agent/retrieval code
+    # needing to accept and pass an identity just to log it.
+    structlog.contextvars.bind_contextvars(
+        organization_id=str(identity.organization_id),
+        user_id=str(identity.user_id) if identity.user_id else None,
+    )
     return identity
 
 

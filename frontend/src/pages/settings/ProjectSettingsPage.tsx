@@ -1,6 +1,8 @@
 import { useTenant } from "@/context/TenantContext";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
+import { Badge } from "@/components/ui/Badge";
+import { formatDate } from "@/utils/date";
 
 // There is no `update_project` backend capability -- `core.tenancy.service`
 // only supports creating and listing projects, never editing one after
@@ -20,9 +22,9 @@ export function ProjectSettingsPage() {
             <label htmlFor="project-name" className="mb-1.5 block text-xs font-medium text-ink-muted">Project name</label>
             <Input id="project-name" defaultValue={project?.name} disabled />
           </div>
-          <div className="max-w-md">
-            <label htmlFor="project-slug" className="mb-1.5 block text-xs font-medium text-ink-muted">Slug</label>
-            <Input id="project-slug" defaultValue={project?.slug} disabled />
+          <div className="flex items-center gap-2 text-xs text-ink-muted">
+            {project?.isDefault && <Badge tone="neutral">Default project</Badge>}
+            {project?.createdAt && <span>Created {formatDate(project.createdAt)}</span>}
           </div>
           <p className="text-xs text-ink-subtle">Project details cannot be edited after creation.</p>
         </CardContent>
@@ -37,7 +39,7 @@ export function ProjectSettingsPage() {
             {projects.map((p) => (
               <li key={p.id} className="flex items-center justify-between py-2.5 text-sm">
                 <span className="text-ink">{p.name}</span>
-                <span className="text-xs text-ink-subtle">{p.slug}</span>
+                {p.isDefault && <Badge tone="neutral">Default</Badge>}
               </li>
             ))}
           </ul>

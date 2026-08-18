@@ -53,7 +53,7 @@ import hashlib
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import bcrypt
 import httpx
@@ -71,14 +71,15 @@ from app.core.auth.schemas import (
     TokenClaims,
     VerifiedIdPClaims,
 )
-from app.core.exceptions import ConflictError, PermissionDeniedError
+from app.core.exceptions import ConflictError, NotFoundError, PermissionDeniedError
+from app.core.tenancy import repository as tenancy_repository
 from app.core.tenancy import service as tenancy_service
-from app.core.tenancy.schemas import OrganizationCreate, SSOConfiguration
+from app.core.tenancy.schemas import InvitationAcceptRequest, OrganizationCreate, SSOConfiguration
 from app.core.users import service as users_service
 from app.database.session import set_tenant_context
 from app.shared.config.logging import get_logger
 from app.shared.config.settings import get_settings
-from app.shared.security import decrypt_secret, get_kms
+from app.shared.security import decrypt_secret, get_kms, hash_opaque_token
 
 def _hash_password(password: str) -> str:
     """Hash a plaintext password for `users.password_hash` (email/password
@@ -135,6 +136,36 @@ _discovery_cache: dict[str, tuple[dict, datetime]] = {}
 # --- SSO login: begin -----------------------------------------------------------
 
 
+def _assert_redirect_uri_allowed(redirect_uri: str) -> None:
+    """Reject a `redirect_uri` whose origin isn't in `cors_allowed_origins`
+    -- the same trusted-frontend-origin allowlist already governing which
+    origins may call this API from a browser (PROJECT_PLAN.md's CORS
+    config, `Settings.cors_allowed_origins`).
+
+    Phase 3 production-hardening addition, flagged by a security audit:
+    both `/auth/{org_slug}/login` and `/auth/callback` previously accepted
+    `redirect_uri` from the caller with no server-side check at all. OAuth's
+    own security model relies on the IdP rejecting a `redirect_uri` that
+    wasn't pre-registered for this client -- real protection, but not a
+    substitute for this app also checking it, since a client registration
+    permitting multiple origins (e.g. staging + production, or several
+    historical frontend deployments) would otherwise let a caller redirect a
+    completed login to any one of them, not just the origin the user
+    actually started from. Checked before `begin_sso_login` ever contacts
+    the IdP and before `complete_sso_login` ever exchanges a code, so an
+    unrecognized `redirect_uri` never gets that far either way.
+    """
+    settings = get_settings()
+    parsed = urlparse(redirect_uri)
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    if origin not in settings.cors_allowed_origins:
+        raise PermissionDeniedError(
+            "redirect_uri is not an allowed origin for this deployment.",
+            error_code="auth.redirect_uri_not_allowed",
+            detail={"redirect_uri": redirect_uri},
+        )
+
+
 async def begin_sso_login(
     session: AsyncSession, org_slug: str, *, redirect_uri: str
 ) -> SSOAuthorizationRedirect:
@@ -143,10 +174,12 @@ async def begin_sso_login(
     `redirect_uri` is supplied by the caller (the future api/ layer), which
     knows its own base URL from the incoming request -- core/auth does not
     hardcode or guess it, so the same code works regardless of deployment
-    hostname. Raises NotFoundError (propagated from
+    hostname. Its origin must still be one of `cors_allowed_origins` (see
+    `_assert_redirect_uri_allowed`). Raises NotFoundError (propagated from
     `tenancy_service.get_organization_sso_config`) if the slug or its SSO
     configuration doesn't exist.
     """
+    _assert_redirect_uri_allowed(redirect_uri)
     sso_config = await tenancy_service.get_organization_sso_config(session, org_slug)
     authorization_endpoint = await _discover_authorization_endpoint(sso_config.issuer_url)
 
@@ -240,8 +273,11 @@ async def complete_sso_login(
     the stashed `code_verifier` by `state` before ever calling this function
     -- if the state doesn't match anything stashed, there is nothing to look
     up, and the caller rejects before reaching here). `redirect_uri` must be
-    identical to the one used in `begin_sso_login`, per the OAuth2 spec.
+    identical to the one used in `begin_sso_login`, per the OAuth2 spec, and
+    (like `begin_sso_login`) its origin must be one of `cors_allowed_origins`
+    -- see `_assert_redirect_uri_allowed`.
     """
+    _assert_redirect_uri_allowed(redirect_uri)
     sso_config = await tenancy_service.get_organization_sso_config(session, data.org_slug)
 
     idp_claims = await _exchange_code_for_claims(
@@ -379,7 +415,93 @@ async def login_with_password(session: AsyncSession, data: LoginRequest) -> Sess
     return tokens
 
 
-def _resolve_client_secret(client_secret_ref: str) -> str:
+async def accept_invitation_with_password(
+    session: AsyncSession, invitation_id: uuid.UUID, data: InvitationAcceptRequest
+) -> SessionTokens:
+    """Accept a password-organization invitation: prove control of the
+    invited email address via `data.token`, provision a real account with
+    `data.password` set, assign the invitation's `grants_role_id`, mark the
+    invitation consumed, and log the new user in -- Phase 7.5's fix for a
+    confirmed gap where `core.tenancy.service.accept_invitation` (still
+    called at the end of this function, unchanged) only ever flipped the
+    invitation's own status flag, provisioning nothing: calling it directly
+    permanently consumed the invitation with no account, no role, and no
+    session to show for it.
+
+    Deliberately NOT added to `core.tenancy.service.accept_invitation`
+    itself: that function is also the SSO-login-time acceptance path
+    (`_resolve_or_provision_user` below calls it with no token at all,
+    correctly -- an SSO login's signed `id_token` already proves identity, a
+    separate token would be redundant), and `core.tenancy` cannot import
+    `core.auth` (this module) to reach `_issue_session`/password hashing
+    without creating a circular import (`core.auth` already depends on
+    `core.tenancy`, per this module's own docstring) -- so the password-
+    specific orchestration lives here instead, calling into
+    `core.tenancy`'s already-existing, unmodified validation/status-update
+    function once its own checks pass.
+
+    Raises the same `NotFoundError`/`ConflictError` shapes `accept_invitation`
+    itself would for a missing/non-pending/expired invitation (checked here
+    too, before provisioning a user for an invitation that's about to be
+    rejected anyway), plus `PermissionDeniedError` for a token mismatch --
+    deliberately the same exception type/status (403) `login_with_password`
+    uses for "invalid credentials," so this endpoint can't be used to
+    distinguish "wrong token" from any other failure shape either.
+    """
+    invitation = await tenancy_repository.get_invitation_by_id(session, invitation_id)
+    if invitation is None:
+        raise NotFoundError(
+            "Invitation not found.",
+            error_code="invitation.not_found",
+            detail={"invitation_id": str(invitation_id)},
+        )
+    if invitation.token_hash is None or not secrets.compare_digest(
+        hash_opaque_token(data.token), invitation.token_hash
+    ):
+        raise PermissionDeniedError(
+            "Invalid or missing invitation token.",
+            error_code="invitation.invalid_token",
+        )
+    if invitation.status != "pending":
+        raise ConflictError(
+            "This invitation is no longer pending.",
+            error_code="invitation.not_pending",
+            detail={"status": invitation.status},
+        )
+    if invitation.expires_at <= datetime.now(timezone.utc):
+        raise ConflictError(
+            "This invitation has expired.",
+            error_code="invitation.expired",
+        )
+
+    user_id = await users_service.get_or_create_user(
+        session, email=invitation.email, display_name=data.display_name or invitation.email
+    )
+    await users_service.set_password(session, user_id=user_id, password_hash=_hash_password(data.password))
+    await users_service.assign_role(
+        session,
+        user_id=user_id,
+        organization_id=invitation.organization_id,
+        role_id=invitation.grants_role_id,
+    )
+    # Re-validates status/expiry itself and marks `status="accepted"` --
+    # harmless, intentional double-checking rather than trusting the checks
+    # above stayed true for the entire duration of the provisioning calls.
+    await tenancy_service.accept_invitation(session, invitation_id)
+
+    tokens = await _issue_session(
+        session, user_id=user_id, organization_id=invitation.organization_id, family_id=uuid.uuid4()
+    )
+    logger.info(
+        "invitation_accepted_with_password",
+        user_id=str(user_id),
+        organization_id=str(invitation.organization_id),
+        invitation_id=str(invitation_id),
+    )
+    return tokens
+
+
+async def _resolve_client_secret(client_secret_ref: str) -> str:
     """Resolve a stored secret *reference* into the actual usable client
     secret needed for the token exchange.
 
@@ -395,7 +517,7 @@ def _resolve_client_secret(client_secret_ref: str) -> str:
     half of that same split, mirroring `ingestion.service.
     _execute_ingestion_job`'s identical call for connector credentials.
     """
-    return decrypt_secret(get_kms(), client_secret_ref)
+    return await decrypt_secret(get_kms(), client_secret_ref)
 
 
 async def _exchange_code_for_claims(
@@ -416,7 +538,7 @@ async def _exchange_code_for_claims(
     claim shape, not every provider.
     """
     document = await _get_discovery_document(sso_config.issuer_url)
-    client_secret = _resolve_client_secret(sso_config.client_secret_ref)
+    client_secret = await _resolve_client_secret(sso_config.client_secret_ref)
 
     async with httpx.AsyncClient(timeout=10.0) as client:
         token_response = await client.post(

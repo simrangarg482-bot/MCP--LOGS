@@ -257,6 +257,27 @@ class IngestionRun(BaseModel):
     created_at: datetime
 
 
+class IngestionJobStats(BaseModel):
+    """Aggregated ingestion-run metrics for one connector, over some
+    organization and time window (Phase 5.6) -- the `ingestion_jobs`-side
+    counterpart to `app.agents.schemas.AgentExecutionStats`/`core.
+    observability.schemas.McpToolStats`. Backs `GET /observability/
+    ingestion`, filling the one observability gap those two dashboards
+    didn't already cover (see `docs/operations/rbac-audit-phase-4.7.md`-
+    adjacent Phase 5 investigation: ingestion had no aggregate dashboard at
+    all before this).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    connector_config_id: uuid.UUID
+    run_count: int
+    succeeded_count: int
+    failed_count: int
+    avg_duration_seconds: float | None
+    total_documents_processed: int
+
+
 # --- Organization access rules (domain / group auto-join) --------------------
 
 
@@ -314,6 +335,14 @@ class InvitationCreate(BaseModel):
 class Invitation(BaseModel):
     """A pending, accepted, expired, or revoked invitation, as returned by
     the read surface.
+
+    `token` (Phase 7.5) is populated ONLY in `create_invitation`'s own
+    response -- the one moment the raw, single-use token exists in memory at
+    all. `model_validate(row)` elsewhere (`list_invitations`,
+    `revoke_invitation`) leaves it `None` by construction: the ORM row has
+    no `token` attribute (only `token_hash`, never read back into this
+    schema), so there is no path by which an already-issued token could be
+    re-exposed after creation.
     """
 
     model_config = ConfigDict(from_attributes=True, frozen=True)
@@ -328,6 +357,20 @@ class Invitation(BaseModel):
     accepted_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    token: str | None = None
+
+
+class InvitationAcceptRequest(BaseModel):
+    """Request body for the password-organization acceptance flow
+    (`POST /invitations/{id}/accept`, Phase 7.5) -- proves control of the
+    invited email address via `token` (the raw value from `Invitation.
+    token`'s one-time exposure at creation, not the invitation's own id),
+    and provisions the new account's login credential in the same call.
+    """
+
+    token: str
+    password: str
+    display_name: str | None = None
 
 
 # --- Provisioning decision -----------------------------------------------------

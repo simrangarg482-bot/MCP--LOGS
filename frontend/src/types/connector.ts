@@ -46,3 +46,21 @@ export interface CreateSlackConnectorInput {
   token: string;
   channelIds: string[];
 }
+
+/** Mirrors `app.ingestion.connectors.jira`'s documented `ResolvedConnectorConfig.
+ * config` shape exactly: `{"base_url": "...", "projects": ["OPS", "ENG"]}`.
+ * `projects` is a list of Jira project *keys*, not display names. */
+export interface CreateJiraConnectorInput {
+  token: string;
+  baseUrl: string;
+  projects: string[];
+}
+
+/** Mirrors `app.ingestion.connectors.confluence`'s documented
+ * `ResolvedConnectorConfig.config` shape: `{"base_url": "...", "spaces": ["ENG", "OPS"]}`.
+ * `spaces` is a list of Confluence space *keys*, not display names. */
+export interface CreateConfluenceConnectorInput {
+  token: string;
+  baseUrl: string;
+  spaces: string[];
+}

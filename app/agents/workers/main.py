@@ -44,3 +44,19 @@ class WorkerSettings:
     # that class's own comment on why the backoff itself lives in the task
     # function (`Retry(defer=...)`), not here.
     max_tries = 3
+    # Phase 6.1/6.3: explicit, not arq's own 300s default -- left unset
+    # previously despite `app.ingestion.workers.main` explicitly widening
+    # its own job_timeout to 1800s for an analogous "could scale with
+    # organization volume" concern, an asymmetry that was undocumented
+    # rather than a deliberate choice. `detect_knowledge_gaps` clusters
+    # every low-confidence `agent_executions` row over
+    # `knowledge_gap_lookback_days` (default 14) and makes a handful of LLM
+    # calls per resulting cluster (`_synthesize_topic`/
+    # `_resolve_suggested_action`) -- lighter per-organization work than
+    # ingestion's "fetch and process every document from an external
+    # source," but not bounded at a fixed cost either for an organization
+    # with a very large low-confidence-query volume. 600s (10 min) is a
+    # deliberate middle value: generous enough for a large single-org
+    # clustering pass without blindly copying ingestion's 1800s for a
+    # meaningfully different workload shape.
+    job_timeout = 600

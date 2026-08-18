@@ -1,0 +1,181 @@
+name: Browser E2E & AI evaluation
+
+# The two genuinely expensive, real-LLM-calling tiers (section 13's split):
+# a real backend/worker/frontend/Postgres/Redis stack driven through
+# Playwright, and the confidence-routing evaluation harness. Both need a
+# real OPENAI_API_KEY and cost real money/minutes per run, so neither runs
+# on every PR -- only on push to main and nightly, and each independently
+# SKIPS (not fails) if its required secrets aren't configured, so this
+# workflow is safe to merge before those secrets exist.
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 6 * * *" # nightly, 06:00 UTC
+  workflow_dispatch: {}
+
+concurrency:
+  group: e2e-eval-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  browser-e2e:
+    name: Playwright E2E (real backend/DB/Redis/LLM)
+    runs-on: ubuntu-latest
+    if: ${{ secrets.OPENAI_API_KEY != '' }}
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: ekip
+          POSTGRES_PASSWORD: ekip_ci_only
+          POSTGRES_DB: ekip_e2e
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ekip -d ekip_e2e"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql+asyncpg://ekip:ekip_ci_only@127.0.0.1:5432/ekip_e2e
+      REDIS_URL: redis://127.0.0.1:6379/0
+      JWT_SECRET_KEY: ci-only-placeholder-jwt-secret-not-a-real-secret
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      CONNECTOR_SECRET_MASTER_KEY: 00112233445566778899aabbccddeeff00112233445566778899aabbccddee
+      CORS_ALLOWED_ORIGINS: http://localhost:5180,http://127.0.0.1:5180
+      # Read by migration b8f3d6a1c4e7 (provisions the ekip_app role) --
+      # `alembic upgrade head` below connects as `ekip`, this disposable
+      # Postgres's own superuser, the CI-local equivalent of the migration/
+      # admin credential (see docs/operations/deployment.md's "Migration
+      # database vs runtime database").
+      EKIP_APP_ROLE_PASSWORD: ci-only-placeholder-ekip-app-password-not-a-real-secret
+      ENVIRONMENT: test
+      # Optional: a real GitHub PAT + comma-separated repo list, used only by
+      # critical-workflow.spec.ts's connector-connect-and-sync step, which
+      # `test.skip()`s itself cleanly if these are absent (see that spec's
+      # own module docstring) -- E2E still runs and validates everything
+      # else without them.
+      EKIP_TEST_GITHUB_TOKEN: ${{ secrets.EKIP_TEST_GITHUB_TOKEN }}
+      EKIP_TEST_GITHUB_REPOS: ${{ secrets.EKIP_TEST_GITHUB_REPOS }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: "0.11.19"
+      - run: uv python install 3.13
+      - run: uv sync --frozen --extra dev
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Install Playwright browsers
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Run migrations
+        run: uv run alembic upgrade head
+
+      - name: Seed deterministic E2E test data
+        run: uv run python scripts/e2e_seed.py
+
+      - name: Start backend
+        run: |
+          uv run uvicorn app.api.main:app --host 127.0.0.1 --port 8010 &
+          for i in $(seq 1 20); do
+            curl -sf http://127.0.0.1:8010/health > /dev/null && exit 0
+            sleep 1
+          done
+          exit 1
+
+      - name: Start worker
+        run: uv run arq app.ingestion.workers.main.WorkerSettings &
+
+      - name: Build and start frontend
+        working-directory: frontend
+        env:
+          VITE_API_BASE_URL: http://127.0.0.1:8010
+        run: |
+          npm run build
+          npx vite preview --port 5180 --host 127.0.0.1 &
+          for i in $(seq 1 20); do
+            curl -sf http://127.0.0.1:5180/ > /dev/null && exit 0
+            sleep 1
+          done
+          exit 1
+
+      - name: Run Playwright E2E suite
+        working-directory: frontend
+        env:
+          E2E_BASE_URL: http://127.0.0.1:5180
+          E2E_API_BASE_URL: http://127.0.0.1:8010
+        run: npx playwright test --reporter=list,html
+
+      # Artifacts preserved on failure only (section 12) -- HTML report,
+      # traces, screenshots, video (already configured in
+      # frontend/playwright.config.ts's `use.trace/screenshot/video`
+      # settings); never uploaded on success, and nothing here ever includes
+      # a secret value (Playwright's own trace viewer redacts request
+      # headers by default; this repo's E2E fixtures never log tokens).
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            frontend/e2e-report/
+            frontend/test-results/
+          retention-days: 14
+
+  ai-evaluation:
+    name: AI evaluation regression (confidence-gated routing)
+    runs-on: ubuntu-latest
+    # Deliberately gated on a SEPARATE secret from the E2E job's disposable
+    # CI Postgres: `scripts/eval_confidence.py`'s own docstring is explicit
+    # that it needs "a live database with real ingested data" (the
+    # `test-org` golden corpus) -- a fresh, empty CI service-container
+    # Postgres has nothing in it and would produce meaningless results, so
+    # this points at a real, persistent, pre-seeded evaluation database
+    # instead. Skips cleanly if that hasn't been provisioned yet.
+    if: ${{ secrets.EVAL_DATABASE_URL != '' && secrets.OPENAI_API_KEY != '' }}
+    env:
+      DATABASE_URL: ${{ secrets.EVAL_DATABASE_URL }}
+      REDIS_URL: ${{ secrets.EVAL_REDIS_URL }}
+      JWT_SECRET_KEY: ci-only-placeholder-jwt-secret-not-a-real-secret
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      CONNECTOR_SECRET_MASTER_KEY: 00112233445566778899aabbccddeeff00112233445566778899aabbccddee
+      ENVIRONMENT: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: "0.11.19"
+      - run: uv python install 3.13
+      - run: uv sync --frozen --extra dev
+
+      - name: Run confidence evaluation against the golden dataset
+        run: uv run python scripts/eval_confidence.py --report-path eval_confidence_report.json
+
+      - name: Compare against the last known-good report
+        # Protects the documented improvement (ambiguous false-answer rate
+        # 0.333 -> 0.083): fails the job if this run regresses past it,
+        # rather than only ever eyeballing the report by hand.
+        run: >
+          uv run python scripts/eval_confidence.py
+          --report-path eval_confidence_report.json
+          --compare-to scripts/eval_confidence_report_after.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: eval-confidence-report
+          path: eval_confidence_report.json
+          retention-days: 90

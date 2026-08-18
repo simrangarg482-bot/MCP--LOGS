@@ -36,9 +36,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.errors import ekip_error_handler
+from app.api.middleware import RequestContextMiddleware
 from app.api.routers import (
     ask,
     auth,
+    health,
     incidents,
     knowledge,
     observability,
@@ -47,7 +49,11 @@ from app.api.routers import (
     users,
 )
 from app.core.exceptions import EKIPError
+from app.shared.config.logging import get_logger
 from app.shared.config.settings import get_settings
+from app.shared.config.tracing import configure_tracing
+
+logger = get_logger(__name__)
 
 
 @asynccontextmanager
@@ -71,15 +77,39 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     default for the queue-collision reason documented on their own
     `queue_name` attributes), so every job enqueued here would sit in Redis
     forever and connector syncs would silently never run.
+
+    A failed connection here does NOT fail app startup: `create_pool`
+    previously ran unguarded, so a real, observed Redis Cloud connection
+    blip (this dependency's provider intermittently timing out, independent
+    of anything this app does) took down 100% of the API -- login,
+    incidents, knowledge, everything -- not just the ~1% of functionality
+    (connector sync) that actually needs Redis. Caught by an actual browser
+    E2E run (`frontend/e2e/`) where the whole app stopped responding during
+    a live Redis outage; nothing in the unit test suite ever exercises real
+    process startup against a real (or really-unreachable) Redis. On
+    failure, `app.state.arq_pool` is left `None` and `get_arq_pool` raises a
+    clean `ServiceUnavailableError` (503) only for the one request path that
+    actually needs it.
     """
-    app.state.arq_pool = await create_pool(
-        RedisSettings.from_dsn(str(get_settings().redis_url)),
-        default_queue_name="arq:queue:ingestion",
-    )
+    try:
+        app.state.arq_pool = await create_pool(
+            RedisSettings.from_dsn(str(get_settings().redis_url)),
+            default_queue_name="arq:queue:ingestion",
+        )
+    except Exception as exc:
+        # Not `exc_info=True`: structlog's console renderer writes through
+        # Python's default stdout encoding, which on Windows is the legacy
+        # `cp1252` codepage -- a full traceback can (and, observed here,
+        # did) contain a character `cp1252` can't encode, crashing the
+        # logging call itself and turning a handled Redis failure back into
+        # an unhandled one. `str(exc)` is plain ASCII-safe text.
+        logger.warning("arq_pool_unavailable_at_startup", error=str(exc))
+        app.state.arq_pool = None
     try:
         yield
     finally:
-        await app.state.arq_pool.close()
+        if app.state.arq_pool is not None:
+            await app.state.arq_pool.close()
 
 
 def create_app() -> FastAPI:
@@ -92,9 +122,16 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # Added last (Starlette applies the most-recently-added middleware
+    # outermost) so request correlation wraps everything, including CORS
+    # handling -- the request id/duration this middleware logs should
+    # reflect the true total request span, not just the part after CORS
+    # already ran.
+    app.add_middleware(RequestContextMiddleware)
 
     app.add_exception_handler(EKIPError, ekip_error_handler)
 
+    app.include_router(health.router)
     app.include_router(auth.router)
     app.include_router(incidents.router)
     app.include_router(ask.router)
@@ -104,6 +141,8 @@ def create_app() -> FastAPI:
     app.include_router(tenancy.router)
     app.include_router(tenancy.admin_router)
     app.include_router(users.router)
+
+    configure_tracing(app)
 
     return app
 

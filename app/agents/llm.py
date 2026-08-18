@@ -26,6 +26,29 @@ from langchain_openai import ChatOpenAI
 
 from app.shared.config.settings import get_settings
 
+# Phase 6.1: `ChatOpenAI`'s own `request_timeout` field defaults to `None`,
+# and -- unlike simply omitting the parameter -- langchain-openai forwards
+# that literal `None` straight to the underlying `openai` SDK client
+# (`client_params["timeout"] = self.request_timeout`, always set, never
+# conditionally omitted the way `max_retries` is). The `openai` SDK's own
+# "substitute my 600s default" logic only fires for its `NotGiven` sentinel,
+# not for an explicit `None` -- so leaving this parameter off does not get
+# a sane default, it actively disables the timeout entirely (httpx's own
+# meaning of `timeout=None`), letting a single LLM call hang indefinitely.
+# 60s covers every real prompt shape in this codebase (query rewriting,
+# answer generation, hypothesis generation, root-cause extraction) with
+# margin -- none of them stream multi-minute completions.
+_REQUEST_TIMEOUT_SECONDS = 60.0
+# Left unset deliberately (not forwarded as `max_retries=0` or similar):
+# `max_retries` is only added to `client_params` when not `None`, and
+# leaving it `None` here lets the `openai` SDK apply its own real default
+# (`DEFAULT_MAX_RETRIES=2`, exponential backoff, honors `Retry-After`) --
+# a policy already reasonable for this codebase's own retry story
+# (`app.agents.retry.call_with_retry` layers a further 2 retries with its
+# own backoff *on top* of whatever the SDK already did, per that module's
+# own docstring on why it retries blindly rather than trying to distinguish
+# "the SDK already retried this" from "this is a fresh failure").
+
 
 @lru_cache
 def get_llm(*, temperature: float = 0.2) -> ChatOpenAI:
@@ -42,4 +65,5 @@ def get_llm(*, temperature: float = 0.2) -> ChatOpenAI:
         model=settings.agent_llm_model,
         api_key=settings.openai_api_key,
         temperature=temperature,
+        timeout=_REQUEST_TIMEOUT_SECONDS,
     )

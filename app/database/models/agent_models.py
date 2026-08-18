@@ -36,7 +36,7 @@ read site).
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, Numeric, Text, func, text
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, Numeric, Text, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -91,6 +91,23 @@ class AgentExecution(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: Phase 5.4/5.7 (AI usage/cost telemetry). All four `NULL` for any
+    #: execution that predates this column, and for any execution whose LLM
+    #: call(s) never returned `usage_metadata` (e.g. a mocked/test LLM
+    #: response) -- absence here means "not captured," never "zero tokens
+    #: spent." `model_used` records `Settings.agent_llm_model` at the time
+    #: of the call, not a per-node value -- `app.agents.llm.get_llm()` is a
+    #: single global model setting today (see that module's own docstring),
+    #: so every LLM call within one graph execution already uses the same
+    #: model; this column exists so historical executions remain correctly
+    #: attributed after a future model change, not to support multiple
+    #: models within one execution (which `app.agents.telemetry.
+    #: summarize_usage` handles defensively if it ever happens, but nothing
+    #: in this codebase does that today).
+    model_used: Mapped[str | None] = mapped_column(Text, nullable=True)
+    prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class KnowledgeGapReport(Base):

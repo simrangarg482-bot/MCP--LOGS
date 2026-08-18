@@ -39,7 +39,11 @@ export default defineConfig({
   workers: 1,
   retries: 0,
   reporter: [["list"], ["html", { open: "never", outputFolder: "e2e-report" }]],
-  timeout: 45_000,
+  // Generous: this suite exercises a real, remote (Neon) dev database --
+  // signup alone (new org + project + user + password hash + role/
+  // permission bootstrap + session issuance) has been observed to take
+  // 10-20s end-to-end, not the sub-second latency a mocked backend would give.
+  timeout: 60_000,
   expect: { timeout: 10_000 },
   use: {
     baseURL: process.env.E2E_BASE_URL ?? "http://localhost:5180",

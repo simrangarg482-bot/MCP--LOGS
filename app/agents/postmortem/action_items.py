@@ -25,6 +25,7 @@ from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 
+from app.agents.prompt_safety import build_messages
 from app.core.incidents.schemas import ActionItem
 from app.shared.config.logging import get_logger
 
@@ -45,21 +46,24 @@ async def generate_action_items(
     propagating a retry all the way up through `agents.service.
     generate_postmortem`.
     """
-    prompt = (
-        "You are proposing follow-up action items for an incident "
-        "postmortem, based ONLY on the timeline and root cause below -- do "
-        "not invent facts not present in them.\n\n"
-        f"Timeline:\n{narrative}\n\n"
-        f"Root cause: {root_cause}\n\n"
-        "Respond with ONLY a JSON array (no markdown code fences, no "
-        "commentary) of objects with exactly this shape:\n"
-        '[{"description": "short, concrete, actionable step", "owner": '
-        '"team or role name, or null if unclear"}]\n\n'
-        "Propose at most 5 items. If the root cause is too uncertain to "
-        "propose concrete action items, return an empty array `[]` rather "
-        "than a vague placeholder."
+    evidence_block = f"Timeline:\n{narrative}\n\nRoot cause: {root_cause}"
+    messages = build_messages(
+        system_instructions=(
+            "You are proposing follow-up action items for an incident "
+            "postmortem, based ONLY on the timeline and root cause below -- do "
+            "not invent facts not present in them.\n\n"
+            "Respond with ONLY a JSON array (no markdown code fences, no "
+            "commentary) of objects with exactly this shape:\n"
+            '[{"description": "short, concrete, actionable step", "owner": '
+            '"team or role name, or null if unclear"}]\n\n'
+            "Propose at most 5 items. If the root cause is too uncertain to "
+            "propose concrete action items, return an empty array `[]` rather "
+            "than a vague placeholder."
+        ),
+        evidence_block=evidence_block,
+        task="",
     )
-    response = await llm.ainvoke(prompt)
+    response = await llm.ainvoke(messages)
     raw_text = str(response.content).strip()
 
     parsed = _parse_response(raw_text)

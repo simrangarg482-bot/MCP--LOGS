@@ -20,9 +20,10 @@ requires the caller to send it back.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Response, status
+from fastapi import APIRouter, Depends, Response, status
 
 from app.api.deps import CurrentIdentity, DbSession
+from app.api.rate_limit import rate_limit_by_ip
 from app.core.audit.service import record_audit_event
 from app.core.auth import service as auth_service
 from app.core.auth.schemas import (
@@ -62,7 +63,23 @@ async def complete_login(
     return await auth_service.complete_sso_login(session, data, redirect_uri=redirect_uri)
 
 
-@router.post("/signup", response_model=SessionTokens, status_code=status.HTTP_201_CREATED)
+_SIGNUP_RATE_LIMIT = rate_limit_by_ip(scope="auth.signup", requests_per_minute=10)
+# Phase 6.5: deliberately tighter than signup -- nothing previously bounded
+# repeated login attempts at all, the exact gap credential-stuffing/brute-
+# force attacks exploit. Per-IP (not per-email/per-user): the attacker
+# controls which email they submit, so keying on the submitted email would
+# let them spread attempts across guessed emails from one IP with no
+# throttling at all -- IP is the one dimension the caller doesn't get to
+# choose per request.
+_LOGIN_RATE_LIMIT = rate_limit_by_ip(scope="auth.login", requests_per_minute=10)
+
+
+@router.post(
+    "/signup",
+    response_model=SessionTokens,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(_SIGNUP_RATE_LIMIT)],
+)
 async def signup(data: SignupRequest, session: DbSession) -> SessionTokens:
     """Self-service email/password account creation -- a parallel path
     alongside the SSO flow above, not a replacement for it. See
@@ -72,7 +89,7 @@ async def signup(data: SignupRequest, session: DbSession) -> SessionTokens:
     return await auth_service.signup(session, data)
 
 
-@router.post("/login", response_model=SessionTokens)
+@router.post("/login", response_model=SessionTokens, dependencies=[Depends(_LOGIN_RATE_LIMIT)])
 async def login(data: LoginRequest, session: DbSession) -> SessionTokens:
     """Email/password login, counterpart to `signup`."""
     return await auth_service.login_with_password(session, data)

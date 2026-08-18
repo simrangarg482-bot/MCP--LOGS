@@ -30,12 +30,23 @@ const SOURCE_ICON: Record<Connector["source"], LucideIcon> = {
 };
 
 function configSummary(connector: Connector): string | null {
-  const config = connector.config as { repos?: { repo: string }[]; channels?: string[] };
+  const config = connector.config as {
+    repos?: { repo: string }[];
+    channels?: string[];
+    projects?: string[];
+    spaces?: string[];
+  };
   if (connector.source === "github" && config.repos?.length) {
     return config.repos.map((r) => r.repo).join(", ");
   }
   if (connector.source === "slack" && config.channels?.length) {
     return `${config.channels.length} channel${config.channels.length === 1 ? "" : "s"}`;
+  }
+  if (connector.source === "jira" && config.projects?.length) {
+    return config.projects.join(", ");
+  }
+  if (connector.source === "confluence" && config.spaces?.length) {
+    return config.spaces.join(", ");
   }
   return null;
 }

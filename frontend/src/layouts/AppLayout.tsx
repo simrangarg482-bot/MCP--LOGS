@@ -57,7 +57,7 @@ export function AppLayout() {
       )}
 
       <div className="flex flex-1 flex-col overflow-hidden">
-        <Topbar onToggleSidebar={() => setMobileNavOpen((open) => !open)} />
+        <Topbar isMobileNavOpen={mobileNavOpen} onToggleSidebar={() => setMobileNavOpen((open) => !open)} />
         <main className="flex-1 overflow-y-auto px-4 py-6 scrollbar-thin sm:px-6">
           <Outlet />
         </main>

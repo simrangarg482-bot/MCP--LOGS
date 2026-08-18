@@ -54,7 +54,7 @@ class WorkerSettings:
     max_tries = 3
     # arq's own default (300s) is tight for a first *full* sync: each
     # `fetch_batch` call is throttled by the per-connector token bucket in
-    # `app.ingestion.rate_limiter` (e.g. Slack's own declared
+    # `app.shared.rate_limiter` (e.g. Slack's own declared
     # `requests_per_second = 0.5`), and a channel/repo with real history
     # can need enough pages that the wait time alone exceeds 300s -- arq
     # then cancels the job mid-page rather than the connector or the app

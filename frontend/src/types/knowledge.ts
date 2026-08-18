@@ -54,3 +54,11 @@ export interface KnowledgeFilters {
   page?: number;
   pageSize?: number;
 }
+
+/** Mirrors `app.core.knowledge.schemas.DocumentUpdate` -- both fields
+ * optional, `exclude_unset` on the backend (an omitted field is left
+ * untouched, never cleared to null). */
+export interface DocumentUpdateRequest {
+  title?: string;
+  content?: string;
+}

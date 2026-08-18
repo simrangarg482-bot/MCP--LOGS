@@ -1,0 +1,123 @@
+name: Main branch — migration & container validation
+
+# Section 9's "main branch" tier: adds what a PR doesn't need on every push --
+# a real (disposable, CI-local) Postgres to validate migrations against, and
+# a real Docker build of every image. No registry push (no credentials
+# configured for one), no Azure -- this proves the images build and the
+# migration chain runs clean, nothing more.
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: main-extra-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  migration-validation:
+    name: Migration validation (empty DB → head)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: ekip
+          POSTGRES_PASSWORD: ekip_ci_only
+          POSTGRES_DB: ekip_migration_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ekip -d ekip_migration_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+asyncpg://ekip:ekip_ci_only@127.0.0.1:5432/ekip_migration_ci
+      REDIS_URL: redis://127.0.0.1:6379/0
+      JWT_SECRET_KEY: ci-only-placeholder-jwt-secret-not-a-real-secret
+      OPENAI_API_KEY: sk-ci-placeholder-not-a-real-key
+      CONNECTOR_SECRET_MASTER_KEY: 00112233445566778899aabbccddeeff00112233445566778899aabbccddee
+      # Read by migration b8f3d6a1c4e7 (provisions the ekip_app role) --
+      # this job connects as the disposable Postgres's own superuser
+      # (`ekip`, set above), the CI-local equivalent of the migration/admin
+      # credential `docs/operations/deployment.md`'s "Migration database vs
+      # runtime database" section documents for the real Azure deployment.
+      EKIP_APP_ROLE_PASSWORD: ci-only-placeholder-ekip-app-password-not-a-real-secret
+      ENVIRONMENT: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: "0.11.19"
+
+      - run: uv python install 3.13
+      - run: uv sync --frozen --extra dev
+
+      - name: Run every migration against a genuinely empty database
+        run: uv run alembic upgrade head
+
+      - name: Confirm no model/schema drift (alembic check)
+        # Added Batch 4.5, after a real incident (docs/operations/
+        # migration-recovery.md) where a shared database's alembic_version
+        # pointed at a revision that didn't exist in any migration file --
+        # undetectable by `upgrade head` alone, since that command only ever
+        # runs what it's told. `alembic check` additionally confirms the
+        # repo's own ORM models don't drift from what the migration chain
+        # just produced. Runs against this job's own disposable Postgres --
+        # entirely independent of the real (and separately, non-CI) Neon
+        # database that incident involved.
+        run: uv run alembic check
+
+      - name: Migration status diagnostic (self-check on a known-good DB)
+        run: uv run python scripts/migration_status.py
+
+      - name: Verify schema landed (pgvector extension, tables, RLS)
+        run: |
+          uv run python -c "
+          import asyncio, asyncpg
+
+          async def main():
+              conn = await asyncpg.connect('postgresql://ekip:ekip_ci_only@127.0.0.1:5432/ekip_migration_ci')
+              ext = await conn.fetchval(\"SELECT extname FROM pg_extension WHERE extname = 'vector'\")
+              assert ext == 'vector', 'pgvector extension missing after migration'
+              tables = await conn.fetchval(\"SELECT count(*) FROM pg_tables WHERE schemaname='public'\")
+              assert tables > 0, 'no tables created'
+              print(f'OK: pgvector installed, {tables} tables created')
+              await conn.close()
+
+          asyncio.run(main())
+          "
+
+      - name: Application starts against the freshly-migrated database
+        run: |
+          uv run uvicorn app.api.main:app --host 127.0.0.1 --port 8000 &
+          for i in $(seq 1 15); do
+            if curl -sf http://127.0.0.1:8000/health > /dev/null; then echo "started OK"; exit 0; fi
+            sleep 1
+          done
+          echo "backend never became healthy" && exit 1
+
+  docker-build:
+    name: Docker image builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build backend/worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          tags: ekip-backend:ci
+
+      - name: Build frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          push: false
+          tags: ekip-frontend:ci
+          build-args: |
+            VITE_API_BASE_URL=http://localhost:8000

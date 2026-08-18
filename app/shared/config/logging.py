@@ -22,11 +22,52 @@ loaded before this one -- logging depends on settings, not the reverse.
 """
 
 import logging
+import re
 import sys
+from typing import Any
 
 import structlog
 
 from app.shared.config.settings import get_settings
+
+# Phase 5.1: a defensive safety net, not the primary control -- every
+# call site in this codebase already follows the convention of logging
+# summaries/ids rather than raw secrets (see e.g. app/core/observability's
+# module docstring on why `mcp_requests.request_summary` never stores raw
+# payloads). This processor exists for the case that convention is missed:
+# any event-dict key whose *name* looks secret-shaped has its value replaced
+# outright, regardless of what the value actually contains. Matched
+# case-insensitively and against substrings (not just exact names) so
+# `authorization_header`/`client_secret_ref`/`jwt_token` are all caught, not
+# just literal `password`/`token`/`secret`.
+_SENSITIVE_KEY_PATTERN = re.compile(
+    r"(password|token|secret|api_key|apikey|authorization|credential|client_secret|private_key)",
+    re.IGNORECASE,
+)
+_REDACTED = "***REDACTED***"
+
+
+def _redact_sensitive_fields(
+    logger: object, method_name: str, event_dict: dict[str, Any]
+) -> dict[str, Any]:
+    """Structlog processor: redact any event-dict key whose name matches
+    `_SENSITIVE_KEY_PATTERN`, at any nesting depth (dicts only -- lists of
+    scalars are left alone, since no call site in this codebase logs
+    secrets inside a list).
+    """
+
+    def _scrub(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                key: (_REDACTED if _SENSITIVE_KEY_PATTERN.search(key) else _scrub(inner))
+                for key, inner in value.items()
+            }
+        return value
+
+    return {
+        key: (_REDACTED if _SENSITIVE_KEY_PATTERN.search(key) else _scrub(value))
+        for key, value in event_dict.items()
+    }
 
 
 def configure_logging() -> None:
@@ -48,6 +89,7 @@ def configure_logging() -> None:
         structlog.processors.TimeStamper(fmt="iso"),
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,
+        _redact_sensitive_fields,
     ]
 
     if is_production:

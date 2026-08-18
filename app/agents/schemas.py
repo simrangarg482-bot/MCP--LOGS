@@ -57,3 +57,12 @@ class AgentExecutionStats(BaseModel):
     failed_count: int
     avg_confidence_score: float | None
     avg_latency_seconds: float | None
+    #: Phase 5.7 -- `None` (not `0`) whenever no execution in this group
+    #: captured usage at all (see `AgentExecution`'s own column comments on
+    #: why absence and zero are kept distinct throughout this feature).
+    total_prompt_tokens: int | None
+    total_completion_tokens: int | None
+    total_tokens: int | None
+    #: An estimate from published pricing, not real billing data -- see
+    #: `app.agents.telemetry.get_estimated_cost_usd`'s own docstring.
+    estimated_cost_usd: float | None

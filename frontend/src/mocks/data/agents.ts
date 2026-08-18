@@ -25,8 +25,8 @@ export const agentPipelineStages = [
 // above -- those are internal steps within `answer_question`, not
 // separately-tracked agents.
 export const mockAgentStats: AgentExecutionStats[] = [
-  { agentName: "answer_question", executionCount: 412, succeededCount: 398, failedCount: 14, avgConfidenceScore: 0.79, avgLatencySeconds: 2.4 },
-  { agentName: "triage_incident", executionCount: 63, succeededCount: 60, failedCount: 3, avgConfidenceScore: 0.58, avgLatencySeconds: 4.1 },
-  { agentName: "generate_postmortem", executionCount: 18, succeededCount: 18, failedCount: 0, avgConfidenceScore: null, avgLatencySeconds: 6.8 },
-  { agentName: "detect_knowledge_gaps", executionCount: 30, succeededCount: 29, failedCount: 1, avgConfidenceScore: null, avgLatencySeconds: 1.9 },
+  { agentName: "answer_question", executionCount: 412, succeededCount: 398, failedCount: 14, avgConfidenceScore: 0.79, avgLatencySeconds: 2.4, totalPromptTokens: 890_200, totalCompletionTokens: 164_800, totalTokens: 1_055_000, estimatedCostUsd: 3.1785 },
+  { agentName: "triage_incident", executionCount: 63, succeededCount: 60, failedCount: 3, avgConfidenceScore: 0.58, avgLatencySeconds: 4.1, totalPromptTokens: 201_600, totalCompletionTokens: 47_250, totalTokens: 248_850, estimatedCostUsd: 0.8996 },
+  { agentName: "generate_postmortem", executionCount: 18, succeededCount: 18, failedCount: 0, avgConfidenceScore: null, avgLatencySeconds: 6.8, totalPromptTokens: 145_800, totalCompletionTokens: 62_100, totalTokens: 207_900, estimatedCostUsd: 0.8154 },
+  { agentName: "detect_knowledge_gaps", executionCount: 30, succeededCount: 29, failedCount: 1, avgConfidenceScore: null, avgLatencySeconds: 1.9, totalPromptTokens: null, totalCompletionTokens: null, totalTokens: null, estimatedCostUsd: null },
 ];

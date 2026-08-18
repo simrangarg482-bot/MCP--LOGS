@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import type { AuthUser, LoginPayload, SignupPayload } from "@/types/auth";
+import type { AuthUser, InvitationAcceptPayload, LoginPayload, SessionTokens, SignupPayload } from "@/types/auth";
 import * as authApi from "@/api/auth";
 import {
   clearSession,
@@ -17,6 +17,7 @@ interface AuthContextValue {
   isLoading: boolean;
   signup: (payload: SignupPayload) => Promise<void>;
   login: (payload: LoginPayload) => Promise<void>;
+  acceptInvitation: (invitationId: string, payload: InvitationAcceptPayload) => Promise<void>;
   logout: () => Promise<void>;
 }
 
@@ -64,9 +65,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener(SESSION_EXPIRED_EVENT, handleSessionExpired);
   }, []);
 
-  const handleSignup = useCallback(
-    async (payload: SignupPayload) => {
-      const tokens = await authApi.signup(payload);
+  const applySession = useCallback(
+    async (tokens: SessionTokens) => {
       setAccessToken(tokens.accessToken);
       setRefreshToken(tokens.refreshToken);
       await loadUserFromAccessToken(tokens.accessToken);
@@ -74,14 +74,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [loadUserFromAccessToken],
   );
 
+  const handleSignup = useCallback(
+    async (payload: SignupPayload) => {
+      await applySession(await authApi.signup(payload));
+    },
+    [applySession],
+  );
+
   const handleLogin = useCallback(
     async (payload: LoginPayload) => {
-      const tokens = await authApi.login(payload);
-      setAccessToken(tokens.accessToken);
-      setRefreshToken(tokens.refreshToken);
-      await loadUserFromAccessToken(tokens.accessToken);
+      await applySession(await authApi.login(payload));
     },
-    [loadUserFromAccessToken],
+    [applySession],
+  );
+
+  const handleAcceptInvitation = useCallback(
+    async (invitationId: string, payload: InvitationAcceptPayload) => {
+      await applySession(await authApi.acceptInvitation(invitationId, payload));
+    },
+    [applySession],
   );
 
   const handleLogout = useCallback(async () => {
@@ -103,14 +114,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       isLoading,
       signup: handleSignup,
       login: handleLogin,
+      acceptInvitation: handleAcceptInvitation,
       logout: handleLogout,
     }),
-    [user, isLoading, handleSignup, handleLogin, handleLogout],
+    [user, isLoading, handleSignup, handleLogin, handleAcceptInvitation, handleLogout],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
+// eslint-disable-next-line react-refresh/only-export-components -- context files exporting both the Provider and its hook is the standard pattern here
 export function useAuth(): AuthContextValue {
   const ctx = useContext(AuthContext);
   if (!ctx) throw new Error("useAuth must be used within an AuthProvider");

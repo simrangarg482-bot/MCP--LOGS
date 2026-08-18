@@ -21,6 +21,8 @@ from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 
+from app.agents.prompt_safety import build_messages
+
 _NO_CANDIDATE_TEXT = "(none -- no prior Investigation Agent hypothesis exists for this incident)"
 
 
@@ -51,24 +53,30 @@ async def extract_root_cause(
     (`timeline.latest_investigation_hypotheses`'s output, possibly empty).
     """
     candidate_text = _render_candidate(candidate_hypotheses)
-    prompt = (
-        "You are writing the root-cause section of an incident postmortem. "
-        "Use ONLY the timeline and candidate hypothesis below -- do not "
-        "invent facts not present in the timeline.\n\n"
+    evidence_block = (
         f"Timeline:\n{narrative}\n\n"
         f"Candidate root-cause hypothesis from a prior automated "
-        f"investigation: {candidate_text}\n\n"
-        "If the candidate hypothesis is present and nothing later in the "
-        "timeline contradicts it, use it as the basis for the root cause "
-        "(you may tighten the wording, but do not change its substance). "
-        "If it is absent, or a later timeline entry contradicts it, ignore "
-        "it and derive the root cause fresh from the timeline instead. "
-        "Respond with ONLY the root-cause text itself -- one to three "
-        "sentences, no headings, no preamble, no markdown. If the timeline "
-        "does not contain enough information to determine a root cause, "
-        "respond with exactly: 'Root cause could not be determined from "
-        "the available timeline; manual review required.'"
+        f"investigation: {candidate_text}"
     )
-    response = await llm.ainvoke(prompt)
+    messages = build_messages(
+        system_instructions=(
+            "You are writing the root-cause section of an incident postmortem. "
+            "Use ONLY the timeline and candidate hypothesis below -- do not "
+            "invent facts not present in the timeline. "
+            "If the candidate hypothesis is present and nothing later in the "
+            "timeline contradicts it, use it as the basis for the root cause "
+            "(you may tighten the wording, but do not change its substance). "
+            "If it is absent, or a later timeline entry contradicts it, ignore "
+            "it and derive the root cause fresh from the timeline instead. "
+            "Respond with ONLY the root-cause text itself -- one to three "
+            "sentences, no headings, no preamble, no markdown. If the timeline "
+            "does not contain enough information to determine a root cause, "
+            "respond with exactly: 'Root cause could not be determined from "
+            "the available timeline; manual review required.'"
+        ),
+        evidence_block=evidence_block,
+        task="",
+    )
+    response = await llm.ainvoke(messages)
     root_cause = str(response.content).strip()
     return root_cause

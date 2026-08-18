@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from langchain_core.language_models import BaseChatModel
 
+from app.agents.prompt_safety import build_messages
 from app.retrieval.schemas import ScoredChunk
 
 # A literal sentinel the model is instructed to return verbatim when the
@@ -41,19 +42,21 @@ async def generate_answer(llm: BaseChatModel, query: str, chunks: list[ScoredChu
     for the model to be constrained to otherwise.
     """
     context_block = build_context_block(chunks)
-    prompt = (
-        "You are answering an engineer's question using ONLY the numbered "
-        "context below. Do not use any outside knowledge. Every factual "
-        "claim must be immediately followed by the bracketed number(s) of "
-        "the context item(s) that support it, placed before the sentence's "
-        "ending punctuation, e.g. 'The service restarts automatically [2].' "
-        "If the context does not contain enough information to answer, "
-        f"respond with exactly '{_NO_ANSWER_MARKER}' and nothing else -- do "
-        "not guess or use outside/general knowledge.\n\n"
-        f"Context:\n{context_block}\n\n"
-        f"Question: {query}"
+    messages = build_messages(
+        system_instructions=(
+            "You are answering an engineer's question using ONLY the numbered "
+            "context below. Do not use any outside knowledge. Every factual "
+            "claim must be immediately followed by the bracketed number(s) of "
+            "the context item(s) that support it, placed before the sentence's "
+            "ending punctuation, e.g. 'The service restarts automatically [2].' "
+            "If the context does not contain enough information to answer, "
+            f"respond with exactly '{_NO_ANSWER_MARKER}' and nothing else -- do "
+            "not guess or use outside/general knowledge."
+        ),
+        evidence_block=context_block,
+        task=f"Question: {query}",
     )
-    response = await llm.ainvoke(prompt)
+    response = await llm.ainvoke(messages)
     return str(response.content).strip()
 
 

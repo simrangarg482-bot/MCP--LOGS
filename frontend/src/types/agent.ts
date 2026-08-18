@@ -11,8 +11,12 @@ export interface AgentExecutionStats {
   failedCount: number;
   avgConfidenceScore: number | null;
   avgLatencySeconds: number | null;
+  // Phase 5.7 -- `null` (not `0`) whenever no execution in this group
+  // captured usage at all; see `AgentExecutionStats`'s own docstring.
+  totalPromptTokens: number | null;
+  totalCompletionTokens: number | null;
+  totalTokens: number | null;
+  // An estimate from published pricing, not real billing data -- see
+  // `app.agents.telemetry.get_estimated_cost_usd`'s own docstring.
+  estimatedCostUsd: number | null;
 }
-
-// Matches `app.shared.schemas.common.AgentExecutionStatus` exactly -- the
-// real values are "succeeded"/"failed", not "success"/"failure".
-export type AgentExecutionStatus = "running" | "succeeded" | "failed";

@@ -1,0 +1,32 @@
+# Never bake secrets or local dev state into an image.
+.env
+.env.*
+!.env.example
+
+# VCS
+.git
+.gitignore
+
+# Python
+.venv
+ekip/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+
+# Frontend (has its own Dockerfile/.dockerignore under frontend/)
+frontend/node_modules
+frontend/dist
+frontend/e2e-report
+frontend/test-results
+frontend/playwright-report
+
+# Docs/scratch -- not needed at runtime
+*.md
+docs/
+scripts/
+tests/
+.github/

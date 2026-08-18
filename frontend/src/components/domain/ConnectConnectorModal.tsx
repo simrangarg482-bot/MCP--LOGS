@@ -1,9 +1,9 @@
 import { useState } from "react";
-import { Github, MessageSquare, Plus, Trash2 } from "lucide-react";
+import { Plus, Trash2 } from "lucide-react";
 import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
-import { cn } from "@/utils/cn";
+import { Tabs } from "@/components/ui/Tabs";
 import type { GithubRepoConfig } from "@/types/connector";
 
 interface ConnectConnectorModalProps {
@@ -11,16 +11,71 @@ interface ConnectConnectorModalProps {
   onClose: () => void;
   onSubmitGithub: (token: string, repos: GithubRepoConfig[]) => Promise<void>;
   onSubmitSlack: (token: string, channelIds: string[]) => Promise<void>;
+  onSubmitJira: (token: string, baseUrl: string, projects: string[]) => Promise<void>;
+  onSubmitConfluence: (token: string, baseUrl: string, spaces: string[]) => Promise<void>;
   isSubmitting: boolean;
 }
 
-type SourceTab = "github" | "slack";
+type SourceTab = "github" | "slack" | "jira" | "confluence";
+
+/** Shared list-of-string-keys editor: Slack channel IDs, Jira project keys,
+ * and Confluence space keys are all the same shape (a token field plus a
+ * dynamic list of short identifiers) -- one editor avoids four near-
+ * identical copies of the same add/remove-row logic. */
+function KeyListField({
+  legend,
+  placeholder,
+  ariaLabelPrefix,
+  values,
+  onChange,
+}: {
+  legend: string;
+  placeholder: string;
+  ariaLabelPrefix: string;
+  values: string[];
+  onChange: (values: string[]) => void;
+}) {
+  return (
+    <fieldset className="m-0 min-w-0 border-0 p-0">
+      <legend className="mb-1.5 block text-xs font-medium text-ink-muted">{legend}</legend>
+      <div className="flex flex-col gap-2">
+        {values.map((value, index) => (
+          <div key={index} className="flex gap-2">
+            <Input
+              placeholder={placeholder}
+              aria-label={`${ariaLabelPrefix} ${index + 1}`}
+              value={value}
+              onChange={(e) => onChange(values.map((v, i) => (i === index ? e.target.value : v)))}
+              className="flex-1"
+            />
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              aria-label={`Remove ${ariaLabelPrefix.toLowerCase()} ${index + 1}`}
+              onClick={() => onChange(values.filter((_, i) => i !== index))}
+              disabled={values.length === 1}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+        ))}
+      </div>
+      <Button type="button" variant="ghost" size="sm" className="mt-2 gap-1.5" onClick={() => onChange([...values, ""])}>
+        <Plus className="h-3.5 w-3.5" />
+        Add
+      </Button>
+    </fieldset>
+  );
+}
 
 export function ConnectConnectorModal({
   open,
   onClose,
   onSubmitGithub,
   onSubmitSlack,
+  onSubmitJira,
+  onSubmitConfluence,
   isSubmitting,
 }: ConnectConnectorModalProps) {
   const [tab, setTab] = useState<SourceTab>("github");
@@ -31,11 +86,25 @@ export function ConnectConnectorModal({
   const [slackToken, setSlackToken] = useState("");
   const [channelIds, setChannelIds] = useState<string[]>([""]);
 
+  const [jiraToken, setJiraToken] = useState("");
+  const [jiraBaseUrl, setJiraBaseUrl] = useState("");
+  const [jiraProjects, setJiraProjects] = useState<string[]>([""]);
+
+  const [confluenceToken, setConfluenceToken] = useState("");
+  const [confluenceBaseUrl, setConfluenceBaseUrl] = useState("");
+  const [confluenceSpaces, setConfluenceSpaces] = useState<string[]>([""]);
+
   function resetAndClose() {
     setGithubToken("");
     setRepos([{ repo: "", ref: "" }]);
     setSlackToken("");
     setChannelIds([""]);
+    setJiraToken("");
+    setJiraBaseUrl("");
+    setJiraProjects([""]);
+    setConfluenceToken("");
+    setConfluenceBaseUrl("");
+    setConfluenceSpaces([""]);
     setTab("github");
     onClose();
   }
@@ -58,6 +127,22 @@ export function ConnectConnectorModal({
     resetAndClose();
   }
 
+  async function handleJiraSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    const cleanedProjects = jiraProjects.map((p) => p.trim()).filter(Boolean);
+    if (!jiraToken.trim() || !jiraBaseUrl.trim() || cleanedProjects.length === 0) return;
+    await onSubmitJira(jiraToken.trim(), jiraBaseUrl.trim(), cleanedProjects);
+    resetAndClose();
+  }
+
+  async function handleConfluenceSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    const cleanedSpaces = confluenceSpaces.map((s) => s.trim()).filter(Boolean);
+    if (!confluenceToken.trim() || !confluenceBaseUrl.trim() || cleanedSpaces.length === 0) return;
+    await onSubmitConfluence(confluenceToken.trim(), confluenceBaseUrl.trim(), cleanedSpaces);
+    resetAndClose();
+  }
+
   return (
     <Modal
       open={open}
@@ -66,29 +151,18 @@ export function ConnectConnectorModal({
       description="Credentials are envelope-encrypted at rest and never displayed again after saving."
       className="max-w-xl"
     >
-      <div className="mb-4 flex gap-2">
-        <button
-          type="button"
-          onClick={() => setTab("github")}
-          className={cn(
-            "flex flex-1 items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm font-medium",
-            tab === "github" ? "border-accent-border bg-accent-subtle text-accent" : "border-border text-ink-muted",
-          )}
-        >
-          <Github className="h-4 w-4" />
-          GitHub
-        </button>
-        <button
-          type="button"
-          onClick={() => setTab("slack")}
-          className={cn(
-            "flex flex-1 items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm font-medium",
-            tab === "slack" ? "border-accent-border bg-accent-subtle text-accent" : "border-border text-ink-muted",
-          )}
-        >
-          <MessageSquare className="h-4 w-4" />
-          Slack
-        </button>
+      <div className="mb-4">
+        <Tabs
+          items={[
+            { key: "github", label: "GitHub" },
+            { key: "slack", label: "Slack" },
+            { key: "jira", label: "Jira" },
+            { key: "confluence", label: "Confluence" },
+          ]}
+          activeKey={tab}
+          onChange={(key) => setTab(key as SourceTab)}
+          idPrefix="connect-source"
+        />
       </div>
 
       {tab === "github" && (
@@ -179,47 +253,94 @@ export function ConnectConnectorModal({
             />
           </div>
 
-          <fieldset className="m-0 min-w-0 border-0 p-0">
-            <legend className="mb-1.5 block text-xs font-medium text-ink-muted">Channel IDs</legend>
-            <div className="flex flex-col gap-2">
-              {channelIds.map((channelId, index) => (
-                <div key={index} className="flex gap-2">
-                  <Input
-                    placeholder="C0123456789"
-                    aria-label={`Channel ${index + 1} ID`}
-                    value={channelId}
-                    onChange={(e) =>
-                      setChannelIds((prev) => prev.map((c, i) => (i === index ? e.target.value : c)))
-                    }
-                    className="flex-1"
-                  />
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    aria-label="Remove channel"
-                    onClick={() => setChannelIds((prev) => prev.filter((_, i) => i !== index))}
-                    disabled={channelIds.length === 1}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </Button>
-                </div>
-              ))}
-            </div>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="mt-2 gap-1.5"
-              onClick={() => setChannelIds((prev) => [...prev, ""])}
-            >
-              <Plus className="h-3.5 w-3.5" />
-              Add channel
-            </Button>
-          </fieldset>
+          <KeyListField
+            legend="Channel IDs"
+            placeholder="C0123456789"
+            ariaLabelPrefix="Channel"
+            values={channelIds}
+            onChange={setChannelIds}
+          />
 
           <Button type="submit" variant="primary" isLoading={isSubmitting} className="mt-2">
             Connect Slack
+          </Button>
+        </form>
+      )}
+
+      {tab === "jira" && (
+        <form onSubmit={handleJiraSubmit} className="flex flex-col gap-3">
+          <div>
+            <label htmlFor="jira-token" className="mb-1.5 block text-xs font-medium text-ink-muted">API token</label>
+            <Input
+              id="jira-token"
+              type="password"
+              required
+              placeholder="ATATT3…"
+              value={jiraToken}
+              onChange={(e) => setJiraToken(e.target.value)}
+            />
+          </div>
+          <div>
+            <label htmlFor="jira-base-url" className="mb-1.5 block text-xs font-medium text-ink-muted">Site URL</label>
+            <Input
+              id="jira-base-url"
+              type="url"
+              required
+              placeholder="https://acme.atlassian.net"
+              value={jiraBaseUrl}
+              onChange={(e) => setJiraBaseUrl(e.target.value)}
+            />
+          </div>
+
+          <KeyListField
+            legend="Project keys"
+            placeholder="OPS"
+            ariaLabelPrefix="Project key"
+            values={jiraProjects}
+            onChange={setJiraProjects}
+          />
+
+          <Button type="submit" variant="primary" isLoading={isSubmitting} className="mt-2">
+            Connect Jira
+          </Button>
+        </form>
+      )}
+
+      {tab === "confluence" && (
+        <form onSubmit={handleConfluenceSubmit} className="flex flex-col gap-3">
+          <div>
+            <label htmlFor="confluence-token" className="mb-1.5 block text-xs font-medium text-ink-muted">API token</label>
+            <Input
+              id="confluence-token"
+              type="password"
+              required
+              placeholder="ATATT3…"
+              value={confluenceToken}
+              onChange={(e) => setConfluenceToken(e.target.value)}
+            />
+          </div>
+          <div>
+            <label htmlFor="confluence-base-url" className="mb-1.5 block text-xs font-medium text-ink-muted">Site URL</label>
+            <Input
+              id="confluence-base-url"
+              type="url"
+              required
+              placeholder="https://acme.atlassian.net"
+              value={confluenceBaseUrl}
+              onChange={(e) => setConfluenceBaseUrl(e.target.value)}
+            />
+          </div>
+
+          <KeyListField
+            legend="Space keys"
+            placeholder="ENG"
+            ariaLabelPrefix="Space key"
+            values={confluenceSpaces}
+            onChange={setConfluenceSpaces}
+          />
+
+          <Button type="submit" variant="primary" isLoading={isSubmitting} className="mt-2">
+            Connect Confluence
           </Button>
         </form>
       )}

@@ -1,0 +1,114 @@
+name: CI
+
+# Fast tier (section 9/13's "Fast CI"): runs on every PR and every push to
+# main. No service containers, no repository secrets required at all --
+# the entire backend suite mocks repository/DB calls (verified directly:
+# all 417 tests pass even pointed at a deliberately unreachable
+# DATABASE_URL/REDIS_URL), so Settings only needs syntactically valid
+# placeholder values to construct, never real connectivity.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# A newer push/PR update cancels whatever this workflow was already running
+# for the same PR/branch -- no point finishing a check against code that's
+# already been superseded.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Placeholder-only values -- never real secrets, and deliberately not
+  # sourced from GitHub Actions `secrets` at all for this fast tier (see
+  # docs/operations/ci.md for the full test/staging/production secret-tier
+  # separation this repo follows).
+  DATABASE_URL: postgresql+asyncpg://ci:ci@127.0.0.1:5999/ci_placeholder_unreachable
+  REDIS_URL: redis://127.0.0.1:5999/0
+  JWT_SECRET_KEY: ci-only-placeholder-jwt-secret-not-a-real-secret
+  OPENAI_API_KEY: sk-ci-placeholder-not-a-real-key
+  CONNECTOR_SECRET_MASTER_KEY: 00112233445566778899aabbccddeeff00112233445566778899aabbccddee
+  ENVIRONMENT: test
+
+jobs:
+  secret-scan:
+    name: Secret scanning (gitleaks)
+    # Added Batch 4.5 after a real (session-local, never-committed -- see
+    # docs/operations/security-incidents.md) credential exposure incident.
+    # Scans full git history, not just the diff -- a leaked credential is a
+    # leaked credential the moment it's committed, regardless of which PR
+    # first introduces it. `--redact` means a real match's own report never
+    # contains the secret value itself, only its rule/file/line -- satisfying
+    # "the scanner itself must not print discovered secrets."
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install gitleaks
+        run: |
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz \
+            | tar xz gitleaks
+          sudo mv gitleaks /usr/local/bin/
+
+      - name: Scan repository + full history for secrets
+        run: gitleaks detect --source . --config .gitleaks.toml --redact -v
+
+  backend:
+    name: Backend tests + import-linter
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "0.11.19"
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Install dependencies (frozen lockfile)
+        run: uv sync --frozen --extra dev
+
+      - name: Backend tests
+        run: >
+          uv run pytest tests/ -q
+          --deselect tests/ingestion_retrieval/test_connectors.py::test_one_connector
+
+      - name: Import-linter (module boundary contracts)
+        run: uv run lint-imports
+
+  frontend:
+    name: Frontend type-check, lint, build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        # VITE_API_BASE_URL is compiled into the bundle -- a placeholder is
+        # fine for a build-succeeds check; the real deployment build supplies
+        # the actual API origin (see frontend/Dockerfile).
+        env:
+          VITE_API_BASE_URL: http://localhost:8000
+        run: npm run build

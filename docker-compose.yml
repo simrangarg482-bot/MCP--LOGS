@@ -1,0 +1,105 @@
+# Reproducible, production-shaped local stack (Phase 3). Copy
+# .env.docker.example to .env.docker (fill in OPENAI_API_KEY) first, then:
+#
+#   docker compose up --build
+#
+# `migrate` runs once and exits before `backend`/`worker` start (section 22's
+# explicit "deploy -> migration -> application" ordering, not an
+# every-startup implicit migration) -- both depend on it completing
+# successfully, not just on postgres being reachable.
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ekip
+      POSTGRES_PASSWORD: ekip_local_dev_only
+      POSTGRES_DB: ekip
+    ports:
+      - "5432:5432"
+    volumes:
+      - ekip_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ekip -d ekip"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file: .env.docker
+    # Overrides .env.docker's DATABASE_URL (meant for backend/worker) with
+    # the local Postgres superuser -- migrations (including provisioning
+    # the ekip_app role below) need admin privileges backend/worker are
+    # deliberately never granted. Mirrors infra/main.bicep's `migrateJob`
+    # vs `runtimeSecrets` split -- see docs/operations/deployment.md's
+    # "Migration database vs runtime database" for the full reasoning.
+    environment:
+      DATABASE_URL: postgresql+asyncpg://ekip:ekip_local_dev_only@postgres:5432/ekip
+    command: ["python", "-m", "alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file: .env.docker
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status == 200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file: .env.docker
+    command: ["arq", "app.ingestion.workers.main.WorkerSettings"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: http://localhost:8000
+    ports:
+      - "8080:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  ekip_postgres_data:

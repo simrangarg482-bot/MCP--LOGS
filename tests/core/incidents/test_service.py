@@ -13,9 +13,9 @@ from datetime import datetime, timezone
 
 import pytest
 
-from app.core.exceptions import PermissionDeniedError
+from app.core.exceptions import NotFoundError, PermissionDeniedError
 from app.core.incidents import service as incidents_service
-from app.core.incidents.schemas import Postmortem
+from app.core.incidents.schemas import Incident, IncidentFilter, Postmortem, TimelineEntry
 from app.shared.schemas import ActorKind, Identity
 
 
@@ -268,3 +268,265 @@ async def test_get_postmortem_by_incident_allows_approved_without_permission(mon
 
     result = await incidents_service.get_postmortem_by_incident(None, actor, organization_id, incident_id)
     assert result.id == row.id
+
+
+# --- Phase 4.7.2: incident:read authorization -------------------------------
+# Regression coverage for the confirmed access-control gap (2026-08 audit
+# "H4") where `get_incident`/`list_incidents`/`get_timeline` checked only
+# same-organization membership, with no permission check at all -- see
+# EKIP_TENANT_ISOLATION_SECURITY_REVIEW.md recommendation #3 and
+# docs/operations/migration-recovery.md.
+
+
+def _incident_row(organization_id: uuid.UUID, **overrides: object) -> Incident:
+    now = datetime.now(timezone.utc)
+    defaults: dict[str, object] = dict(
+        id=uuid.uuid4(),
+        organization_id=organization_id,
+        project_id=uuid.uuid4(),
+        title="Checkout service returning 500s",
+        description="Elevated error rate on POST /checkout since 14:02 UTC.",
+        status="investigating",
+        severity="high",
+        owner_team=None,
+        reported_by=uuid.uuid4(),
+        resolved_at=None,
+        created_at=now,
+        updated_at=now,
+    )
+    defaults.update(overrides)
+    return Incident(**defaults)
+
+
+def _timeline_row(organization_id: uuid.UUID, incident_id: uuid.UUID) -> TimelineEntry:
+    return TimelineEntry(
+        id=uuid.uuid4(),
+        organization_id=organization_id,
+        incident_id=incident_id,
+        event_type="note",
+        event_data={"text": "Rolled back the last deploy."},
+        actor="user:1234",
+        occurred_at=datetime.now(timezone.utc),
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_incident_denies_org_member_without_incident_read(monkeypatch) -> None:
+    """Previously the only gate here was `_ensure_same_organization` -- any
+    identity in the organization, including one with zero role assignments,
+    could read the incident's full detail.
+    """
+    organization_id = uuid.uuid4()
+    row = _incident_row(organization_id)
+    actor = _member_no_permissions(organization_id)
+
+    async def fake_get_incident_by_id(session, incident_id):
+        return row
+
+    monkeypatch.setattr(incidents_service.repository, "get_incident_by_id", fake_get_incident_by_id)
+
+    with pytest.raises(PermissionDeniedError):
+        await incidents_service.get_incident(None, actor, organization_id, row.id)
+
+
+@pytest.mark.asyncio
+async def test_get_incident_allows_with_project_scoped_incident_read(monkeypatch) -> None:
+    organization_id = uuid.uuid4()
+    row = _incident_row(organization_id)
+    actor = Identity(
+        kind=ActorKind.USER,
+        subject=str(uuid.uuid4()),
+        organization_id=organization_id,
+        user_id=uuid.uuid4(),
+        project_permissions={row.project_id: frozenset({"incident:read"})},
+    )
+
+    async def fake_get_incident_by_id(session, incident_id):
+        return row
+
+    monkeypatch.setattr(incidents_service.repository, "get_incident_by_id", fake_get_incident_by_id)
+
+    result = await incidents_service.get_incident(None, actor, organization_id, row.id)
+    assert result.id == row.id
+
+
+@pytest.mark.asyncio
+async def test_get_incident_allows_with_org_level_incident_read(monkeypatch) -> None:
+    """Org-level `permissions` is the fallback when no project-scoped
+    override exists (`Identity.has_permission`'s own documented behavior) --
+    this is what a backfilled/admin-style role looks like in practice.
+    """
+    organization_id = uuid.uuid4()
+    row = _incident_row(organization_id)
+    actor = Identity(
+        kind=ActorKind.USER,
+        subject=str(uuid.uuid4()),
+        organization_id=organization_id,
+        user_id=uuid.uuid4(),
+        permissions=frozenset({"incident:read"}),
+    )
+
+    async def fake_get_incident_by_id(session, incident_id):
+        return row
+
+    monkeypatch.setattr(incidents_service.repository, "get_incident_by_id", fake_get_incident_by_id)
+
+    result = await incidents_service.get_incident(None, actor, organization_id, row.id)
+    assert result.id == row.id
+
+
+@pytest.mark.asyncio
+async def test_get_incident_cross_organization_denied_before_permission_check(monkeypatch) -> None:
+    """A different organization's actor must be denied by
+    `_ensure_same_organization` -- never even reaching the permission check,
+    let alone leaking whether the incident exists.
+    """
+    organization_id = uuid.uuid4()
+    other_organization_id = uuid.uuid4()
+    row = _incident_row(organization_id)
+    actor = Identity(
+        kind=ActorKind.USER,
+        subject=str(uuid.uuid4()),
+        organization_id=other_organization_id,
+        user_id=uuid.uuid4(),
+        permissions=frozenset({"incident:read"}),
+    )
+
+    async def fake_get_incident_by_id(session, incident_id):
+        return row
+
+    monkeypatch.setattr(incidents_service.repository, "get_incident_by_id", fake_get_incident_by_id)
+
+    with pytest.raises(PermissionDeniedError):
+        await incidents_service.get_incident(None, actor, organization_id, row.id)
+
+
+@pytest.mark.asyncio
+async def test_get_incident_nonexistent_id_is_not_found_regardless_of_permission(monkeypatch) -> None:
+    """A nonexistent (or cross-organization) incident id 404s before any
+    permission is evaluated -- never distinguishing "exists, denied" from
+    "doesn't exist" to a caller who can't see the row at all.
+    """
+    organization_id = uuid.uuid4()
+    actor = _member_no_permissions(organization_id)
+
+    async def fake_get_incident_by_id(session, incident_id):
+        return None
+
+    monkeypatch.setattr(incidents_service.repository, "get_incident_by_id", fake_get_incident_by_id)
+
+    with pytest.raises(NotFoundError):
+        await incidents_service.get_incident(None, actor, organization_id, uuid.uuid4())
+
+
+@pytest.mark.asyncio
+async def test_list_incidents_denies_org_member_without_incident_read(monkeypatch) -> None:
+    organization_id = uuid.uuid4()
+    actor = _member_no_permissions(organization_id)
+
+    async def fake_list_incidents(session, org_id, query):
+        return [_incident_row(organization_id)]
+
+    monkeypatch.setattr(incidents_service.repository, "list_incidents", fake_list_incidents)
+
+    with pytest.raises(PermissionDeniedError):
+        await incidents_service.list_incidents(None, actor, organization_id, IncidentFilter())
+
+
+@pytest.mark.asyncio
+async def test_list_incidents_allows_with_org_level_incident_read(monkeypatch) -> None:
+    """`list_incidents` has no per-incident project_id to scope against (no
+    project filter on `IncidentFilter`), so this is always an org-level
+    check, never a project-scoped one.
+    """
+    organization_id = uuid.uuid4()
+    row = _incident_row(organization_id)
+    actor = Identity(
+        kind=ActorKind.USER,
+        subject=str(uuid.uuid4()),
+        organization_id=organization_id,
+        user_id=uuid.uuid4(),
+        permissions=frozenset({"incident:read"}),
+    )
+
+    async def fake_list_incidents(session, org_id, query):
+        return [row]
+
+    monkeypatch.setattr(incidents_service.repository, "list_incidents", fake_list_incidents)
+
+    result = await incidents_service.list_incidents(None, actor, organization_id, IncidentFilter())
+    assert [r.id for r in result] == [row.id]
+
+
+@pytest.mark.asyncio
+async def test_get_timeline_denies_org_member_without_incident_read(monkeypatch) -> None:
+    """A timeline entry can include investigation evidence and root-cause
+    detail (`record_investigation_result`) -- must not be readable by
+    anyone who couldn't read the incident itself.
+    """
+    organization_id = uuid.uuid4()
+    incident_row = _incident_row(organization_id)
+    actor = _member_no_permissions(organization_id)
+
+    async def fake_get_incident_by_id(session, incident_id):
+        return incident_row
+
+    async def fake_list_timeline_entries(session, incident_id):
+        return [_timeline_row(organization_id, incident_id)]
+
+    monkeypatch.setattr(incidents_service.repository, "get_incident_by_id", fake_get_incident_by_id)
+    monkeypatch.setattr(
+        incidents_service.repository, "list_timeline_entries", fake_list_timeline_entries
+    )
+
+    with pytest.raises(PermissionDeniedError):
+        await incidents_service.get_timeline(None, actor, organization_id, incident_row.id)
+
+
+@pytest.mark.asyncio
+async def test_get_timeline_allows_with_project_scoped_incident_read(monkeypatch) -> None:
+    organization_id = uuid.uuid4()
+    incident_row = _incident_row(organization_id)
+    actor = Identity(
+        kind=ActorKind.USER,
+        subject=str(uuid.uuid4()),
+        organization_id=organization_id,
+        user_id=uuid.uuid4(),
+        project_permissions={incident_row.project_id: frozenset({"incident:read"})},
+    )
+
+    async def fake_get_incident_by_id(session, incident_id):
+        return incident_row
+
+    async def fake_list_timeline_entries(session, incident_id):
+        return [_timeline_row(organization_id, incident_id)]
+
+    monkeypatch.setattr(incidents_service.repository, "get_incident_by_id", fake_get_incident_by_id)
+    monkeypatch.setattr(
+        incidents_service.repository, "list_timeline_entries", fake_list_timeline_entries
+    )
+
+    result = await incidents_service.get_timeline(None, actor, organization_id, incident_row.id)
+    assert len(result) == 1
+
+
+@pytest.mark.asyncio
+async def test_get_timeline_cross_organization_denied(monkeypatch) -> None:
+    organization_id = uuid.uuid4()
+    other_organization_id = uuid.uuid4()
+    incident_row = _incident_row(organization_id)
+    actor = Identity(
+        kind=ActorKind.USER,
+        subject=str(uuid.uuid4()),
+        organization_id=other_organization_id,
+        user_id=uuid.uuid4(),
+        permissions=frozenset({"incident:read"}),
+    )
+
+    async def fake_get_incident_by_id(session, incident_id):
+        return incident_row
+
+    monkeypatch.setattr(incidents_service.repository, "get_incident_by_id", fake_get_incident_by_id)
+
+    with pytest.raises(PermissionDeniedError):
+        await incidents_service.get_timeline(None, actor, organization_id, incident_row.id)

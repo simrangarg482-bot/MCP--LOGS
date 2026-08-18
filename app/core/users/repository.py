@@ -23,7 +23,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Sequence
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models.core_models import (
@@ -282,15 +282,32 @@ async def get_first_organization_id(session: AsyncSession, user_id: uuid.UUID) -
     """Return one organization `user_id` holds a role in, or `None` if they
     hold none anywhere.
 
-    Used by `core.auth.service.login_with_password`: a password-auth account
-    is created by `signup` with exactly one role assignment (in the
-    organization signup itself created), so "first" is unambiguous today --
-    this does not attempt to support a password-auth user who has since
-    joined a second organization some other way, which isn't a flow this
-    codebase builds yet (see `core.auth.service.signup`'s own docstring).
+    Used by `core.auth.service.login_with_password`, the same "no Identity/
+    org context yet" bootstrap shape as `core.auth.repository.
+    resolve_refresh_token_organization_id`: a password login starts from a
+    bare `user_id` with no organization known yet, and `user_roles` is one of
+    `c7d4e8f19a2b`'s `FORCE ROW LEVEL SECURITY` tables -- an ordinary
+    `SELECT` here would return nothing under a connection role that actually
+    enforces RLS (unlike the `neondb_owner`/`BYPASSRLS` connection every
+    environment has used so far), since no tenant context can exist at this
+    point in the flow. Goes through the narrow `resolve_user_first_
+    organization` SQL function (`c5e2a9f4d7b3_resolve_user_first_
+    organization_function.py`) for exactly that reason, rather than a plain
+    ORM query against `UserRole` -- the same pattern `resolve_refresh_token_
+    organization_id` already established for the identical problem on
+    `refresh_tokens`.
+
+    A password-auth account is created by `signup` with exactly one role
+    assignment (in the organization signup itself created), so "first" is
+    unambiguous today -- this does not attempt to support a password-auth
+    user who has since joined a second organization some other way, which
+    isn't a flow this codebase builds yet (see `core.auth.service.signup`'s
+    own docstring).
     """
-    stmt = select(UserRole.organization_id).where(UserRole.user_id == user_id).limit(1)
-    result = await session.execute(stmt)
+    result = await session.execute(
+        text("SELECT resolve_user_first_organization(:user_id)"),
+        {"user_id": str(user_id)},
+    )
     return result.scalar_one_or_none()
 
 

@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { SendHorizontal, Sparkles, MessageCircleQuestion } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
-import { Tabs } from "@/components/ui/Tabs";
+import { Tabs, TabPanel } from "@/components/ui/Tabs";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -75,10 +75,11 @@ export function AskPage() {
         ]}
         activeKey={tab}
         onChange={(key) => setTab(key as "chat" | "history")}
+        idPrefix="ask"
       />
 
       {tab === "chat" && (
-        <div className="flex flex-1 flex-col overflow-hidden">
+        <TabPanel idPrefix="ask" tabKey="chat" className="flex flex-1 flex-col overflow-hidden">
           <div className="flex-1 overflow-y-auto scrollbar-thin">
             {turns.length === 0 ? (
               <EmptyState
@@ -110,11 +111,11 @@ export function AskPage() {
               Ask
             </Button>
           </form>
-        </div>
+        </TabPanel>
       )}
 
       {tab === "history" && (
-        <div className="flex-1 overflow-y-auto scrollbar-thin">
+        <TabPanel idPrefix="ask" tabKey="history" className="flex-1 overflow-y-auto scrollbar-thin">
           {historyQuery.isLoading && <LoadingState label="Loading history…" />}
           {historyQuery.isError && <ErrorState onRetry={() => historyQuery.refetch()} />}
           {historyQuery.data && historyQuery.data.length === 0 && (
@@ -161,7 +162,7 @@ export function AskPage() {
               ))}
             </ul>
           )}
-        </div>
+        </TabPanel>
       )}
     </div>
   );

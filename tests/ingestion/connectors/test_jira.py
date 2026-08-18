@@ -8,12 +8,15 @@ call) since `fetch_batch`/`normalize` only ever receive that object back.
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
 import pytest
 
 from app.ingestion.connectors.jira import JiraConnector, _JiraClient
+from app.ingestion.schemas import ResolvedConnectorConfig
+from app.ingestion.url_safety import UnsafeConnectorUrlError
 
 # The real search path. Not a valid Python identifier, so it cannot be passed
 # to `_client(...)` as a bare keyword the way `search=` used to be -- these
@@ -376,3 +379,26 @@ def test_decode_cursor_tolerates_stale_offset_cursor_from_previous_version() -> 
     """
     cursor = json.dumps({"project_index": 1, "start_at": 50})
     assert JiraConnector._decode_cursor(cursor) == (1, None)
+
+
+@pytest.mark.asyncio
+async def test_authenticate_rejects_an_ssrf_base_url_before_any_network_call() -> None:
+    """Phase 3 production-hardening regression: a tenant admin setting
+    `base_url` to an internal/metadata address must be rejected before this
+    connector ever makes a request to it -- see `app.ingestion.url_safety`.
+    `authenticate` would otherwise make a real network call for a valid
+    base_url (why this whole file avoids calling it elsewhere), but the SSRF
+    check runs first, so no real HTTP client is ever constructed here.
+    """
+    config = ResolvedConnectorConfig(
+        connector_config_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        project_id=None,
+        source="jira",
+        credential_ref="someone@example.com:fake-token",
+        config={"base_url": "http://169.254.169.254", "projects": ["OPS"]},
+    )
+    connector = JiraConnector()
+
+    with pytest.raises(UnsafeConnectorUrlError):
+        await connector.authenticate(config)

@@ -1,6 +1,12 @@
 import { apiRequest, mockDelay } from "./client";
 import { USE_MOCK_DATA } from "./config";
-import type { AuthUser, LoginPayload, SessionTokens, SignupPayload } from "@/types/auth";
+import type {
+  AuthUser,
+  InvitationAcceptPayload,
+  LoginPayload,
+  SessionTokens,
+  SignupPayload,
+} from "@/types/auth";
 
 interface UserProfileResponse {
   id: string;
@@ -39,6 +45,25 @@ export async function login(payload: LoginPayload): Promise<SessionTokens> {
     return mockDelay(MOCK_TOKENS, 400);
   }
   return apiRequest<SessionTokens>("/auth/login", { method: "POST", body: payload });
+}
+
+/**
+ * Backend: `POST /invitations/{invitation_id}/accept` (Phase 7.5). Deliberately
+ * unauthenticated -- there is no session yet -- so `payload.token` (the
+ * single-use secret from the invitation link, distinct from `invitationId`
+ * itself) is what proves the caller controls the invited email address.
+ */
+export async function acceptInvitation(
+  invitationId: string,
+  payload: InvitationAcceptPayload,
+): Promise<SessionTokens> {
+  if (USE_MOCK_DATA) {
+    return mockDelay(MOCK_TOKENS, 400);
+  }
+  return apiRequest<SessionTokens>(`/invitations/${invitationId}/accept`, {
+    method: "POST",
+    body: payload,
+  });
 }
 
 export async function refreshSession(refreshToken: string): Promise<SessionTokens> {

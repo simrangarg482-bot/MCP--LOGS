@@ -90,15 +90,17 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
+from langchain_core.callbacks import UsageMetadataCallbackHandler
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents import repository
+from app.agents import cost_budget, repository
 from app.agents.graph import GraphState, build_graph, build_investigation_graph
 from app.agents.knowledge_gap import repository as knowledge_gap_repository
 from app.agents.knowledge_gap.pipeline import detect_knowledge_gaps as _run_knowledge_gap_pipeline
 from app.agents.llm import get_llm
 from app.agents.postmortem.pipeline import run_postmortem_pipeline
 from app.agents.schemas import AgentExecution, AgentExecutionStats
+from app.agents.telemetry import get_estimated_cost_usd, summarize_usage
 from app.core.exceptions import EKIPError, PermissionDeniedError
 from app.core.incidents import service as incidents_service
 from app.core.incidents.schemas import ActionItem
@@ -251,6 +253,8 @@ async def generate_postmortem(
     `triage_incident`'s two-tier failure handling: every failure here is
     marked `failed` and re-raised, never converted into fabricated content.
     """
+    await cost_budget.check_cost_budget(session, actor.organization_id)
+
     execution = await repository.insert_agent_execution(
         session,
         organization_id=actor.organization_id,
@@ -259,12 +263,20 @@ async def generate_postmortem(
         input_summary={"incident_id": str(incident_id)},
     )
 
+    # Phase 5.4/5.7: `with_config` binds the handler to every future
+    # `.ainvoke` call this specific `llm` instance makes, without
+    # `run_postmortem_pipeline`/`extract_root_cause`/`generate_action_items`
+    # needing to know or thread a callbacks parameter through at all -- see
+    # `app.agents.service._run_graph_and_record`'s own comment for the
+    # graph-based equivalent of this same pattern.
+    usage_handler = UsageMetadataCallbackHandler()
+
     try:
         timeline_entries = await incidents_service.get_timeline(
             session, actor, actor.organization_id, incident_id
         )
 
-        llm = get_llm()
+        llm = get_llm().with_config(callbacks=[usage_handler])
         root_cause, action_items = await run_postmortem_pipeline(llm, timeline_entries)
     except Exception as exc:
         await repository.update_agent_execution(
@@ -273,6 +285,7 @@ async def generate_postmortem(
             status="failed",
             error_detail=str(exc)[:2000],
             completed_at=datetime.now(timezone.utc),
+            **summarize_usage(usage_handler),
         )
         raise
 
@@ -281,6 +294,7 @@ async def generate_postmortem(
         execution.id,
         status="succeeded",
         completed_at=datetime.now(timezone.utc),
+        **summarize_usage(usage_handler),
     )
     return root_cause, action_items
 
@@ -447,6 +461,8 @@ async def detect_knowledge_gaps(
     failure here is marked `failed` and re-raised rather than papered over
     with a fabricated empty result.
     """
+    await cost_budget.check_cost_budget(session, actor.organization_id)
+
     settings = get_settings()
     execution = await repository.insert_agent_execution(
         session,
@@ -456,8 +472,10 @@ async def detect_knowledge_gaps(
         input_summary={"organization_id": str(actor.organization_id)},
     )
 
+    usage_handler = UsageMetadataCallbackHandler()
+
     try:
-        llm = get_llm()
+        llm = get_llm().with_config(callbacks=[usage_handler])
         rows = await _run_knowledge_gap_pipeline(
             session,
             llm,
@@ -474,6 +492,7 @@ async def detect_knowledge_gaps(
             status="failed",
             error_detail=str(exc)[:2000],
             completed_at=datetime.now(timezone.utc),
+            **summarize_usage(usage_handler),
         )
         raise
 
@@ -482,6 +501,7 @@ async def detect_knowledge_gaps(
         execution.id,
         status="succeeded",
         completed_at=datetime.now(timezone.utc),
+        **summarize_usage(usage_handler),
     )
     return [_gap_report_to_schema(row) for row in rows]
 
@@ -517,11 +537,24 @@ async def get_agent_execution_stats(
     constant even when the string value is shared, e.g. `_GAP_REVIEW_
     PERMISSION` above vs. `core.knowledge.service._REVIEW_PERMISSION`, both
     `"knowledge:review"`).
+
+    Phase 5.7's `estimated_cost_usd` is computed against `Settings.
+    agent_llm_model` (the *currently configured* model), applied to each
+    group's total token counts -- not a true per-execution, per-model-at-
+    the-time breakdown. This is a deliberate simplification: `app.agents.
+    llm.get_llm()` is a single global model setting that changes rarely, so
+    the overwhelming majority of any group's captured tokens were spent
+    against whatever model is configured right now. A historical model
+    change would make this estimate approximate for that window, not wrong
+    by orders of magnitude -- flagged here rather than silently assumed
+    away, and not solved with a heavier per-model-breakdown query since
+    nothing in this codebase's actual usage pattern needs that precision yet.
     """
     require_permission(actor, _OBSERVABILITY_READ_PERMISSION)
     rows = await repository.get_agent_execution_stats(
         session, actor.organization_id, since=since
     )
+    current_model = get_settings().agent_llm_model
     return [
         AgentExecutionStats(
             agent_name=row.agent_name,
@@ -533,6 +566,22 @@ async def get_agent_execution_stats(
             ),
             avg_latency_seconds=(
                 float(row.avg_latency_seconds) if row.avg_latency_seconds is not None else None
+            ),
+            total_prompt_tokens=(
+                int(row.total_prompt_tokens) if row.total_prompt_tokens is not None else None
+            ),
+            total_completion_tokens=(
+                int(row.total_completion_tokens)
+                if row.total_completion_tokens is not None
+                else None
+            ),
+            total_tokens=int(row.total_tokens) if row.total_tokens is not None else None,
+            estimated_cost_usd=get_estimated_cost_usd(
+                current_model,
+                int(row.total_prompt_tokens) if row.total_prompt_tokens is not None else None,
+                int(row.total_completion_tokens)
+                if row.total_completion_tokens is not None
+                else None,
             ),
         )
         for row in rows
@@ -556,7 +605,19 @@ async def _run_graph_and_record(
     `AskResponse.route_taken` the generic-failure response uses -- the
     closest honest label for whichever entry point was actually being
     attempted, since `AskResponse` has no dedicated error variant.
+
+    Phase 6.6: checks `cost_budget.check_cost_budget` before recording
+    anything or invoking `graph` at all -- an organization that has already
+    exceeded its configured daily budget should not have a further
+    `agent_executions` row created for an attempt that's about to be
+    refused anyway. `CostBudgetExceededError` is an expected domain error
+    (like `PermissionDeniedError`), so it's allowed to propagate here, not
+    caught by the two-tier handling below -- the caller must see a real
+    429, never a fabricated degraded answer that looks like a normal
+    low-confidence response.
     """
+    await cost_budget.check_cost_budget(session, initial_state.actor.organization_id)
+
     execution = await repository.insert_agent_execution(
         session,
         organization_id=initial_state.actor.organization_id,
@@ -566,8 +627,18 @@ async def _run_graph_and_record(
         input_summary=input_summary,
     )
 
+    # Phase 5.4/5.7: attached once, at the single top-level `graph.ainvoke`
+    # call -- LangChain propagates callbacks to every LLM call any node
+    # makes during this run (query rewriting, answer generation, grounding,
+    # sufficiency, hypothesis generation), so this captures the whole
+    # execution's real token usage without each node needing its own
+    # instrumentation. See `app.agents.telemetry.summarize_usage`'s own
+    # docstring for why a partial/zero result here is never treated as "zero
+    # tokens spent" -- only as "not captured."
+    usage_handler = UsageMetadataCallbackHandler()
+
     try:
-        raw_final_state = await graph.ainvoke(initial_state)
+        raw_final_state = await graph.ainvoke(initial_state, config={"callbacks": [usage_handler]})
     except EKIPError as exc:
         await repository.update_agent_execution(
             session,
@@ -575,6 +646,7 @@ async def _run_graph_and_record(
             status="failed",
             error_detail=str(exc)[:2000],
             completed_at=datetime.now(timezone.utc),
+            **summarize_usage(usage_handler),
         )
         raise
     except Exception as exc:
@@ -591,6 +663,7 @@ async def _run_graph_and_record(
             status="failed",
             error_detail=str(exc)[:2000],
             completed_at=datetime.now(timezone.utc),
+            **summarize_usage(usage_handler),
         )
         return AskResponse(
             confidence=0.0,
@@ -618,6 +691,7 @@ async def _run_graph_and_record(
             status="failed",
             error_detail="graph completed with no result",
             completed_at=datetime.now(timezone.utc),
+            **summarize_usage(usage_handler),
         )
         return AskResponse(
             confidence=0.0,
@@ -632,5 +706,6 @@ async def _run_graph_and_record(
         status="succeeded",
         confidence_score=final_state.confidence_score,
         completed_at=datetime.now(timezone.utc),
+        **summarize_usage(usage_handler),
     )
     return final_state.result

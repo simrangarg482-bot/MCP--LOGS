@@ -7,10 +7,11 @@ import { TenantSwitcher } from "./TenantSwitcher";
 import { useState } from "react";
 
 interface TopbarProps {
+  isMobileNavOpen: boolean;
   onToggleSidebar: () => void;
 }
 
-export function Topbar({ onToggleSidebar }: TopbarProps) {
+export function Topbar({ isMobileNavOpen, onToggleSidebar }: TopbarProps) {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
@@ -28,6 +29,7 @@ export function Topbar({ onToggleSidebar }: TopbarProps) {
         type="button"
         onClick={onToggleSidebar}
         aria-label="Toggle sidebar"
+        aria-expanded={isMobileNavOpen}
         className="rounded-md p-1.5 text-ink-muted hover:bg-slate-100 hover:text-ink lg:hidden"
       >
         <Menu className="h-4 w-4" />

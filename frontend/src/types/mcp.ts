@@ -12,21 +12,25 @@ export interface McpToolParameter {
 
 export type McpToolStatus = "available" | "unavailable" | "deprecated";
 
+/**
+ * `description`/`status`/`parameters` are optional, not required: they only
+ * exist in mock mode's illustrative tool catalog (`mocks/data/mcp.ts`). The
+ * real `GET /observability/mcp` endpoint returns usage *statistics*
+ * (request/error counts, latency), not a tool catalog with parameter
+ * schemas — the backend has no such introspection endpoint. Keeping these
+ * fields optional (rather than fabricating placeholder values for real
+ * responses) is what lets `McpToolsPage` render real data honestly instead
+ * of crashing on `undefined` or inventing fake catalog details.
+ */
 export interface McpTool {
   name: string;
-  description: string;
-  status: McpToolStatus;
-  parameters: McpToolParameter[];
+  description?: string;
+  status?: McpToolStatus;
+  parameters?: McpToolParameter[];
   lastExecutionAt?: ISODateString;
   avgLatencyMs?: number;
   callCountLast24h?: number;
-}
-
-export interface McpToolInvocationResult {
-  toolName: string;
-  input: Record<string, unknown>;
-  output?: unknown;
-  error?: string;
-  durationMs: number;
-  executedAt: ISODateString;
+  /** Real fields from `GET /observability/mcp` -- undefined in mock mode. */
+  errorCount?: number;
+  maxLatencyMs?: number;
 }

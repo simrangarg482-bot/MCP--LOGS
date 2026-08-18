@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.knowledge_gap import repository
 from app.agents.knowledge_gap.clustering import cluster_by_similarity, cosine_similarity
+from app.agents.prompt_safety import build_messages
 from app.database.models.agent_models import AgentExecution, KnowledgeGapReport
 from app.retrieval import embedding
 from app.retrieval import service as retrieval_service
@@ -89,18 +90,21 @@ async def _synthesize_topic(llm: BaseChatModel, queries: list[str]) -> str:
     raw query verbatim as a stand-in for the whole group.
     """
     rendered = "\n".join(f"- {query}" for query in queries[:20])
-    prompt = (
-        "The following are real questions employees asked an internal "
-        "knowledge assistant that it could not answer confidently. They are "
-        "different wordings of what is likely the same underlying "
-        "documentation gap.\n\n"
-        f"{rendered}\n\n"
-        "Respond with ONLY a short topic label (5-10 words) describing what "
-        "documentation is missing or unclear -- no preamble, no quotes, no "
-        "markdown. Example: 'How to configure checkout service retry "
-        "limits'."
+    messages = build_messages(
+        system_instructions=(
+            "The following are real questions employees asked an internal "
+            "knowledge assistant that it could not answer confidently. They are "
+            "different wordings of what is likely the same underlying "
+            "documentation gap.\n\n"
+            "Respond with ONLY a short topic label (5-10 words) describing what "
+            "documentation is missing or unclear -- no preamble, no quotes, no "
+            "markdown. Example: 'How to configure checkout service retry "
+            "limits'."
+        ),
+        evidence_block=rendered,
+        task="",
     )
-    response = await llm.ainvoke(prompt)
+    response = await llm.ainvoke(messages)
     return str(response.content).strip()
 
 

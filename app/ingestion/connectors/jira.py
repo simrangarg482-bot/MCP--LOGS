@@ -89,6 +89,7 @@ from typing import Any
 import httpx
 
 from app.ingestion.schemas import FetchResult, RawDocument, ResolvedConnectorConfig
+from app.ingestion.url_safety import assert_safe_connector_url
 from app.shared.config.logging import get_logger
 
 logger = get_logger(__name__)
@@ -147,6 +148,10 @@ class JiraConnector:
         base_url = config.config.get("base_url", "").rstrip("/")
         if not base_url:
             raise RuntimeError("Jira connector config is missing required 'base_url'")
+        # SSRF guard: base_url is tenant-admin-supplied (unlike Slack/
+        # GitHub's hardcoded API hosts), so it must be validated before this
+        # worker ever makes a request to it -- see url_safety's docstring.
+        assert_safe_connector_url(base_url)
 
         encoded_credentials = base64.b64encode(config.credential_ref.encode("utf-8")).decode(
             "ascii"
