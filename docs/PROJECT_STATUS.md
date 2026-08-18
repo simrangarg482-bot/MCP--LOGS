@@ -4,6 +4,47 @@ Status: **Living document. Update this at the end of every milestone.** This fil
 
 Last updated: 2026-08-18
 
+**For the exact, ordered, executable sequence to close every remaining item
+below, see `docs/operations/final-go-live-runbook.md`. For a plain
+checklist, `docs/operations/production-release-checklist.md`. For the
+formal PASS/BLOCKED-per-category verdict, `docs/operations/
+FINAL_PRODUCTION_CERTIFICATION.md` — which currently reads `NOT PRODUCTION
+READY`.**
+
+---
+
+## Status classification (read this first)
+
+Four labels, used consistently everywhere below — do not read "the code is
+correct" as "verified":
+
+- **CODE COMPLETE** — the implementation, migration, or IaC change exists, is reviewed, and passes every check this environment can run (tests, typecheck, `alembic heads`, `az bicep build`). It has never been executed against real infrastructure.
+- **VERIFIED** — actually executed in this environment (or via CI, with evidence) and confirmed correct. This is the only label that should ever be read as "done."
+- **BLOCKED** — cannot be executed in this environment at all; the exact missing access is named, and a runbook phase exists to close it once that access is available.
+- **REQUIRES HUMAN ACTION** — the code/plan is ready, but the next step is inherently something only a human with the relevant access can authorize or perform (a console rotation, an explicit "yes, apply this to Neon," a resource-group grant) — distinct from BLOCKED in that no further engineering closes it, only a decision or a credential.
+
+| Area | Status |
+|---|---|
+| Backend implementation, tests, import boundaries | **VERIFIED** |
+| Frontend implementation, typecheck/lint/build | **VERIFIED** |
+| RBAC, application-layer tenant isolation | **VERIFIED** |
+| RLS runtime-role fix (`ekip_app`, migrations `b8f3d6a1c4e7`/`c5e2a9f4d7b3`) | **CODE COMPLETE** |
+| RLS mechanism validation (`rls_isolation_test.py`) | **BLOCKED** — no disposable Postgres in this environment |
+| RLS active in any real deployment | **REQUIRES HUMAN ACTION** — apply the migrations to Neon, switch `DATABASE_URL`, both need explicit authorization |
+| Neon migration state (`alembic_version` orphan) | **REQUIRES HUMAN ACTION** — recovery migration exists (`90ff736ced55`), applying it needs authorization |
+| Credential rotation (Azure DevOps PAT, Neon, Redis) | **REQUIRES HUMAN ACTION** — procedure documented, needs console access only a human has |
+| Azure/Bicep IaC | **CODE COMPLETE** — compiles clean, 3 real wiring bugs found and fixed this session |
+| Real Azure deployment | **BLOCKED** — no EKIP-authorized resource group; declined to use the one unrelated resource group this identity can reach |
+| Docker images/compose | **CODE COMPLETE** (static review only) |
+| Docker execution | **BLOCKED** — no `docker` binary in this environment |
+| CI/CD workflows | **CODE COMPLETE** — well-constructed, updated this session for the new migrations |
+| CI/CD actual run results | **BLOCKED** — no `gh`/GitHub API access in this environment |
+| AI evaluation | **BLOCKED** — no live corpus + funded `OPENAI_API_KEY` |
+| Full Playwright E2E | **BLOCKED** — no running stack; 0/0 executed |
+| Backup/restore | **BLOCKED** — no provisioned database to back up |
+| Accessibility/responsive | **CODE COMPLETE** for the fixes made this session; live browser/AT validation **BLOCKED** |
+| Documentation | **VERIFIED** — this file, the runbook, the checklist, and the certification report are all current as of this update |
+
 ---
 
 ## Current baseline (verified this session)
@@ -39,7 +80,9 @@ Last updated: 2026-08-18
 
 **Phases 11/12 (AI evaluation, full E2E)**: Confirmed still BLOCKED, not attempted. `scripts/eval_confidence.py` requires a live database with real ingested data and a real, funded `OPENAI_API_KEY` (costs real money per run) — running it without both would either fail outright or require fabricating inputs, neither of which is acceptable. No Playwright execution attempted for the same reason as every prior phase: no Docker, no local Postgres, no running dev server in this environment.
 
-**Phase 13/14 (Cleanup, final regression, this session)**: Repo-wide sweep (`app/`, `frontend/src/`, `scripts/`, `infra/`, `.github/workflows/`) for `TODO`/`FIXME`/`HACK`/stray `print`/dead code found nothing beyond what Phase 7 already cleaned up. Verified zero broken relative links across every `docs/**/*.md` and `README.md` programmatically. `README.md` was already accurate (correctly lists all 9 real ingestion connector types) and needed no changes. Final regression: 485 backend tests passing, 7/7 import-linter contracts, frontend typecheck/lint/build all clean, Bicep compiles with 0 errors — all reconfirmed after every fix in this phase, not just once at the start.
+**Phase 13/14 (Cleanup, final regression, this session)**: Repo-wide sweep (`app/`, `frontend/src/`, `scripts/`, `infra/`, `.github/workflows/`) for `TODO`/`FIXME`/`HACK`/stray `print`/dead code found nothing beyond what Phase 7 already cleaned up. Verified zero broken relative links across every `docs/**/*.md` and `README.md` programmatically. `README.md` was already accurate (correctly lists all 9 real ingestion connector types) and needed no changes. Final regression (re-run after every subsequent fix, including the RLS remediation migrations below, not just once at the start): 487 backend tests passing, 7/7 import-linter contracts, frontend typecheck/lint/build all clean, Bicep compiles with 0 errors.
+
+**Production closure — handoff package (this session)**: Created `docs/operations/final-go-live-runbook.md` (15 ordered phases, A–O, each with command/expected result/failure condition/rollback/evidence-to-capture — an operator with real Neon/Azure/GitHub/Docker/Redis/OpenAI access can execute this without reading this project's history), `docs/operations/production-release-checklist.md` (every item unchecked as of this update, each mapped to a runbook phase), and `docs/operations/FINAL_PRODUCTION_CERTIFICATION.md` (the fixed-structure PASS/BLOCKED report, verdict `NOT PRODUCTION READY`). A second real-world finding surfaced while preparing the runbook's Azure phase: this environment's `az` CLI is authenticated with real subscription access, and the identity does hold Contributor on one resource group — `rg-nextcare-purview-demo`, an unrelated pre-existing demo project. Asked the user explicitly rather than assuming; **user confirmed: do not use it.** Azure deployment remains BLOCKED on a real, EKIP-authorized resource group, now documented precisely rather than as a blanket "no permissions."
 
 **Phase 5 (Observability)**: Structured logging with request correlation (`RequestContextMiddleware`, structlog contextvars), OpenTelemetry tracing (`SimpleSpanProcessor` in dev to avoid a background-thread-outlives-pytest crash found during testing), AI usage/cost telemetry (`app/agents/telemetry.py`, `AgentExecution.model_used/prompt_tokens/completion_tokens/total_tokens`), `/observability/{agents,mcp,ingestion}` endpoints.
 
