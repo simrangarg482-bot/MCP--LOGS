@@ -14,6 +14,20 @@ Azure infrastructure:        NOT PROVISIONED. BLOCKED — the identity available
                               Contributor/Owner role anywhere on the
                               subscription; a real `az group create` attempt
                               was denied with AuthorizationFailed (Batch 3.5).
+                              Re-confirmed with a precise finding during the
+                              production-closure phase (2026-08-18): this
+                              identity does hold Contributor on exactly one
+                              existing resource group, `rg-nextcare-purview-
+                              demo` — an unrelated pre-existing demo project,
+                              not anything EKIP-designated. Explicitly
+                              declined to deploy into it (would be using a
+                              different project's resource group without
+                              proper authorization scope, whatever the raw
+                              API permissions allow) — Azure infrastructure
+                              validation remains blocked on a real,
+                              EKIP-designated resource group/subscription
+                              access, not merely "any Contributor role
+                              anywhere."
 Azure Key Vault integration: Structurally implemented and unit-tested against
                               a mocked Key Vault boundary (7 tests). Never
                               exercised against a real vault -- same
