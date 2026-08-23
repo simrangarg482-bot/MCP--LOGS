@@ -114,3 +114,20 @@ export async function triggerConnectorSync(connectorId: string): Promise<{ statu
   }
   return apiRequest<{ status: string }>(`/tenancy/connectors/${connectorId}/sync`, { method: "POST" });
 }
+
+/**
+ * `DELETE /tenancy/connectors/{id}` -- a real `DELETE` verb backed by a
+ * status change (`"disconnected"`), not a dropped row: `ingestion_jobs.
+ * connector_config_id` is `ON DELETE RESTRICT`, so the backend can't hard-
+ * delete a connector that has ever synced. See `core.tenancy.service.
+ * disconnect_connector`'s own docstring. The row survives server-side;
+ * `listConnectors`'s caller filters `"disconnected"` out of the visible
+ * list (see `ConnectorsPage.tsx`), so this reads as deletion here.
+ */
+export async function deleteConnector(connectorId: string): Promise<Connector> {
+  if (USE_MOCK_DATA) {
+    const existing = mockConnectors.find((c) => c.id === connectorId) ?? mockConnectors[0];
+    return mockDelay({ ...existing, status: "disconnected" }, 300);
+  }
+  return apiRequest<Connector>(`/tenancy/connectors/${connectorId}`, { method: "DELETE" });
+}

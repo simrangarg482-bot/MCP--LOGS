@@ -123,6 +123,31 @@ def test_list_connectors_returns_callers_own_organization_configs(client, monkey
     assert sources == {"jira", "teams"}
 
 
+def test_delete_connector_calls_disconnect_with_callers_own_organization(client, monkeypatch) -> None:
+    test_client, actor = client
+    connector_id = uuid.uuid4()
+    disconnected = _connector_config(actor.organization_id, source="github").model_copy(
+        update={"status": "disconnected"}
+    )
+    captured: dict[str, object] = {}
+
+    async def fake_disconnect_connector(session, passed_actor, organization_id, passed_connector_id):
+        captured["actor"] = passed_actor
+        captured["organization_id"] = organization_id
+        captured["connector_id"] = passed_connector_id
+        return disconnected
+
+    monkeypatch.setattr(tenancy_router.tenancy_service, "disconnect_connector", fake_disconnect_connector)
+
+    response = test_client.delete(f"/tenancy/connectors/{connector_id}")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "disconnected"
+    assert captured["actor"] is actor
+    assert captured["organization_id"] == actor.organization_id
+    assert captured["connector_id"] == connector_id
+
+
 # --- admin_router: organizations/projects/sso/access-rules/invitations -------
 
 

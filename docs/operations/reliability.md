@@ -23,6 +23,8 @@ None of these had an infinite-retry risk (all confirmed bounded before this phas
 
 **Worker `job_timeout` asymmetry fixed**: `app.ingestion.workers.main` explicitly set 1800s; `app.agents.workers.main` had silently fallen through to arq's 300s default despite an analogous "could scale with organization volume" concern. Now explicitly 600s, with reasoning documented inline for why it's not simply copied from ingestion's value.
 
+**Ingestion `job_timeout` raised 1800s → 3600s (real-world follow-up)**: a real full sync against an actual GitHub connector hit the 30-minute ceiling and was killed mid-embedding, losing the entire (transactional) sync. Root cause: `app.ingestion.connectors.github`'s full sync runs four phases per repo (files, commits, pulls, issues), each embedding synchronously via a local, CPU-bound `sentence-transformers` model (`app.retrieval.embedding`) -- one call per document, on whatever CPU the machine has free. 1800s was a reasoned estimate; 3600s is a measurement-informed adjustment, not a guarantee -- an even larger repo (or slower hardware) can still exceed it. The real fix for that ceiling is stage-level resumability (retrying from where a sync left off, not from the top), explicitly flagged as a separate, larger undertaking in `_execute_ingestion_job`'s own docstring, not attempted here.
+
 **Known, disclosed nuance** (not fixed, documented): `run_ingestion_job_task` redelivery is data-idempotent (content-hash dedup prevents duplicate `Document`/chunk rows) but not audit-row-idempotent (a redelivered job creates a second `ingestion_jobs` row). Low-severity, not addressed this phase.
 
 ## Rate limiting (Phase 6.5)

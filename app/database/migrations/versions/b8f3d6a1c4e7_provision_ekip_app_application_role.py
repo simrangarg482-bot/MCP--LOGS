@@ -128,6 +128,22 @@ def upgrade() -> None:
     # against a database that already has the role (e.g. Neon, where it
     # already exists from the abandoned branch) must converge its
     # password/attributes to this definition, not fail.
+    # `NOSUPERUSER` is deliberately absent from both branches below, not an
+    # oversight: Postgres enforces "only roles with the SUPERUSER attribute
+    # may change the SUPERUSER attribute" as an absolute rule, independent
+    # of CREATEROLE -- confirmed live against Neon, whose `neondb_owner`
+    # (`rolsuper=false`, but `rolcreatedb`/`rolcreaterole`/`rolreplication`/
+    # `rolbypassrls` all `true`) can freely manage every attribute below
+    # except this one, and errors outright ("permission denied to alter
+    # role") the moment `NOSUPERUSER`/`SUPERUSER` appears in the statement
+    # at all -- even to explicitly (redundantly) set a role to the same
+    # `NOSUPERUSER` state it already has. Omitting the clause entirely is
+    # both sufficient and correct: `NOSUPERUSER` is Postgres's own default
+    # for `CREATE ROLE` when unspecified, and `ALTER ROLE` simply leaves an
+    # untouched attribute as whatever it already was -- `ekip_app` was
+    # never going to be superuser either way, so there is no security
+    # difference, only a permissions-model one, between stating this
+    # explicitly and relying on the default.
     op.execute(
         f"""
         DO $$
@@ -136,7 +152,6 @@ def upgrade() -> None:
                 CREATE ROLE {_APP_ROLE}
                     WITH LOGIN
                     PASSWORD '{escaped_password}'
-                    NOSUPERUSER
                     NOBYPASSRLS
                     NOCREATEDB
                     NOCREATEROLE
@@ -145,7 +160,6 @@ def upgrade() -> None:
                 ALTER ROLE {_APP_ROLE}
                     WITH LOGIN
                     PASSWORD '{escaped_password}'
-                    NOSUPERUSER
                     NOBYPASSRLS
                     NOCREATEDB
                     NOCREATEROLE

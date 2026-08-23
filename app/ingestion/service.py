@@ -243,6 +243,23 @@ async def _execute_ingestion_job(
             detail={"connector_config_id": str(connector_config_id)},
         )
 
+    if config_row.status == "disconnected":
+        # Fails fast, not slow: a connector the user just deleted
+        # (`core.tenancy.service.disconnect_connector`) may still have an
+        # `arq` retry already queued from a prior attempt (e.g. one that hit
+        # `WorkerSettings.job_timeout`) -- without this check, that retry
+        # would re-run the exact same slow sync to the exact same timeout a
+        # second and third time before `max_tries` finally gives up. This
+        # check turns that into a near-instant no-op instead. Deliberately a
+        # `ConflictError`, not a silent early return: a disconnected
+        # connector's job history should show *why* it stopped producing
+        # documents, not just stop appearing.
+        raise ConflictError(
+            "This connector has been disconnected; ingestion will not run for it.",
+            error_code="connector_config.disconnected",
+            detail={"connector_config_id": str(connector_config_id)},
+        )
+
     connector = _CONNECTOR_REGISTRY.get(config_row.source)
     if connector is None:
         raise ConflictError(

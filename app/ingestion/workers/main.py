@@ -58,6 +58,23 @@ class WorkerSettings:
     # `requests_per_second = 0.5`), and a channel/repo with real history
     # can need enough pages that the wait time alone exceeds 300s -- arq
     # then cancels the job mid-page rather than the connector or the app
-    # failing outright. 30 minutes gives a real first sync room to finish
-    # under that throttle instead of being treated as stuck.
-    job_timeout = 1800
+    # failing outright.
+    #
+    # Raised from 1800s (30 min) to 3600s (1 hour) after a real timeout
+    # observed against an actual GitHub connector: `app.ingestion.
+    # connectors.github`'s full sync (`since=None`, the only kind a first
+    # sync ever is) runs FOUR phases per configured repo -- `"files"` (a
+    # full recursive tree walk of every file currently in the repo,
+    # independent of commit count and often the largest phase by volume),
+    # `"commits"`, `"pulls"`, and `"issues"` -- and every embedding in
+    # every phase is a synchronous, CPU-bound `sentence-transformers`
+    # call (`app.retrieval.embedding.embed_texts`, `asyncio.to_thread`),
+    # one call per document, competing for the same CPU as everything
+    # else running on the machine. 30 minutes was a reasoned estimate, not
+    # a measurement; this is the measurement. Still not unbounded headroom
+    # -- an even larger repo (or a slower machine) can still exceed this --
+    # see `app.ingestion.service._execute_ingestion_job`'s own docstring
+    # for why true stage-level resume (rather than a bigger fixed ceiling)
+    # is the real fix for that, flagged there as a larger, separate
+    # undertaking rather than assumed already solved by this number.
+    job_timeout = 3600

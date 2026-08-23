@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from app.core.exceptions import ConflictError
 from app.ingestion import service as ingestion_service
 from app.ingestion.schemas import FetchResult, ResolvedConnectorConfig
 from app.shared.security import encrypt_secret, get_kms
@@ -40,7 +41,7 @@ class _FakeSession:
 
 
 class _FakeConnectorConfigRow:
-    def __init__(self, *, organization_id, source, credential_ref) -> None:
+    def __init__(self, *, organization_id, source, credential_ref, status="active") -> None:
         self.id = uuid.uuid4()
         self.organization_id = organization_id
         self.project_id = None
@@ -48,6 +49,7 @@ class _FakeConnectorConfigRow:
         self.credential_ref = credential_ref
         self.config = {}
         self.last_synced_at = None
+        self.status = status
 
 
 class _FakeJobRow:
@@ -718,3 +720,57 @@ async def test_execute_ingestion_job_acquires_both_rate_limit_buckets(monkeypatc
     assert f"org:{organization_id}" in keys
     connector_rate = dict(acquired_keys)[f"connector:{config_row.id}"]
     assert connector_rate == fake_connector.requests_per_second
+
+
+@pytest.mark.asyncio
+async def test_execute_ingestion_job_refuses_to_run_for_a_disconnected_connector(monkeypatch) -> None:
+    """`core.tenancy.service.disconnect_connector` (the "Delete connector"
+    feature) sets `status="disconnected"` rather than dropping the row
+    (`ingestion_jobs.connector_config_id` is `ON DELETE RESTRICT`). This
+    must be checked immediately after loading the connector row, before any
+    credential decryption, connector authentication, or `ingestion_jobs`
+    row creation -- a disconnected connector should fail in milliseconds,
+    not run the same slow sync `app.ingestion.workers.tasks.
+    run_ingestion_job_task`'s own retry logic would otherwise repeat.
+    """
+    organization_id = uuid.uuid4()
+    config_row = _FakeConnectorConfigRow(
+        organization_id=organization_id,
+        source="fake_source",
+        credential_ref="irrelevant-for-this-test",
+        status="disconnected",
+    )
+    fake_connector = _RecordingConnector()
+    calls: list[str] = []
+
+    async def fake_resolve_connector_config_organization_id(session, connector_config_id):
+        return organization_id
+
+    async def fake_get_connector_config(session, connector_config_id):
+        return config_row
+
+    async def fake_set_tenant_context(session, org_id) -> None:
+        return None
+
+    async def fake_insert_ingestion_job(session, *, organization_id, connector_config_id):
+        calls.append("insert_ingestion_job")
+        raise AssertionError("must not create a job row for a disconnected connector")
+
+    monkeypatch.setitem(ingestion_service._CONNECTOR_REGISTRY, "fake_source", fake_connector)
+    monkeypatch.setattr(
+        ingestion_service.repository,
+        "resolve_connector_config_organization_id",
+        fake_resolve_connector_config_organization_id,
+    )
+    monkeypatch.setattr(ingestion_service.repository, "get_connector_config", fake_get_connector_config)
+    monkeypatch.setattr(ingestion_service.repository, "insert_ingestion_job", fake_insert_ingestion_job)
+    monkeypatch.setattr(ingestion_service, "set_tenant_context", fake_set_tenant_context)
+
+    with pytest.raises(ConflictError) as exc_info:
+        await ingestion_service._execute_ingestion_job(
+            _FakeSession(), config_row.id, force_full_sync=False
+        )
+
+    assert exc_info.value.error_code == "connector_config.disconnected"
+    assert calls == []
+    assert fake_connector.received_credential_ref is None

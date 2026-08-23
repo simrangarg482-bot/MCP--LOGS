@@ -2,7 +2,7 @@
 
 Status: **Living document. Update this at the end of every milestone.** This file exists so the project can be picked back up — in a new AI conversation, or by you alone — without re-deriving context from scratch.
 
-Last updated: 2026-08-18
+Last updated: 2026-08-22
 
 **For the exact, ordered, executable sequence to close every remaining item
 below, see `docs/operations/final-go-live-runbook.md`. For a plain
@@ -28,10 +28,10 @@ correct" as "verified":
 | Backend implementation, tests, import boundaries | **VERIFIED** |
 | Frontend implementation, typecheck/lint/build | **VERIFIED** |
 | RBAC, application-layer tenant isolation | **VERIFIED** |
-| RLS runtime-role fix (`ekip_app`, migrations `b8f3d6a1c4e7`/`c5e2a9f4d7b3`) | **CODE COMPLETE** |
+| RLS runtime-role fix (`ekip_app`, migrations `b8f3d6a1c4e7`/`c5e2a9f4d7b3`) | **VERIFIED** — applied to the real Neon database 2026-08-22; role confirmed live with `rolsuper=false, rolbypassrls=false, rolcreatedb=false, rolcreaterole=false`. See `docs/operations/migration-recovery.md`'s "Resolution" section for the exact executed sequence, including two real bugs (`NOSUPERUSER` clause Neon can't grant; a bare `CREATE FUNCTION` colliding with a pre-existing hand-created one) found and fixed live, not guessed around |
 | RLS mechanism validation (`rls_isolation_test.py`) | **BLOCKED** — no disposable Postgres in this environment |
-| RLS active in any real deployment | **REQUIRES HUMAN ACTION** — apply the migrations to Neon, switch `DATABASE_URL`, both need explicit authorization |
-| Neon migration state (`alembic_version` orphan) | **REQUIRES HUMAN ACTION** — recovery migration exists (`90ff736ced55`), applying it needs authorization |
+| RLS active in any real deployment | **REQUIRES HUMAN ACTION** — `ekip_app` is provisioned and ready; the application's own `DATABASE_URL` still connects as `neondb_owner`. Switching it, and re-verifying login/incident/audit reads under the new role, is the one remaining step — not yet done as of this update |
+| Neon migration state (`alembic_version` orphan) | **VERIFIED — RESOLVED 2026-08-22.** `alembic current`/`migration_status.py` both confirm the database is at head (`c5e2a9f4d7b3`), `alembic check` reports no drift. This was the project's single longest-standing BLOCKED item |
 | Credential rotation (Azure DevOps PAT, Neon, Redis) | **REQUIRES HUMAN ACTION** — procedure documented, needs console access only a human has |
 | Azure/Bicep IaC | **CODE COMPLETE** — compiles clean, 3 real wiring bugs found and fixed this session |
 | Real Azure deployment | **BLOCKED** — no EKIP-authorized resource group; declined to use the one unrelated resource group this identity can reach |
@@ -109,7 +109,7 @@ correct" as "verified":
 | Credential rotation (Azure DevOps PAT, Neon password, Redis password) | No console access to the affected systems | Console/portal access to rotate each credential; full post-rotation verification checklist now in `docs/operations/security-incidents.md` |
 | AI evaluation (`scripts/eval_confidence.py`) | Requires a live database with real ingested data and a real `OPENAI_API_KEY`; costs real money per run | A funded OpenAI API key + populated test database |
 | Full Playwright E2E execution (invitation flow, and the full suite generally) | No backend/Postgres process running in this environment | A running backend + frontend dev server + seeded test database |
-| Applying pending migrations (`90ff736ced55`, `d706a360fc2a`, `f1ea4eb67264`, `1269a7b553a9`, `b8f3d6a1c4e7`, `c5e2a9f4d7b3`) to Neon | Requires explicit user authorization to modify the shared dev database | User confirmation to proceed |
+~~Applying pending migrations to Neon~~ | **DONE 2026-08-22**, with explicit user authorization — see `docs/operations/migration-recovery.md`'s "Resolution" section | — |
 | CI actual pass/fail history | No `gh` CLI / GitHub API access from this environment | `gh run list`/GitHub web UI access to confirm the workflows have actually run and passed on real infrastructure |
 | Docker execution (build + run the production-shaped stack) | No `docker` binary in this environment | A machine with Docker installed to run `docker compose up --build` and verify the migrate→backend/worker→frontend sequence for real |
 

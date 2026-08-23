@@ -66,9 +66,23 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    # `CREATE OR REPLACE`, not bare `CREATE`: live re-verification against
+    # Neon (2026-08-22, immediately before this migration was actually run)
+    # confirmed this function already exists there exactly as `90ff736ced55`
+    # inferred -- hand-created, never captured in any migration. A bare
+    # `CREATE FUNCTION` would fail outright on that database with "function
+    # already exists." Replacing it with this reviewed, git-tracked
+    # definition is the intended outcome, not a risk: the existing body was
+    # never seen or reviewed by anyone, only inferred from its name and
+    # `ekip_app`-targeted grant (see this file's own module docstring) --
+    # converging it to a known-correct, version-controlled definition is
+    # strictly safer than leaving an unreviewed hand-edit in place
+    # indefinitely. Idempotent either way: a fresh disposable database with
+    # no such function yet also succeeds, since `CREATE OR REPLACE` degrades
+    # to a plain create when nothing exists to replace.
     op.execute(
         """
-        CREATE FUNCTION resolve_user_first_organization(user_id_arg uuid)
+        CREATE OR REPLACE FUNCTION resolve_user_first_organization(user_id_arg uuid)
         RETURNS uuid
         LANGUAGE sql
         SECURITY DEFINER

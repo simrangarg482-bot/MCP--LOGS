@@ -15,6 +15,7 @@ import uuid
 import structlog
 from arq.worker import Retry
 
+from app.core.exceptions import EKIPError
 from app.database.session import session_scope
 from app.ingestion import repository, service
 from app.shared.backoff import full_jitter_backoff_seconds
@@ -67,6 +68,25 @@ async def run_ingestion_job_task(ctx: dict, connector_config_id: str) -> None:
         try:
             async with session_scope() as session:
                 job = await service.run_ingestion_job(session, uuid.UUID(connector_config_id))
+        except EKIPError as exc:
+            if exc.error_code == "connector_config.disconnected":
+                # Deliberately NOT a `_schedule_retry` case: this is not a
+                # transient failure to back off from, it's the user having
+                # deleted the connector (`core.tenancy.service.
+                # disconnect_connector`) since this job was originally
+                # enqueued or since its last attempt timed out. Retrying
+                # would just re-hit the exact same guard `attempt` more
+                # times, burning `_MAX_BACKOFF_SECONDS`-scale delays for
+                # nothing -- logging and returning cleanly stops it here,
+                # on the very next attempt, instead of at `max_tries`.
+                logger.info(
+                    "ingestion_job_task_skipped_disconnected",
+                    connector_config_id=connector_config_id,
+                    attempt=attempt,
+                )
+                return
+            _schedule_retry(connector_config_id, attempt, error=str(exc), cause=exc)
+            return
         except Exception as exc:
             _schedule_retry(connector_config_id, attempt, error=str(exc), cause=exc)
             return

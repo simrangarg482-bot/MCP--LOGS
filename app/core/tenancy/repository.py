@@ -345,10 +345,26 @@ async def update_connector_config_sync_status(
     tenancy-owned mutation an external caller currently needs
     (PROJECT_PLAN.md section 4.5 -- job status is tracked explicitly since the
     caller and worker no longer share a call stack).
+
+    Once `"disconnected"` (the "Delete connector" feature, `core.tenancy.
+    service.disconnect_connector`), a transition to any *other* status is
+    silently ignored rather than applied -- a real race, not a hypothetical
+    one: `app.ingestion.service._execute_ingestion_job` only checks
+    disconnected status once, at the very start of a sync, in its own
+    long-lived transaction. A user can disconnect a connector *while* one of
+    its syncs is already mid-flight (this check runs too early to catch
+    that), and that sync's own eventual success/failure report -- this exact
+    function, called with `status="active"`/`"error"` -- must not be allowed
+    to silently revive a connector the user already deleted. Disconnecting
+    an already-disconnected connector (the one case where `status` here
+    genuinely is `"disconnected"` again) still applies normally; it's a
+    same-value no-op either way.
     """
     row = await session.get(ConnectorConfig, connector_config_id)
     if row is None:
         return None
+    if row.status == "disconnected" and status != "disconnected":
+        return row
     row.status = status
     if last_synced_at is not None:
         row.last_synced_at = last_synced_at

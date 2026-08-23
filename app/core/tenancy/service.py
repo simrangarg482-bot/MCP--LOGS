@@ -667,6 +667,67 @@ async def update_connector_sync_status(
     return _redact_credential(ConnectorConfig.model_validate(row))
 
 
+async def disconnect_connector(
+    session: AsyncSession,
+    actor: Identity,
+    organization_id: uuid.UUID,
+    connector_config_id: uuid.UUID,
+) -> ConnectorConfig:
+    """User-facing "delete a connector" (`DELETE /tenancy/connectors/{id}`).
+
+    A real hard `DELETE` on `connector_configs` is not available: `ingestion_
+    jobs.connector_config_id` is `ON DELETE RESTRICT` (deliberately, to
+    protect a connector's own sync/job history from disappearing along with
+    it), so Postgres itself refuses to drop a row that has ever been synced
+    even once -- which in practice is nearly every connector a user would
+    ever want to remove. `ConnectorStatus` already defines `"disconnected"`
+    for exactly this case (present in the schema/type since Milestone 9's
+    original design, never previously reachable from any code path) -- this
+    reuses `update_connector_config_sync_status` (the same repository
+    function ingestion's own worker calls to report sync outcomes) to set
+    it, rather than inventing a second update path.
+
+    Two real, load-bearing effects of the resulting `"disconnected"` status,
+    not just a cosmetic label:
+      1. `list_active_connector_config_ids()` (`d2e5f8a3c1b6`) -- the
+         `SECURITY DEFINER` function `scheduled_reconciliation`'s hourly cron
+         pass uses to pick which connectors to re-sync -- only ever selects
+         `'active'`/`'error'` rows. A disconnected connector is silently
+         excluded from all future automatic reconciliation, with no
+         additional code needed here.
+      2. `app.ingestion.service._execute_ingestion_job` checks this status
+         immediately after loading the connector row and refuses to proceed
+         (a fast `ConflictError`, not a full sync attempt) -- covering both
+         a stale manual "Sync now" already in flight when this call lands,
+         and, more importantly, any `arq` retry already queued for a job
+         that timed out before the user disconnected it: the retry still
+         fires, but now fails in milliseconds instead of running the same
+         slow sync to the same timeout a second and third time.
+
+    Reachable from the UI as a card-level "Delete" action even though the
+    row survives -- the frontend's own connector list filters `"disconnected"`
+    rows out of the default view (see `ConnectorsPage.tsx`), so this reads
+    as "gone" to the user while `ingestion_jobs`/`documents` history stays
+    intact for anyone with direct database/audit-log access.
+    """
+    connector = await get_connector(session, actor, organization_id, connector_config_id)
+
+    row = await repository.update_connector_config_sync_status(
+        session, connector.id, status="disconnected"
+    )
+    if row is None:
+        raise RuntimeError("Connector configuration disappeared mid-update.")  # unreachable: fetched above
+
+    await record_audit_event(
+        session,
+        actor,
+        action="connector_config.disconnect",
+        resource_type="connector_config",
+        resource_id=connector_config_id,
+    )
+    return _redact_credential(ConnectorConfig.model_validate(row))
+
+
 # --- Organization access rules (domain / group auto-join) --------------------
 
 

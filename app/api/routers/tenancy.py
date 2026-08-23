@@ -146,6 +146,24 @@ async def sync_connector(
     return {"status": "enqueued", "connector_config_id": str(connector.id)}
 
 
+@router.delete("/connectors/{connector_config_id}", response_model=ConnectorConfig)
+async def delete_connector(
+    connector_config_id: uuid.UUID, actor: CurrentIdentity, session: DbSession
+) -> ConnectorConfig:
+    """"Delete" a connector -- see `tenancy_service.disconnect_connector`'s
+    own docstring for why this is a real `DELETE` verb backed by a status
+    change (`"disconnected"`), not a dropped row: `ingestion_jobs.
+    connector_config_id` is `ON DELETE RESTRICT`, so a hard delete would
+    fail outright for any connector that has ever completed or attempted a
+    sync. The row (and its job history) survives; the frontend's own
+    connector list filters disconnected rows out of the default view, so
+    this reads as deletion to the caller.
+    """
+    return await tenancy_service.disconnect_connector(
+        session, actor, actor.organization_id, connector_config_id
+    )
+
+
 @router.get("/connectors/{connector_config_id}/runs", response_model=list[IngestionRun])
 async def list_ingestion_runs(
     connector_config_id: uuid.UUID,

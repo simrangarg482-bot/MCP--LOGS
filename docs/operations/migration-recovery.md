@@ -1,21 +1,85 @@
-# Migration recovery — Neon development database (2026-08-18)
+# Migration recovery — Neon development database (2026-08-18, resolved 2026-08-22)
 
 ## Status
 
 ```
-MIGRATION STATE: UNRESOLVED (still — see "Current status", below)
-DECISION:        Option 3 (restore to main's schema), PARTIALLY EXECUTED
-BACKUP:          TAKEN — see "Backup" section
+MIGRATION STATE: RESOLVED (2026-08-22) — see "Resolution" below.
+DECISION:        Option 3 (restore to main's schema), FULLY EXECUTED.
+BACKUP:          TAKEN before any DDL — see "Backup" section. Not needed
+                 (the recovery completed with no rollback), kept regardless.
 ```
 
-No schema-modifying command has been run against the real Neon database as
-of this writing. A recovery migration has been drafted, reviewed, and is
-ready to apply (`app/database/migrations/versions/
-90ff736ced55_batch_4_6_remove_orphaned_simran_ekip_.py`) — but it covers only
-part of the originally-scoped "remove all orphaned branch-only state"
-decision. Two of the six identified extra objects turned out, on closer
-investigation, to not be dead scaffolding at all — see "Why Option 3 is only
-partially applied" below before running anything.
+## Resolution (2026-08-22)
+
+Executed with the user's explicit, real-time authorization, against this
+project's own Neon database (confirmed to be the user's personal project,
+not a shared/organizational one). Every claim below was independently
+re-verified live immediately before running anything — not assumed from
+this document's own (by-then four-day-old) findings.
+
+Sequence actually run:
+1. Live re-verification (read-only, via `asyncpg` directly): `alembic_version`
+   still `b3d8f1a6c9e2` as documented; `eval_runs`/`eval_case_results` both
+   confirmed 0 rows; `agent_executions`'s 4 orphaned columns confirmed 100%
+   NULL across all 325 existing rows (i.e., **the real, later Phase 5
+   `f1ea4eb67264` migration's own same-named columns had never actually
+   been populated by any real running instance of this application** — the
+   only data at risk was hypothetical, and there was none); `ekip_app`
+   confirmed pre-existing with `rolbypassrls=false`; `resolve_user_first_
+   organization`'s existing hand-created body confirmed **byte-for-byte
+   identical** to the version this project's own `c5e2a9f4d7b3` migration
+   was independently authored to create.
+2. `alembic stamp --purge e2b3c4d5f6a7` (plain `stamp` fails outright — it
+   tries to resolve the *current*, unknown revision even for a pointer-only
+   operation; `--purge` clears the version table first instead of walking
+   from it).
+3. `EKIP_APP_ROLE_PASSWORD=<generated, written directly to .env, never
+   displayed> uv run alembic upgrade head`. First attempt failed partway
+   through `b8f3d6a1c4e7` (Neon's `neondb_owner` is `rolsuper=false` --
+   Postgres refuses to let ANY non-superuser touch the `SUPERUSER`/
+   `NOSUPERUSER` role attribute at all, even to redundantly (re-)state a
+   value the role already has). **Fixed for real** (not stamped around):
+   removed the explicit `NOSUPERUSER` clause from `b8f3d6a1c4e7` (Postgres's
+   own default for `CREATE ROLE`, and a no-op for `ALTER ROLE` on a role
+   that's already `NOSUPERUSER`) — `neondb_owner` does hold `CREATEDB`/
+   `CREATEROLE`/`REPLICATION`/`BYPASSRLS` themselves, confirmed live, so
+   every other clause in that statement was already fine. Also fixed
+   `c5e2a9f4d7b3` to use `CREATE OR REPLACE FUNCTION` instead of bare
+   `CREATE FUNCTION`, since the function already existed (see step 1) and a
+   bare `CREATE` would have failed on "already exists." **The first,
+   failed attempt left zero trace** — Postgres's transactional DDL rolled
+   back the entire batch (including the earlier-in-the-same-run
+   `90ff736ced55`/`d706a360fc2a`/`f1ea4eb67264`/`1269a7b553a9` migrations
+   that had already executed successfully within that one transaction),
+   confirmed via the same live re-verification queries showing the database
+   byte-for-byte back to its pre-attempt state before the second, corrected
+   attempt ran.
+4. Second attempt: full success, single transaction, `COMMIT`.
+5. `alembic current` → `c5e2a9f4d7b3 (head)`. `alembic check` → "No new
+   upgrade operations detected." `scripts/migration_status.py` →
+   `Schema compatibility: OK -- database is at the repository's current
+   head`. `ekip_app`'s final live attributes confirmed:
+   `rolsuper=false, rolbypassrls=false, rolcreatedb=false,
+   rolcreaterole=false, rolcanlogin=true` — exactly the intended shape.
+   Full backend regression re-run afterward: 487/487 passing, 7/7
+   import-linter.
+
+**What this resolves**: Neon's migration state (previously the top
+BLOCKED item in `docs/PROJECT_STATUS.md`). **What this does NOT yet
+resolve**: the application's own `DATABASE_URL` still connects as
+`neondb_owner`, not `ekip_app` — provisioning the role is necessary but not
+sufficient (see this document's original text below, still accurate) for
+RLS to actually take effect against real traffic. That switch, and the
+login-flow verification it requires, is a separate, deliberately distinct
+next step.
+
+---
+
+*Everything below this line is the original investigation record, written
+2026-08-18, before the resolution above. Kept verbatim as the historical
+record of how the diagnosis and recovery plan were derived — the "Current
+status" section near the bottom is superseded by "Resolution" above, not
+edited in place, so the reasoning trail stays intact.*
 
 ## What triggered this
 

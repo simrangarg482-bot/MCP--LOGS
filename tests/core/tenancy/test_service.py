@@ -143,6 +143,79 @@ async def test_update_connector_sync_status_threads_config_patch_through(monkeyp
     assert captured["config_patch"] == {"_resume_token": '{"site-1": "https://example.com/delta"}'}
 
 
+@pytest.mark.asyncio
+async def test_disconnect_connector_sets_status_disconnected_not_a_hard_delete(monkeypatch) -> None:
+    """The "Delete connector" feature: `ingestion_jobs.connector_config_id`
+    is `ON DELETE RESTRICT`, so a real row deletion isn't available for any
+    connector that's ever synced. This must go through `repository.
+    update_connector_config_sync_status` (the same function ingestion's own
+    worker uses to report outcomes) with `status="disconnected"`, reusing
+    `get_connector`'s existing ownership + `tenancy:manage` check rather
+    than duplicating it.
+    """
+    organization_id = uuid.uuid4()
+    actor = _admin(organization_id)
+    connector_config_id = uuid.uuid4()
+    existing_row = _FakeConnectorConfigRow(
+        organization_id=organization_id, source="github", credential_ref="encrypted-ref"
+    )
+    existing_row.id = connector_config_id
+    captured: dict[str, object] = {}
+
+    async def fake_get_connector_config_by_id(session, config_id):
+        assert config_id == connector_config_id
+        return existing_row
+
+    async def fake_update_connector_config_sync_status(session, config_id, **kwargs):
+        captured["config_id"] = config_id
+        captured.update(kwargs)
+        existing_row.status = kwargs["status"]
+        return existing_row
+
+    async def fake_record_audit_event(session, event_actor, **kwargs):
+        captured["audit_actor"] = event_actor
+        captured["audit_kwargs"] = kwargs
+
+    monkeypatch.setattr(
+        tenancy_service.repository, "get_connector_config_by_id", fake_get_connector_config_by_id
+    )
+    monkeypatch.setattr(
+        tenancy_service.repository,
+        "update_connector_config_sync_status",
+        fake_update_connector_config_sync_status,
+    )
+    monkeypatch.setattr(tenancy_service, "record_audit_event", fake_record_audit_event)
+
+    result = await tenancy_service.disconnect_connector(
+        None, actor, organization_id, connector_config_id
+    )
+
+    assert result.status == "disconnected"
+    assert captured["config_id"] == connector_config_id
+    assert captured["status"] == "disconnected"
+    assert captured["audit_kwargs"]["action"] == "connector_config.disconnect"
+    assert captured["audit_actor"] is actor
+
+
+@pytest.mark.asyncio
+async def test_disconnect_connector_denies_a_connector_from_a_different_organization(monkeypatch) -> None:
+    organization_id = uuid.uuid4()
+    actor = _admin(organization_id)
+    other_org_row = _FakeConnectorConfigRow(
+        organization_id=uuid.uuid4(), source="github", credential_ref="encrypted-ref"
+    )
+
+    async def fake_get_connector_config_by_id(session, config_id):
+        return other_org_row
+
+    monkeypatch.setattr(
+        tenancy_service.repository, "get_connector_config_by_id", fake_get_connector_config_by_id
+    )
+
+    with pytest.raises(NotFoundError):
+        await tenancy_service.disconnect_connector(None, actor, organization_id, other_org_row.id)
+
+
 class _FakeOrganizationRow:
     def __init__(self, organization_id: uuid.UUID) -> None:
         self.id = organization_id

@@ -9,12 +9,14 @@ import { LoadingState } from "@/components/ui/LoadingState";
 import { ErrorState } from "@/components/ui/ErrorState";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Drawer } from "@/components/ui/Drawer";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { StatusBadge } from "@/components/data/StatusBadge";
 import {
   createConfluenceConnector,
   createGithubConnector,
   createJiraConnector,
   createSlackConnector,
+  deleteConnector,
   listConnectors,
   triggerConnectorSync,
 } from "@/api/connectors";
@@ -35,8 +37,16 @@ export function ConnectorsPage() {
   const canManage = Boolean(user?.permissions.includes("tenancy:manage"));
   const [viewing, setViewing] = useState<Connector | null>(null);
   const [isConnectOpen, setIsConnectOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<Connector | null>(null);
 
   const connectorsQuery = useQuery({ queryKey: ["connectors"], queryFn: listConnectors });
+  // `disconnect_connector` (backend) is a status change, not a dropped row
+  // -- `ingestion_jobs.connector_config_id` is `ON DELETE RESTRICT`, so a
+  // hard delete isn't possible for any connector that's ever synced. This
+  // filters "disconnected" rows out of the visible grid so deleting one
+  // reads as deletion here, while its job/document history stays intact
+  // server-side for anyone with direct database/audit-log access.
+  const visibleConnectors = connectorsQuery.data?.filter((c) => c.status !== "disconnected") ?? [];
 
   const runsQuery = useQuery({
     queryKey: ["ingestion-runs", viewing?.id],
@@ -52,6 +62,19 @@ export function ConnectorsPage() {
     },
     onError: (_, connector) => {
       toast({ variant: "error", title: `Failed to sync ${titleCase(connector.source)}` });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (connector: Connector) => deleteConnector(connector.id),
+    onSuccess: (_, connector) => {
+      toast({ variant: "success", title: `${titleCase(connector.source)} connector deleted` });
+      queryClient.invalidateQueries({ queryKey: ["connectors"] });
+      setDeleteTarget(null);
+    },
+    onError: () => {
+      toast({ variant: "error", title: "Failed to delete connector" });
+      setDeleteTarget(null);
     },
   });
 
@@ -124,7 +147,7 @@ export function ConnectorsPage() {
 
       {connectorsQuery.isLoading && <LoadingState label="Loading connectors…" />}
       {connectorsQuery.isError && <ErrorState onRetry={() => connectorsQuery.refetch()} />}
-      {connectorsQuery.data && connectorsQuery.data.length === 0 && (
+      {connectorsQuery.data && visibleConnectors.length === 0 && (
         <EmptyState
           icon={Plug}
           title="No connectors configured"
@@ -140,14 +163,15 @@ export function ConnectorsPage() {
         />
       )}
 
-      {connectorsQuery.data && connectorsQuery.data.length > 0 && (
+      {connectorsQuery.data && visibleConnectors.length > 0 && (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {connectorsQuery.data.map((connector) => (
+          {visibleConnectors.map((connector) => (
             <ConnectorCard
               key={connector.id}
               connector={connector}
               onView={setViewing}
               onSync={(c) => syncMutation.mutate(c)}
+              onDelete={setDeleteTarget}
               isSyncing={syncMutation.isPending && syncMutation.variables?.id === connector.id}
               canManage={canManage}
             />
@@ -176,6 +200,21 @@ export function ConnectorsPage() {
         onSubmitConfluence={async (token, baseUrl, spaces) => {
           await confluenceMutation.mutateAsync({ token, baseUrl, spaces });
         }}
+      />
+
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        title="Delete this connector?"
+        description={
+          deleteTarget
+            ? `${titleCase(deleteTarget.source)} will stop syncing and disappear from this list. Already-ingested knowledge from it is not removed. This can't be undone from here -- you'd need to reconnect it from scratch.`
+            : undefined
+        }
+        confirmLabel="Delete"
+        destructive
+        isLoading={deleteMutation.isPending}
+        onConfirm={() => deleteTarget && deleteMutation.mutate(deleteTarget)}
+        onCancel={() => setDeleteTarget(null)}
       />
 
       <Drawer open={Boolean(viewing)} onClose={() => setViewing(null)} title={viewing ? titleCase(viewing.source) : ""}>

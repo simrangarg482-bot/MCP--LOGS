@@ -9,6 +9,7 @@ import {
   Cloud,
   BookOpen,
   Activity,
+  Trash2,
 } from "lucide-react";
 import type { Connector } from "@/types/connector";
 import { Card, CardContent } from "@/components/ui/Card";
@@ -55,11 +56,12 @@ interface ConnectorCardProps {
   connector: Connector;
   onSync: (connector: Connector) => void;
   onView: (connector: Connector) => void;
+  onDelete: (connector: Connector) => void;
   isSyncing?: boolean;
   canManage?: boolean;
 }
 
-export function ConnectorCard({ connector, onSync, onView, isSyncing, canManage = true }: ConnectorCardProps) {
+export function ConnectorCard({ connector, onSync, onView, onDelete, isSyncing, canManage = true }: ConnectorCardProps) {
   const Icon = SOURCE_ICON[connector.source];
   const summary = configSummary(connector);
 
@@ -102,6 +104,17 @@ export function ConnectorCard({ connector, onSync, onView, isSyncing, canManage 
           >
             <RefreshCw className="h-3.5 w-3.5" />
             Sync now
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => onDelete(connector)}
+            disabled={!canManage}
+            title={canManage ? "Delete connector" : "Requires the tenancy:manage permission"}
+            aria-label={`Delete ${titleCase(connector.source)} connector`}
+            className="ml-auto text-critical hover:bg-critical-subtle"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
           </Button>
         </div>
       </CardContent>
