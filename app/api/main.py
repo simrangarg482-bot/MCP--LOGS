@@ -31,7 +31,6 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from arq import create_pool
-from arq.connections import RedisSettings
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -52,6 +51,7 @@ from app.core.exceptions import EKIPError
 from app.shared.config.logging import get_logger
 from app.shared.config.settings import get_settings
 from app.shared.config.tracing import configure_tracing
+from app.shared.redis_settings import build_redis_settings
 
 logger = get_logger(__name__)
 
@@ -93,7 +93,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     """
     try:
         app.state.arq_pool = await create_pool(
-            RedisSettings.from_dsn(str(get_settings().redis_url)),
+            build_redis_settings(),
             default_queue_name="arq:queue:ingestion",
         )
     except Exception as exc:

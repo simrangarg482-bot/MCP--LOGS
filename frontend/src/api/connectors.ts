@@ -2,10 +2,13 @@ import { apiRequest, mockDelay } from "./client";
 import { USE_MOCK_DATA } from "./config";
 import type {
   Connector,
+  CreateAzureDevOpsConnectorInput,
   CreateConfluenceConnectorInput,
   CreateGithubConnectorInput,
   CreateJiraConnectorInput,
+  CreateSharePointConnectorInput,
   CreateSlackConnectorInput,
+  CreateTeamsConnectorInput,
 } from "@/types/connector";
 import { mockConnectors } from "@/mocks/data/connectors";
 
@@ -104,6 +107,75 @@ export async function createConfluenceConnector(input: CreateConfluenceConnector
       source: "confluence",
       credentialRef: input.token,
       config: { baseUrl: input.baseUrl, spaces: input.spaces },
+    },
+  });
+}
+
+export async function createTeamsConnector(input: CreateTeamsConnectorInput): Promise<Connector> {
+  if (USE_MOCK_DATA) {
+    return mockDelay(
+      {
+        ...mockConnectors[4],
+        id: `conn-teams-${Date.now()}`,
+        source: "teams",
+        status: "connecting",
+        config: { teamId: input.teamId, channels: input.channels },
+      },
+      400,
+    );
+  }
+  return apiRequest<Connector>(`/tenancy/connectors`, {
+    method: "POST",
+    body: {
+      source: "teams",
+      credentialRef: input.token,
+      config: { team_id: input.teamId, channels: input.channels },
+    },
+  });
+}
+
+export async function createAzureDevOpsConnector(input: CreateAzureDevOpsConnectorInput): Promise<Connector> {
+  if (USE_MOCK_DATA) {
+    return mockDelay(
+      {
+        ...mockConnectors[0],
+        id: `conn-azure-devops-${Date.now()}`,
+        source: "azure_devops",
+        status: "connecting",
+        config: { organization: input.organization, projects: input.projects },
+      },
+      400,
+    );
+  }
+  return apiRequest<Connector>(`/tenancy/connectors`, {
+    method: "POST",
+    body: {
+      source: "azure_devops",
+      credentialRef: input.token,
+      config: { organization: input.organization, projects: input.projects },
+    },
+  });
+}
+
+export async function createSharePointConnector(input: CreateSharePointConnectorInput): Promise<Connector> {
+  if (USE_MOCK_DATA) {
+    return mockDelay(
+      {
+        ...mockConnectors[0],
+        id: `conn-sharepoint-${Date.now()}`,
+        source: "sharepoint",
+        status: "connecting",
+        config: { siteIds: input.siteIds },
+      },
+      400,
+    );
+  }
+  return apiRequest<Connector>(`/tenancy/connectors`, {
+    method: "POST",
+    body: {
+      source: "sharepoint",
+      credentialRef: input.token,
+      config: { site_ids: input.siteIds },
     },
   });
 }

@@ -36,6 +36,14 @@ from sentence_transformers import SentenceTransformer
 
 _MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"  # ENGINEERING_DECISIONS.md #006
 
+# Bounds the CPU-bound `encode()` call (and, on first use per process, the
+# model-weights download it triggers via `_get_model`) so a stall here
+# surfaces as a clear timeout instead of hanging the ingestion job
+# indefinitely -- `asyncio.to_thread` alone has no timeout of its own, and
+# this call runs while the caller's DB transaction/savepoint is still open,
+# so an unbounded hang here holds that transaction open unboundedly too.
+_ENCODE_TIMEOUT_SECONDS = 120.0
+
 #: Must match `app.database.models.retrieval_models._EMBEDDING_DIMENSION`
 #: exactly -- a mismatch would make `VectorStore.upsert`/`search` produce
 #: vectors of the wrong width for the `vector` Postgres extension's fixed-
@@ -57,7 +65,10 @@ def _get_model() -> SentenceTransformer:
 async def embed_query(query: str) -> list[float]:
     """Embed a single search query string."""
     model = _get_model()
-    vector = await asyncio.to_thread(model.encode, query, normalize_embeddings=True)
+    vector = await asyncio.wait_for(
+        asyncio.to_thread(model.encode, query, normalize_embeddings=True),
+        timeout=_ENCODE_TIMEOUT_SECONDS,
+    )
     return vector.tolist()
 
 
@@ -73,5 +84,8 @@ async def embed_texts(texts: list[str]) -> list[list[float]]:
     if not texts:
         return []
     model = _get_model()
-    vectors = await asyncio.to_thread(model.encode, texts, normalize_embeddings=True)
+    vectors = await asyncio.wait_for(
+        asyncio.to_thread(model.encode, texts, normalize_embeddings=True),
+        timeout=_ENCODE_TIMEOUT_SECONDS,
+    )
     return vectors.tolist()

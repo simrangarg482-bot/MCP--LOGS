@@ -5,19 +5,20 @@ API server (PROJECT_PLAN.md section 4.5, ENGINEERING_DECISIONS.md #002):
 
     arq app.ingestion.workers.main.WorkerSettings
 
-`redis_settings` is built from the same `Settings.redis_url` every other
-part of the app reads (`app.shared.config.settings`) -- one source of truth
-for the Redis connection string, not a second one hand-maintained here.
+`redis_settings` comes from `app.shared.redis_settings.build_redis_settings`,
+shared with `app.agents.workers.main` and `app.api.main` -- one source of
+truth for both the Redis connection string and the retry/timeout settings
+that make a transient drop against a remote Redis survivable instead of
+crashing this whole process (see that module's own docstring).
 """
 
 from __future__ import annotations
 
-from arq.connections import RedisSettings
 from arq.cron import cron
 
 from app.ingestion.workers.tasks import run_ingestion_job_task, scheduled_reconciliation
 from app.shared.config.logging import configure_logging
-from app.shared.config.settings import get_settings
+from app.shared.redis_settings import build_redis_settings
 
 configure_logging()
 
@@ -34,7 +35,7 @@ class WorkerSettings:
     # arq's cron field semantics (an omitted field matches any value, the
     # same convention as a bare `*` in crontab syntax).
     cron_jobs = [cron(scheduled_reconciliation, minute=0)]
-    redis_settings = RedisSettings.from_dsn(str(get_settings().redis_url))
+    redis_settings = build_redis_settings()
     # arq defaults every Worker to the same hardcoded queue name
     # ("arq:queue") regardless of `functions` -- with no override, this
     # worker and `app.agents.workers.main`'s worker share one Redis queue on

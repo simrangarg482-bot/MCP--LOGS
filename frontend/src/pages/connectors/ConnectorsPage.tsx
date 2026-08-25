@@ -12,10 +12,13 @@ import { Drawer } from "@/components/ui/Drawer";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { StatusBadge } from "@/components/data/StatusBadge";
 import {
+  createAzureDevOpsConnector,
   createConfluenceConnector,
   createGithubConnector,
   createJiraConnector,
+  createSharePointConnector,
   createSlackConnector,
+  createTeamsConnector,
   deleteConnector,
   listConnectors,
   triggerConnectorSync,
@@ -126,6 +129,42 @@ export function ConnectorsPage() {
     },
   });
 
+  const teamsMutation = useMutation({
+    mutationFn: ({ token, teamId, channels }: { token: string; teamId: string; channels: string[] }) =>
+      createTeamsConnector({ token, teamId, channels }),
+    onSuccess: () => {
+      toast({ variant: "success", title: "Teams connector added" });
+      queryClient.invalidateQueries({ queryKey: ["connectors"] });
+    },
+    onError: () => {
+      toast({ variant: "error", title: "Failed to add Teams connector" });
+    },
+  });
+
+  const azureDevOpsMutation = useMutation({
+    mutationFn: ({ token, organization, projects }: { token: string; organization: string; projects: string[] }) =>
+      createAzureDevOpsConnector({ token, organization, projects }),
+    onSuccess: () => {
+      toast({ variant: "success", title: "Azure DevOps connector added" });
+      queryClient.invalidateQueries({ queryKey: ["connectors"] });
+    },
+    onError: () => {
+      toast({ variant: "error", title: "Failed to add Azure DevOps connector" });
+    },
+  });
+
+  const sharePointMutation = useMutation({
+    mutationFn: ({ token, siteIds }: { token: string; siteIds: string[] }) =>
+      createSharePointConnector({ token, siteIds }),
+    onSuccess: () => {
+      toast({ variant: "success", title: "SharePoint connector added" });
+      queryClient.invalidateQueries({ queryKey: ["connectors"] });
+    },
+    onError: () => {
+      toast({ variant: "error", title: "Failed to add SharePoint connector" });
+    },
+  });
+
   return (
     <div className="flex flex-col gap-5">
       <PageHeader
@@ -151,7 +190,7 @@ export function ConnectorsPage() {
         <EmptyState
           icon={Plug}
           title="No connectors configured"
-          description="Connect GitHub, Slack, Jira, or Confluence to start ingesting data EKIP can answer questions about."
+          description="Connect GitHub, Slack, Jira, Confluence, Teams, Azure DevOps, or SharePoint to start ingesting data EKIP can answer questions about."
           action={
             canManage ? (
               <Button variant="primary" className="gap-1.5" onClick={() => setIsConnectOpen(true)}>
@@ -186,7 +225,10 @@ export function ConnectorsPage() {
           githubMutation.isPending ||
           slackMutation.isPending ||
           jiraMutation.isPending ||
-          confluenceMutation.isPending
+          confluenceMutation.isPending ||
+          teamsMutation.isPending ||
+          azureDevOpsMutation.isPending ||
+          sharePointMutation.isPending
         }
         onSubmitGithub={async (token, repos) => {
           await githubMutation.mutateAsync({ token, repos });
@@ -199,6 +241,15 @@ export function ConnectorsPage() {
         }}
         onSubmitConfluence={async (token, baseUrl, spaces) => {
           await confluenceMutation.mutateAsync({ token, baseUrl, spaces });
+        }}
+        onSubmitTeams={async (token, teamId, channels) => {
+          await teamsMutation.mutateAsync({ token, teamId, channels });
+        }}
+        onSubmitAzureDevOps={async (token, organization, projects) => {
+          await azureDevOpsMutation.mutateAsync({ token, organization, projects });
+        }}
+        onSubmitSharePoint={async (token, siteIds) => {
+          await sharePointMutation.mutateAsync({ token, siteIds });
         }}
       />
 

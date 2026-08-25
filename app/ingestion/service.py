@@ -48,6 +48,7 @@ rate limiting needed the identical algorithm and `app.api` cannot depend on
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -56,7 +57,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import ConflictError, NotFoundError
 from app.core.tenancy import service as tenancy_service
-from app.database.session import set_tenant_context
+from app.database.session import session_scope, set_tenant_context
 from app.ingestion import repository
 from app.ingestion.connectors.base import Connector
 from app.ingestion.connectors.azure_devops import AzureDevOpsConnector
@@ -201,7 +202,12 @@ async def _execute_ingestion_job(
     top, not from that stage's midpoint -- true stage-level resume would
     need each stage to be its own chained, independently-retriable task,
     which is a larger undertaking flagged here rather than silently assumed
-    to already exist.
+    to already exist. In practice this is cheaper than it sounds: each item
+    commits for real as soon as it persists (see the per-item commit inside
+    the loop below), so a retry that re-runs the whole sync from the top
+    still finds already-committed items via `get_latest_document`'s
+    content-hash check and skips them as unchanged, rather than re-fetching,
+    re-chunking, and re-embedding them a second time.
 
     Milestone 10 addition (PROJECT_PLAN.md section 12.5): `config_row.
     credential_ref` is the envelope-encrypted blob `core.tenancy.service.
@@ -287,6 +293,14 @@ async def _execute_ingestion_job(
     )
     if job_row is None:
         raise RuntimeError("Ingestion job disappeared mid-update.")  # unreachable: just inserted above
+    # Committed immediately rather than left pending in the same transaction
+    # as everything below: this row must exist and be visible to other
+    # sessions (the API's `GET /tenancy/connectors` poll, `get_job_status`)
+    # even if the sync itself never gets any further -- see the per-item
+    # commit below for why the rest of this function no longer holds one
+    # long-lived transaction across the whole sync either.
+    await session.commit()
+    await set_tenant_context(session, organization_id)  # SET LOCAL does not survive COMMIT
 
     since = None if force_full_sync else config_row.last_synced_at
     documents_processed = 0
@@ -300,44 +314,44 @@ async def _execute_ingestion_job(
     resume_token_in = config_row.config.get("_resume_token") if connector_supports_resume_token else None
     latest_resume_token: str | None = None
     try:
-        # The fetch/normalize/process/persist loop runs inside a savepoint
-        # (a nested transaction), not the outer transaction directly. This
-        # matters because `job_row` was created in the *outer* transaction,
-        # which nothing here ever commits (services never commit their own
-        # session -- see core.audit.service's docstring on why; the caller's
-        # `session_scope()`/`get_db_session` does that). Without the
-        # savepoint, a mid-loop failure would have no clean way to roll back
-        # just the failed attempt's writes: rolling back the *whole*
-        # transaction would also erase `job_row` itself, making the
-        # subsequent "mark this job failed" update impossible to apply.
-        # `begin_nested()` rolls back only its own block on exception,
-        # leaving `job_row` (and the session generally) intact and usable
-        # in the `except` clause below.
-        async with session.begin_nested():
-            client = await connector.authenticate(resolved_config)
-            cursor: str | None = None
-            while True:
-                stage = "fetch"
-                # Two independent budgets, both acquired before every fetch
-                # (PROJECT_PLAN.md sections 4.5/10: "per connector, per
-                # tenant") -- see `app.ingestion.rate_limiter`'s module
-                # docstring for why both are needed and what each is for.
-                await _rate_limiter.acquire(
-                    f"connector:{connector_config_id}", connector.requests_per_second
-                )
-                await _rate_limiter.acquire(
-                    f"org:{config_row.organization_id}",
-                    get_settings().ingestion_org_max_requests_per_second,
-                )
-                fetch_kwargs: dict[str, Any] = {"since": since, "cursor": cursor}
-                if connector_supports_resume_token:
-                    fetch_kwargs["resume_token"] = resume_token_in
-                fetch_result = await connector.fetch_batch(client, **fetch_kwargs)
-                if fetch_result.resume_token is not None:
-                    latest_resume_token = fetch_result.resume_token
+        client = await connector.authenticate(resolved_config)
+        cursor: str | None = None
+        while True:
+            stage = "fetch"
+            # Two independent budgets, both acquired before every fetch
+            # (PROJECT_PLAN.md sections 4.5/10: "per connector, per
+            # tenant") -- see `app.ingestion.rate_limiter`'s module
+            # docstring for why both are needed and what each is for.
+            await _rate_limiter.acquire(
+                f"connector:{connector_config_id}", connector.requests_per_second
+            )
+            await _rate_limiter.acquire(
+                f"org:{config_row.organization_id}",
+                get_settings().ingestion_org_max_requests_per_second,
+            )
+            fetch_kwargs: dict[str, Any] = {"since": since, "cursor": cursor}
+            if connector_supports_resume_token:
+                fetch_kwargs["resume_token"] = resume_token_in
+            fetch_result = await connector.fetch_batch(client, **fetch_kwargs)
+            if fetch_result.resume_token is not None:
+                latest_resume_token = fetch_result.resume_token
 
-                stage = "process_item"
-                for raw_item in fetch_result.items:
+            stage = "process_item"
+            for raw_item in fetch_result.items:
+                # Each item is its own savepoint, committed for real as soon
+                # as it persists -- NOT one savepoint spanning the entire
+                # sync. Previously a dropped connection partway through a
+                # sync (observed against Neon as
+                # `asyncpg.exceptions.ConnectionDoesNotExistError` after a
+                # multi-minute gap between chunk inserts) discarded every
+                # document written so far, not just the one in flight, and
+                # a retry re-fetched and re-embedded the entire sync from
+                # page 1. Committing per item bounds a connection blip's
+                # blast radius to "lose the one item in flight," and makes
+                # each document's chunks visible to other sessions as soon
+                # as that document is done rather than only once the whole
+                # (potentially hour-long) sync finishes.
+                async with session.begin_nested():
                     documents_processed += await _process_one_item(
                         session,
                         connector=connector,
@@ -345,10 +359,12 @@ async def _execute_ingestion_job(
                         resolved_config=resolved_config,
                         actor=actor,
                     )
+                await session.commit()
+                await set_tenant_context(session, organization_id)  # does not survive COMMIT
 
-                if not fetch_result.has_more:
-                    break
-                cursor = fetch_result.next_cursor
+            if not fetch_result.has_more:
+                break
+            cursor = fetch_result.next_cursor
 
         completed_at = datetime.now(timezone.utc)
         job_row = await repository.update_ingestion_job(
@@ -369,53 +385,147 @@ async def _execute_ingestion_job(
             if latest_resume_token is not None
             else None,
         )
-    except Exception as exc:
+        await session.commit()
+    except (Exception, asyncio.CancelledError) as exc:
+        # Also catches `asyncio.CancelledError` -- a `BaseException`, not an
+        # `Exception`, since Python 3.8, so a bare `except Exception` here
+        # silently let it through. This is exactly how `arq` enforces
+        # `WorkerSettings.job_timeout`: it runs this task under `asyncio.
+        # wait_for(task, timeout_s)` and cancels the task on timeout
+        # (`arq.worker.Worker._run_job`) -- which throws `CancelledError`
+        # into this exact call stack. Previously that skipped this whole
+        # except block (and the `finally` below still ran and closed the
+        # connector, but nothing recorded the outcome), leaving the job row
+        # stuck at `status="running"` and the connector stuck wherever it
+        # was (e.g. `"connecting"`) forever -- with every item already
+        # fetched this run still committed (chunks and embeddings included,
+        # per the per-item commit above), silently orphaned from a job/
+        # connector status that never caught up to them. See
+        # `app.ingestion.workers.main.WorkerSettings.job_timeout`'s own
+        # docstring: this is the same "arq cancels the job mid-page" failure
+        # mode that comment already flagged, previously worked around only
+        # by raising the timeout ceiling rather than handling the
+        # cancellation itself.
+        #
+        # `exc_info=True`: this is the ONE place that logs the actual root
+        # cause (a dropped connection, an item-processing bug, whatever
+        # `exc` is) -- everything below tries to *record* the failure, and
+        # if that recording itself fails too (see the nested except below),
+        # only this line still shows what originally went wrong.
         logger.warning(
             "ingestion_job_failed",
             job_id=str(job_row.id),
             connector_config_id=str(connector_config_id),
             stage=stage,
+            documents_processed=documents_processed,
             error=str(exc),
+            exc_info=True,
         )
-        # `documents_processed` deliberately NOT reported here: the savepoint
-        # above rolled back every document/metadata write this attempt made,
-        # so the in-memory counter no longer matches what's actually
-        # persisted -- reporting it would claim documents were processed
-        # that the rollback just erased. The job row keeps whatever count it
-        # already had (0, from `insert_ingestion_job`'s default).
+        completed_at = datetime.now(timezone.utc)
+        # Safe even on failure: a site/channel whose walk didn't reach
+        # completion this run simply keeps whatever token it already had
+        # (never overwritten), which is still valid to resume from next
+        # time -- only sites that *did* complete get a fresher one.
+        config_patch = (
+            {"_resume_token": latest_resume_token} if latest_resume_token is not None else None
+        )
+        try:
+            # `rollback()` first, unconditionally: whatever raised may have
+            # left the session mid-transaction -- either the current item's
+            # own uncommitted work (an ordinary processing error), or, if
+            # the exception was a dropped connection, the session sitting in
+            # the "pending rollback" state SQLAlchemy requires clearing
+            # before any further query can run on it at all (surfaces
+            # otherwise as a second, masking error: "Can't reconnect until
+            # invalid transaction is rolled back"). Safe unconditionally now
+            # that items commit for real as they finish: the only thing a
+            # rollback here can discard is the one item that never got to
+            # commit, not any earlier one.
+            await session.rollback()
+            await set_tenant_context(session, organization_id)
+            # `documents_processed` IS accurate here, unlike the old
+            # whole-job-savepoint design: every count it includes was
+            # already committed above, so reporting it doesn't claim
+            # anything the rollback just erased.
+            job_row = await repository.update_ingestion_job(
+                session,
+                job_row.id,
+                status="failed",
+                failed_stage=stage,
+                documents_processed=documents_processed,
+                completed_at=completed_at,
+            )
+            await tenancy_service.update_connector_sync_status(
+                session,
+                actor,
+                config_row.organization_id,
+                connector_config_id,
+                status="error",
+                config_patch=config_patch,
+            )
+            await session.commit()
+        except Exception:
+            # Observed in practice: after a bad enough connection drop, this
+            # same session/connection can be too damaged to reuse at all --
+            # even the `rollback()` above doesn't recover it, and the
+            # `update_ingestion_job` call above raises a second, unrelated-
+            # looking error (e.g. a SQLAlchemy "greenlet_spawn has not been
+            # called" internal error) instead of writing anything. Without
+            # this fallback, the job row is left stuck at status="running"
+            # forever, with the real failure logged above but no durable
+            # trace of it in `ingestion_jobs` at all. A brand new session
+            # (a fresh connection from the pool) sidesteps whatever state
+            # the original one is stuck in.
+            logger.warning(
+                "ingestion_job_failure_record_write_failed",
+                job_id=str(job_row.id),
+                connector_config_id=str(connector_config_id),
+                exc_info=True,
+            )
+            async with session_scope() as fallback_session:
+                await set_tenant_context(fallback_session, organization_id)
+                job_row = await repository.update_ingestion_job(
+                    fallback_session,
+                    job_row.id,
+                    status="failed",
+                    failed_stage=stage,
+                    documents_processed=documents_processed,
+                    completed_at=completed_at,
+                )
+                await tenancy_service.update_connector_sync_status(
+                    fallback_session,
+                    actor,
+                    config_row.organization_id,
+                    connector_config_id,
+                    status="error",
+                    config_patch=config_patch,
+                )
+        # Deliberately NOT re-raised for an ordinary `Exception`: this whole
+        # call runs inside the one session/transaction the caller's
+        # `session_scope()` opened, and that helper's contract is "commit on
+        # normal return, rollback on any exception that escapes." Re-raising
+        # here used to undo this very `status="failed"` write (and the
+        # original `insert_ingestion_job` row with it) the instant it
+        # reached that boundary -- every failed ingestion job left zero
+        # trace in `ingestion_jobs`, despite this except block's own intent.
+        # Returning normally instead lets the failure record actually
+        # commit; `run_ingestion_job_task` (the caller that decides on arq
+        # retries) checks `job.status` for this reason rather than relying
+        # on a caught exception.
         #
-        # Deliberately NOT re-raised: this whole call runs inside the one
-        # session/transaction the caller's `session_scope()` opened, and
-        # that helper's contract is "commit on normal return, rollback on
-        # any exception that escapes." Re-raising here used to undo this
-        # very `status="failed"` write (and the original `insert_ingestion_
-        # job` row with it) the instant it reached that boundary -- every
-        # failed ingestion job left zero trace in `ingestion_jobs`, despite
-        # this except block's own intent. Returning normally instead lets
-        # the failure record actually commit; `run_ingestion_job_task` (the
-        # caller that decides on arq retries) checks `job.status` for this
-        # reason rather than relying on a caught exception.
-        job_row = await repository.update_ingestion_job(
-            session,
-            job_row.id,
-            status="failed",
-            failed_stage=stage,
-            completed_at=datetime.now(timezone.utc),
-        )
-        await tenancy_service.update_connector_sync_status(
-            session,
-            actor,
-            config_row.organization_id,
-            connector_config_id,
-            status="error",
-            # Safe even on failure: a site/channel whose walk didn't reach
-            # completion this run simply keeps whatever token it already
-            # had (never overwritten), which is still valid to resume from
-            # next time -- only sites that *did* complete get a fresher one.
-            config_patch={"_resume_token": latest_resume_token}
-            if latest_resume_token is not None
-            else None,
-        )
+        # `CancelledError` is different and IS re-raised, once the failure
+        # is durably recorded above: swallowing a cancellation is its own
+        # bug independent of this job (it can leave `asyncio.wait_for`'s own
+        # bookkeeping -- and arq's retry-vs-give-up decision, which inspects
+        # the propagated `CancelledError` itself, `arq.worker.Worker.
+        # _run_job` -- believing this task is still running when it isn't).
+        # This job's own failure/retry semantics don't depend on the
+        # re-raise: `run_ingestion_job_task`'s `except Exception` can't see
+        # it either (same `BaseException` reasoning as above), so it always
+        # propagates the rest of the way to arq, which is exactly what
+        # decides whether to retry a cancelled job.
+        if isinstance(exc, asyncio.CancelledError):
+            raise
     finally:
         if client is not None:
             await connector.close(client)

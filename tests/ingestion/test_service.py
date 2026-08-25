@@ -10,6 +10,7 @@ connector_config row.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import datetime, timezone
 
@@ -31,13 +32,20 @@ class _FakeNestedTransaction:
 
 class _FakeSession:
     """Minimal stand-in for `AsyncSession` -- `_execute_ingestion_job` only
-    ever calls `begin_nested()` on it directly (every actual read/write in
-    this test goes through monkeypatched `repository`/`tenancy_service`
-    functions instead, none of which touch this object at all).
+    ever calls `begin_nested()`/`commit()`/`rollback()` on it directly
+    (every actual read/write in this test goes through monkeypatched
+    `repository`/`tenancy_service` functions instead, none of which touch
+    this object at all).
     """
 
     def begin_nested(self):
         return _FakeNestedTransaction()
+
+    async def commit(self) -> None:
+        return None
+
+    async def rollback(self) -> None:
+        return None
 
 
 class _FakeConnectorConfigRow:
@@ -223,7 +231,11 @@ async def test_execute_ingestion_job_sets_tenant_context_before_reading_full_con
         _FakeSession(), config_row.id, force_full_sync=True
     )
 
-    assert call_order == ["resolve_org_id", "set_tenant_context", "get_connector_config"]
+    # Only the first three calls matter for this test's ordering claim --
+    # `set_tenant_context` is called again after the job row's initial
+    # commit (`SET LOCAL` does not survive `COMMIT`) and, had this connector
+    # fetched any items, again after each item's own commit.
+    assert call_order[:3] == ["resolve_org_id", "set_tenant_context", "get_connector_config"]
 
 
 class _FakeDocumentRow:
@@ -594,11 +606,115 @@ async def test_failed_ingestion_job_leaves_a_durable_failure_record(monkeypatch)
     assert fake_connector.closed is True, "the connector client must still be closed on failure"
 
 
+class _CancellingConnector(_RecordingConnector):
+    """Simulates `arq`'s `WorkerSettings.job_timeout` firing mid-fetch: the
+    worker's `asyncio.wait_for(task, timeout_s)` cancels the running task,
+    which throws `asyncio.CancelledError` into whatever await this
+    connector's `fetch_batch` happens to be sitting on.
+    """
+
+    source_name = "cancelling_source"
+
+    async def fetch_batch(self, client, *, since, cursor):
+        raise asyncio.CancelledError()
+
+
 @pytest.mark.asyncio
-async def test_failed_ingestion_job_does_not_report_documents_processed(monkeypatch) -> None:
-    """The savepoint rolls back every document written by the failed attempt,
-    so reporting a non-zero count would claim documents that no longer
-    exist.
+async def test_cancelled_ingestion_job_leaves_a_durable_failure_record_and_reraises(
+    monkeypatch,
+) -> None:
+    """Regression test: `asyncio.CancelledError` is a `BaseException`, not an
+    `Exception`, since Python 3.8 -- a bare `except Exception` around the
+    fetch/process loop silently let a timeout-cancelled job (exactly how
+    `arq` enforces `WorkerSettings.job_timeout`) skip every bit of failure
+    recording. The job row stayed at `status="running"` and the connector
+    stayed wherever it was (e.g. `"connecting"`) forever, even though any
+    items already fetched that run had already committed for real (chunks
+    and embeddings included) -- silently orphaned from a status that never
+    caught up to them.
+
+    Asserts BOTH halves of the fix:
+      - the failure is fully recorded (job "failed", connector "error"),
+        exactly like an ordinary exception, and
+      - unlike an ordinary exception, the `CancelledError` IS re-raised
+        afterward -- swallowing it would corrupt `asyncio.wait_for`'s own
+        cancellation bookkeeping and arq's retry-vs-give-up decision, both
+        of which key off the propagated `CancelledError` itself.
+    """
+    organization_id = uuid.uuid4()
+    config_row = _FakeConnectorConfigRow(
+        organization_id=organization_id,
+        source="cancelling_source",
+        credential_ref=await encrypt_secret(get_kms(), "irrelevant-for-this-test"),
+    )
+    fake_connector = _CancellingConnector()
+    job_updates: list[dict] = []
+    sync_status_updates: list[dict] = []
+
+    async def fake_resolve_connector_config_organization_id(session, connector_config_id):
+        return organization_id
+
+    async def fake_get_connector_config(session, connector_config_id):
+        return config_row
+
+    async def fake_insert_ingestion_job(session, *, organization_id, connector_config_id):
+        return _FakeJobRow(organization_id, connector_config_id)
+
+    async def fake_update_ingestion_job(session, job_id, **fields):
+        job_updates.append({"job_id": job_id, **fields})
+        row = _FakeJobRow(organization_id, config_row.id)
+        row.id = job_id
+        for key, value in fields.items():
+            setattr(row, key, value)
+        return row
+
+    async def fake_update_connector_sync_status(session, actor, org_id, connector_config_id, **kwargs):
+        sync_status_updates.append(kwargs)
+        return None
+
+    async def fake_set_tenant_context(session, org_id) -> None:
+        return None
+
+    monkeypatch.setitem(ingestion_service._CONNECTOR_REGISTRY, "cancelling_source", fake_connector)
+    monkeypatch.setattr(
+        ingestion_service.repository,
+        "resolve_connector_config_organization_id",
+        fake_resolve_connector_config_organization_id,
+    )
+    monkeypatch.setattr(ingestion_service.repository, "get_connector_config", fake_get_connector_config)
+    monkeypatch.setattr(ingestion_service.repository, "insert_ingestion_job", fake_insert_ingestion_job)
+    monkeypatch.setattr(ingestion_service.repository, "update_ingestion_job", fake_update_ingestion_job)
+    monkeypatch.setattr(
+        ingestion_service.tenancy_service,
+        "update_connector_sync_status",
+        fake_update_connector_sync_status,
+    )
+    monkeypatch.setattr(ingestion_service, "set_tenant_context", fake_set_tenant_context)
+
+    with pytest.raises(asyncio.CancelledError):
+        await ingestion_service._execute_ingestion_job(
+            _FakeSession(), config_row.id, force_full_sync=True
+        )
+
+    failure_writes = [u for u in job_updates if u.get("status") == "failed"]
+    assert len(failure_writes) == 1, f"expected exactly one failure write, got {job_updates}"
+    assert failure_writes[0]["failed_stage"] == "fetch"
+
+    assert sync_status_updates and sync_status_updates[-1]["status"] == "error", (
+        "the connector itself must be marked errored, not left at whatever status it had before"
+    )
+    assert fake_connector.closed is True, "the connector client must still be closed on cancellation"
+
+
+@pytest.mark.asyncio
+async def test_failed_ingestion_job_reports_accurate_documents_processed_count(monkeypatch) -> None:
+    """Each item commits for real as soon as it persists (a real `COMMIT`,
+    not just a savepoint release spanning the whole job), so unlike the old
+    whole-job-savepoint design, a failed attempt's `documents_processed`
+    count reflects work that is actually durable -- it must always be
+    reported, never omitted, even when it's zero (as here, where the
+    connector explodes during the very first `fetch_batch` call, before any
+    item is processed).
     """
     organization_id = uuid.uuid4()
     config_row = _FakeConnectorConfigRow(
@@ -649,7 +765,7 @@ async def test_failed_ingestion_job_does_not_report_documents_processed(monkeypa
 
     failure_writes = [u for u in job_updates if u.get("status") == "failed"]
     assert failure_writes, "no failure write recorded"
-    assert "documents_processed" not in failure_writes[0]
+    assert failure_writes[0]["documents_processed"] == 0
 
 
 async def _async_return(value):

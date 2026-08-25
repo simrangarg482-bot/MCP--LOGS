@@ -64,3 +64,33 @@ export interface CreateConfluenceConnectorInput {
   baseUrl: string;
   spaces: string[];
 }
+
+/** Mirrors `app.ingestion.connectors.teams`'s documented
+ * `ResolvedConnectorConfig.config` shape: `{"team_id": "...", "channels": [...]}`.
+ * `token` is an already-issued Graph API OAuth2 bearer access token (see
+ * that module's docstring), not a long-lived credential this UI can obtain
+ * itself. `team_id`/`channels` are Graph object IDs, not display names. */
+export interface CreateTeamsConnectorInput {
+  token: string;
+  teamId: string;
+  channels: string[];
+}
+
+/** Mirrors `app.ingestion.connectors.azure_devops`'s documented
+ * `ResolvedConnectorConfig.config` shape: `{"organization": "...", "projects": [...]}`.
+ * `token` is a literal Azure DevOps Personal Access Token. `projects` is a
+ * list of project *names*, not IDs -- see that module's docstring. */
+export interface CreateAzureDevOpsConnectorInput {
+  token: string;
+  organization: string;
+  projects: string[];
+}
+
+/** Mirrors `app.ingestion.connectors.sharepoint`'s documented
+ * `ResolvedConnectorConfig.config` shape: `{"site_ids": [...]}`. `token` is
+ * an already-issued Graph API OAuth2 bearer access token, same as Teams --
+ * there is no separate site base URL, unlike Jira/Confluence. */
+export interface CreateSharePointConnectorInput {
+  token: string;
+  siteIds: string[];
+}

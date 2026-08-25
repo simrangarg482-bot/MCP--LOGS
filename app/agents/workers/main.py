@@ -3,19 +3,19 @@ own process, separate from both the API server and the ingestion worker:
 
     arq app.agents.workers.main.WorkerSettings
 
-`redis_settings` is built from the same `Settings.redis_url` every other
-part of the app reads, the same single-source-of-truth convention
-`app.ingestion.workers.main`'s identical line already follows.
+`redis_settings` comes from `app.shared.redis_settings.build_redis_settings`,
+the same single-source-of-truth convention `app.ingestion.workers.main`'s
+identical line already follows -- see that helper's own docstring for why a
+bare `RedisSettings.from_dsn(...)` isn't enough.
 """
 
 from __future__ import annotations
 
-from arq.connections import RedisSettings
 from arq.cron import cron
 
 from app.agents.workers.tasks import run_knowledge_gap_detection_task, scheduled_knowledge_gap_scan
 from app.shared.config.logging import configure_logging
-from app.shared.config.settings import get_settings
+from app.shared.redis_settings import build_redis_settings
 
 configure_logging()
 
@@ -34,7 +34,7 @@ class WorkerSettings:
     # would mostly re-scan the same low-confidence executions and re-merge
     # into the same open reports for no benefit.
     cron_jobs = [cron(scheduled_knowledge_gap_scan, hour=2, minute=0)]
-    redis_settings = RedisSettings.from_dsn(str(get_settings().redis_url))
+    redis_settings = build_redis_settings()
     # See `app.ingestion.workers.main.WorkerSettings.queue_name`'s comment --
     # without an explicit, distinct queue name here too, this worker shares
     # arq's default queue with the ingestion worker on the same Redis

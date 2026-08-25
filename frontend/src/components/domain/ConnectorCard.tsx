@@ -36,18 +36,24 @@ function configSummary(connector: Connector): string | null {
     channels?: string[];
     projects?: string[];
     spaces?: string[];
+    team_id?: string;
+    organization?: string;
+    site_ids?: string[];
   };
   if (connector.source === "github" && config.repos?.length) {
     return config.repos.map((r) => r.repo).join(", ");
   }
-  if (connector.source === "slack" && config.channels?.length) {
+  if ((connector.source === "slack" || connector.source === "teams") && config.channels?.length) {
     return `${config.channels.length} channel${config.channels.length === 1 ? "" : "s"}`;
   }
-  if (connector.source === "jira" && config.projects?.length) {
+  if ((connector.source === "jira" || connector.source === "azure_devops") && config.projects?.length) {
     return config.projects.join(", ");
   }
   if (connector.source === "confluence" && config.spaces?.length) {
     return config.spaces.join(", ");
+  }
+  if (connector.source === "sharepoint" && config.site_ids?.length) {
+    return `${config.site_ids.length} site${config.site_ids.length === 1 ? "" : "s"}`;
   }
   return null;
 }

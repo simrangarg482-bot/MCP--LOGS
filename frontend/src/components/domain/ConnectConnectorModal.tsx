@@ -13,10 +13,13 @@ interface ConnectConnectorModalProps {
   onSubmitSlack: (token: string, channelIds: string[]) => Promise<void>;
   onSubmitJira: (token: string, baseUrl: string, projects: string[]) => Promise<void>;
   onSubmitConfluence: (token: string, baseUrl: string, spaces: string[]) => Promise<void>;
+  onSubmitTeams: (token: string, teamId: string, channels: string[]) => Promise<void>;
+  onSubmitAzureDevOps: (token: string, organization: string, projects: string[]) => Promise<void>;
+  onSubmitSharePoint: (token: string, siteIds: string[]) => Promise<void>;
   isSubmitting: boolean;
 }
 
-type SourceTab = "github" | "slack" | "jira" | "confluence";
+type SourceTab = "github" | "slack" | "jira" | "confluence" | "teams" | "azure_devops" | "sharepoint";
 
 /** Shared list-of-string-keys editor: Slack channel IDs, Jira project keys,
  * and Confluence space keys are all the same shape (a token field plus a
@@ -76,6 +79,9 @@ export function ConnectConnectorModal({
   onSubmitSlack,
   onSubmitJira,
   onSubmitConfluence,
+  onSubmitTeams,
+  onSubmitAzureDevOps,
+  onSubmitSharePoint,
   isSubmitting,
 }: ConnectConnectorModalProps) {
   const [tab, setTab] = useState<SourceTab>("github");
@@ -94,6 +100,17 @@ export function ConnectConnectorModal({
   const [confluenceBaseUrl, setConfluenceBaseUrl] = useState("");
   const [confluenceSpaces, setConfluenceSpaces] = useState<string[]>([""]);
 
+  const [teamsToken, setTeamsToken] = useState("");
+  const [teamsTeamId, setTeamsTeamId] = useState("");
+  const [teamsChannels, setTeamsChannels] = useState<string[]>([""]);
+
+  const [azureDevOpsToken, setAzureDevOpsToken] = useState("");
+  const [azureDevOpsOrg, setAzureDevOpsOrg] = useState("");
+  const [azureDevOpsProjects, setAzureDevOpsProjects] = useState<string[]>([""]);
+
+  const [sharePointToken, setSharePointToken] = useState("");
+  const [sharePointSiteIds, setSharePointSiteIds] = useState<string[]>([""]);
+
   function resetAndClose() {
     setGithubToken("");
     setRepos([{ repo: "", ref: "" }]);
@@ -105,6 +122,14 @@ export function ConnectConnectorModal({
     setConfluenceToken("");
     setConfluenceBaseUrl("");
     setConfluenceSpaces([""]);
+    setTeamsToken("");
+    setTeamsTeamId("");
+    setTeamsChannels([""]);
+    setAzureDevOpsToken("");
+    setAzureDevOpsOrg("");
+    setAzureDevOpsProjects([""]);
+    setSharePointToken("");
+    setSharePointSiteIds([""]);
     setTab("github");
     onClose();
   }
@@ -143,6 +168,30 @@ export function ConnectConnectorModal({
     resetAndClose();
   }
 
+  async function handleTeamsSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    const cleanedChannels = teamsChannels.map((c) => c.trim()).filter(Boolean);
+    if (!teamsToken.trim() || !teamsTeamId.trim() || cleanedChannels.length === 0) return;
+    await onSubmitTeams(teamsToken.trim(), teamsTeamId.trim(), cleanedChannels);
+    resetAndClose();
+  }
+
+  async function handleAzureDevOpsSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    const cleanedProjects = azureDevOpsProjects.map((p) => p.trim()).filter(Boolean);
+    if (!azureDevOpsToken.trim() || !azureDevOpsOrg.trim() || cleanedProjects.length === 0) return;
+    await onSubmitAzureDevOps(azureDevOpsToken.trim(), azureDevOpsOrg.trim(), cleanedProjects);
+    resetAndClose();
+  }
+
+  async function handleSharePointSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    const cleanedSiteIds = sharePointSiteIds.map((s) => s.trim()).filter(Boolean);
+    if (!sharePointToken.trim() || cleanedSiteIds.length === 0) return;
+    await onSubmitSharePoint(sharePointToken.trim(), cleanedSiteIds);
+    resetAndClose();
+  }
+
   return (
     <Modal
       open={open}
@@ -158,6 +207,9 @@ export function ConnectConnectorModal({
             { key: "slack", label: "Slack" },
             { key: "jira", label: "Jira" },
             { key: "confluence", label: "Confluence" },
+            { key: "teams", label: "Teams" },
+            { key: "azure_devops", label: "Azure DevOps" },
+            { key: "sharepoint", label: "SharePoint" },
           ]}
           activeKey={tab}
           onChange={(key) => setTab(key as SourceTab)}
@@ -341,6 +393,120 @@ export function ConnectConnectorModal({
 
           <Button type="submit" variant="primary" isLoading={isSubmitting} className="mt-2">
             Connect Confluence
+          </Button>
+        </form>
+      )}
+
+      {tab === "teams" && (
+        <form onSubmit={handleTeamsSubmit} className="flex flex-col gap-3">
+          <div>
+            <label htmlFor="teams-token" className="mb-1.5 block text-xs font-medium text-ink-muted">
+              Graph API access token
+            </label>
+            <Input
+              id="teams-token"
+              type="password"
+              required
+              placeholder="Bearer token from your app registration"
+              value={teamsToken}
+              onChange={(e) => setTeamsToken(e.target.value)}
+            />
+          </div>
+          <div>
+            <label htmlFor="teams-team-id" className="mb-1.5 block text-xs font-medium text-ink-muted">
+              Team ID
+            </label>
+            <Input
+              id="teams-team-id"
+              required
+              placeholder="19:abcd1234…@thread.tacv2"
+              value={teamsTeamId}
+              onChange={(e) => setTeamsTeamId(e.target.value)}
+            />
+          </div>
+
+          <KeyListField
+            legend="Channel IDs"
+            placeholder="19:xyz9876…@thread.tacv2"
+            ariaLabelPrefix="Channel"
+            values={teamsChannels}
+            onChange={setTeamsChannels}
+          />
+
+          <Button type="submit" variant="primary" isLoading={isSubmitting} className="mt-2">
+            Connect Teams
+          </Button>
+        </form>
+      )}
+
+      {tab === "azure_devops" && (
+        <form onSubmit={handleAzureDevOpsSubmit} className="flex flex-col gap-3">
+          <div>
+            <label htmlFor="azure-devops-token" className="mb-1.5 block text-xs font-medium text-ink-muted">
+              Personal access token
+            </label>
+            <Input
+              id="azure-devops-token"
+              type="password"
+              required
+              placeholder="PAT with Work Items (Read) scope"
+              value={azureDevOpsToken}
+              onChange={(e) => setAzureDevOpsToken(e.target.value)}
+            />
+          </div>
+          <div>
+            <label htmlFor="azure-devops-org" className="mb-1.5 block text-xs font-medium text-ink-muted">
+              Organization
+            </label>
+            <Input
+              id="azure-devops-org"
+              required
+              placeholder="acme-corp"
+              value={azureDevOpsOrg}
+              onChange={(e) => setAzureDevOpsOrg(e.target.value)}
+            />
+          </div>
+
+          <KeyListField
+            legend="Project names"
+            placeholder="Platform"
+            ariaLabelPrefix="Project"
+            values={azureDevOpsProjects}
+            onChange={setAzureDevOpsProjects}
+          />
+
+          <Button type="submit" variant="primary" isLoading={isSubmitting} className="mt-2">
+            Connect Azure DevOps
+          </Button>
+        </form>
+      )}
+
+      {tab === "sharepoint" && (
+        <form onSubmit={handleSharePointSubmit} className="flex flex-col gap-3">
+          <div>
+            <label htmlFor="sharepoint-token" className="mb-1.5 block text-xs font-medium text-ink-muted">
+              Graph API access token
+            </label>
+            <Input
+              id="sharepoint-token"
+              type="password"
+              required
+              placeholder="Bearer token from your app registration"
+              value={sharePointToken}
+              onChange={(e) => setSharePointToken(e.target.value)}
+            />
+          </div>
+
+          <KeyListField
+            legend="Site IDs"
+            placeholder="contoso.sharepoint.com,abcd1234-…"
+            ariaLabelPrefix="Site"
+            values={sharePointSiteIds}
+            onChange={setSharePointSiteIds}
+          />
+
+          <Button type="submit" variant="primary" isLoading={isSubmitting} className="mt-2">
+            Connect SharePoint
           </Button>
         </form>
       )}

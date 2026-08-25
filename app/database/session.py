@@ -30,7 +30,10 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.orm import DeclarativeBase
 
+from app.shared.config.logging import get_logger
 from app.shared.config.settings import get_settings
+
+logger = get_logger(__name__)
 
 # The Postgres GUC every Milestone 10 RLS policy checks against (see
 # app/database/migrations/versions/c7d4e8f19a2b_milestone_10_row_level_security.py).
@@ -122,6 +125,17 @@ def _build_engine() -> AsyncEngine:
 
 
 engine: AsyncEngine = _build_engine()
+# Logged unconditionally at import time (not just on error) since this
+# project runs against multiple, easily-confused DATABASE_URLs depending on
+# how the process was started (root `.env` -> Neon vs `.env.docker` -> local
+# Postgres container, see `.env.docker.example`'s own warning) -- printing
+# host/dbname (never credentials) here makes "which database did this
+# process actually connect to" a one-line grep instead of a debugging session.
+logger.info(
+    "database_engine_created",
+    host=engine.url.host,
+    database=engine.url.database,
+)
 
 async_session_factory = async_sessionmaker(
     bind=engine,
@@ -142,7 +156,14 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
         try:
             yield session
             await session.commit()
-        except Exception:
+        except BaseException:
+            # `BaseException`, not `Exception`: `asyncio.CancelledError` (e.g.
+            # an arq `job_timeout` firing mid-job) is a `BaseException` in
+            # Python >=3.8 and was previously falling through this handler
+            # uncaught, skipping the rollback and leaving the transaction
+            # open on the server until the connection was eventually
+            # recycled -- exactly the kind of idle-in-transaction state that
+            # can block a later job's writes to the same rows.
             await session.rollback()
             raise
         finally:
@@ -203,7 +224,7 @@ async def session_scope() -> AsyncGenerator[AsyncSession, None]:
         try:
             yield session
             await session.commit()
-        except Exception:
+        except BaseException:  # see get_db_session's matching handler above
             await session.rollback()
             raise
         finally:

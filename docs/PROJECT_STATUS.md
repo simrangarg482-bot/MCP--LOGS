@@ -121,8 +121,30 @@ None of the above have been faked, guessed, or reported as passing. Where a scri
 - A from-scratch, in-browser responsive/accessibility pass (this session's work was static code review only).
 - Phase 9's "second independent" API contract audit was folded into one thorough audit plus direct spot-verification of every fix in this session, not two fully separate audit passes.
 - Phases 12 (full E2E) and 14 (final regression including E2E) cannot report real pass/fail numbers without a running environment — see BLOCKED table above.
-- Teams, Azure DevOps, and SharePoint connector registration UI — the backend fully supports these three source types; only GitHub, Slack, Jira, and Confluence have a frontend registration form as of this session.
 - Switching the real database connection to a restricted, RLS-respecting role (`ekip_app` or equivalent) — currently `neondb_owner`, which bypasses RLS entirely. This is the single highest-impact remaining security gap and requires a live Neon change, not a code change.
+
+## Phase 15 (Connector registration UI completion, this session)
+
+Built the previously-missing Teams, Azure DevOps, and SharePoint registration
+forms in `ConnectConnectorModal.tsx`, closing the gap Phase 9 documented
+(backend supported all 9 source types; only GitHub/Slack/Jira/Confluence had
+a frontend form). Config shapes were read directly from each connector's own
+docstring, not guessed: `app.ingestion.connectors.teams` (`{"team_id":
+"...", "channels": [...]}`, Graph bearer token), `app.ingestion.connectors.
+azure_devops` (`{"organization": "...", "projects": [...]}`, a literal PAT),
+`app.ingestion.connectors.sharepoint` (`{"site_ids": [...]}`, Graph bearer
+token — no base URL field, unlike Jira/Confluence). Added the matching
+`CreateTeamsConnectorInput`/`CreateAzureDevOpsConnectorInput`/
+`CreateSharePointConnectorInput` types, `createTeamsConnector`/
+`createAzureDevOpsConnector`/`createSharePointConnector` API functions (both
+real and mock-mode paths), wired three new mutations into
+`ConnectorsPage.tsx`, and extended `ConnectorCard.tsx`'s config summary to
+cover the three new source types. `typecheck`/`lint` (0 warnings)/`build`
+all re-confirmed passing after this change. **Not done**: no live backend to
+verify an actual Teams/Azure DevOps/SharePoint connector registers and
+syncs end-to-end — verified only that the frontend sends the documented
+request shape, same environment limitation as every other frontend change
+in this project's history.
 
 ## Important context to continue
 
