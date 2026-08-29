@@ -198,12 +198,12 @@ class GitHubConnector:
     async def authenticate(self, config: ResolvedConnectorConfig) -> _GitHubClient:
         """Build an authenticated GitHub client from `config`.
 
-        `config.credential_ref` is treated as a literal PAT/installation
-        token for now -- same flagged placeholder as `SlackConnector`, see
-        `ResolvedConnectorConfig`'s docstring (real secret-store resolution
-        depends on `shared/security`, not yet built; this connector never
-        stores or logs the token itself, only forwards it as a bearer
-        header on its own outbound requests). Calls `GET /rate_limit` once
+        `config.credential_ref` is the plaintext PAT/installation token,
+        already decrypted by `app.ingestion.service` via `shared/security`
+        before this connector ever sees it -- see `base.Connector.
+        authenticate`'s docstring; this connector never stores or logs the
+        token itself, only forwards it as a bearer header on its own
+        outbound requests. Calls `GET /rate_limit` once
         (does not itself count against the rate limit) so an invalid token
         fails loudly here rather than on the first real fetch.
         """

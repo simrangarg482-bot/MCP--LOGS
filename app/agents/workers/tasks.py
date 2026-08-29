@@ -15,6 +15,7 @@ import structlog
 from arq.worker import Retry
 
 from app.agents import service as agents_service
+from app.core.proactive import service as proactive_service
 from app.core.tenancy import service as tenancy_service
 from app.database.session import session_scope, set_tenant_context
 from app.shared.backoff import full_jitter_backoff_seconds
@@ -102,3 +103,72 @@ async def scheduled_knowledge_gap_scan(ctx: dict) -> None:
         await redis.enqueue_job("run_knowledge_gap_detection_task", str(organization.id))
 
     logger.info("knowledge_gap_scan_scheduled", organization_count=len(organizations))
+
+
+async def run_pattern_detection_task(ctx: dict, organization_id: str) -> None:
+    """Run every `core.proactive` detector for one organization (Priority
+    6). Same shape as `run_knowledge_gap_detection_task` immediately above
+    -- own session, `set_tenant_context` before any RLS-protected query,
+    `Identity.for_agent(...)` only for the audit trail (`core.proactive.
+    service.run_detection` itself runs unscoped -- see that function's own
+    docstring for why detection and authorization are deliberately separate
+    concerns).
+    """
+    structlog.contextvars.clear_contextvars()
+    structlog.contextvars.bind_contextvars(
+        request_id=str(ctx.get("job_id", "")) or None,
+        organization_id=organization_id,
+    )
+    try:
+        try:
+            async with session_scope() as session:
+                org_uuid = uuid.UUID(organization_id)
+                await set_tenant_context(session, org_uuid)
+                results = await proactive_service.run_detection(session, organization_id=org_uuid)
+            logger.info(
+                "pattern_detection_task_completed",
+                organization_id=organization_id,
+                detector_count=len(results),
+                candidate_count=sum(r.candidate_count for r in results),
+                created_count=sum(r.created_count for r in results),
+                deactivated_count=sum(r.deactivated_count for r in results),
+                failed_detectors=[r.finding_type for r in results if r.error is not None],
+            )
+        except Exception as exc:
+            attempt = ctx["job_try"]
+            defer_seconds = full_jitter_backoff_seconds(attempt, cap=_MAX_BACKOFF_SECONDS)
+            logger.warning(
+                "pattern_detection_task_retry_scheduled",
+                organization_id=organization_id,
+                attempt=attempt,
+                defer_seconds=defer_seconds,
+                error=str(exc),
+            )
+            raise Retry(defer=defer_seconds) from exc
+    finally:
+        structlog.contextvars.clear_contextvars()
+
+
+async def scheduled_pattern_detection_scan(ctx: dict) -> None:
+    """Periodic scan (the cron entry point): enqueues one
+    `run_pattern_detection_task` job per organization.
+
+    Enqueues rather than detecting inline -- the identical reasoning
+    `scheduled_knowledge_gap_scan`/`scheduled_reconciliation` already give:
+    one organization's pass must not block every other organization's, and
+    each enqueued job gets its own independent retry/backoff. A single
+    detector's exception inside `run_detection` is already caught and
+    isolated per-finding-type (see that function's docstring); this task's
+    own `try/except` only guards against something failing before/around
+    that call (session setup, an unhandled bug), and retries the WHOLE
+    organization's detection pass in that case -- reconciliation is
+    idempotent, so a safe retry, not a partial-state risk.
+    """
+    async with session_scope() as session:
+        organizations = await tenancy_service.list_organizations(session)
+
+    redis = ctx["redis"]
+    for organization in organizations:
+        await redis.enqueue_job("run_pattern_detection_task", str(organization.id))
+
+    logger.info("pattern_detection_scan_scheduled", organization_count=len(organizations))

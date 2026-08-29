@@ -57,7 +57,7 @@ jobs:
         run: gitleaks detect --source . --config .gitleaks.toml --redact -v
 
   backend:
-    name: Backend tests + import-linter
+    name: Backend tests + import-linter + deterministic evaluation
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -80,6 +80,48 @@ jobs:
 
       - name: Import-linter (module boundary contracts)
         run: uv run lint-imports
+
+      # Deterministic (Mode 1) evaluation -- retrieval/grounding/answer/
+      # investigation regression detection against the fixture corpus in
+      # app/evaluation/fixtures/. Belongs in THIS fast tier, not in
+      # e2e-and-eval.yml alongside `eval_confidence.py`, precisely because
+      # it needs none of what that tier needs: no live database, no
+      # OPENAI_API_KEY, no service containers, no secrets. The job-level
+      # placeholder env vars at the top of this workflow are the only
+      # configuration it sees, and it never opens a connection with them.
+      #
+      # Added as a step in this existing job rather than a separate job so
+      # it reuses the `uv sync` above (a separate job would re-download and
+      # rebuild the entire dependency tree to run a ~10-second check).
+      #
+      # Exit code semantics matter here and are NOT "fail if any case
+      # failed": the fixture suite deliberately ships 10 negative controls
+      # that are *supposed* to fail, proving the evaluator detects real
+      # defects. The script exits non-zero only on a genuine regression --
+      # an expected-pass case failing, a negative control passing (i.e. it
+      # stopped detecting anything), or a control failing at the wrong
+      # pipeline stage. See scripts/run_evaluation.py's own docstring.
+      - name: Deterministic AI evaluation (regression gate)
+        run: >
+          uv run python scripts/run_evaluation.py
+          --report-path run_evaluation_report.json
+
+      # Uploaded unconditionally (`if: always()`), unlike the E2E workflow's
+      # failure-only Playwright artifact: this report is the run's only
+      # record of the actual retrieval/grounding/calibration *numbers*, which
+      # are worth having from a green build too -- comparing a passing run's
+      # metrics against an earlier passing run's is how a slow quality drift
+      # (still-passing, but Recall@5 sliding down) gets noticed at all. The
+      # report contains only fixture-corpus content and computed metrics --
+      # no credentials, no customer data, nothing from any real database.
+      - name: Upload evaluation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deterministic-evaluation-report
+          path: run_evaluation_report.json
+          retention-days: 30
+          if-no-files-found: warn
 
   frontend:
     name: Frontend type-check, lint, build

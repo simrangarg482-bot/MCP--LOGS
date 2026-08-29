@@ -89,9 +89,12 @@ class AskResponse(BaseModel):
     confidence: float
     route_taken: Literal["answer", "investigation"]
     answer: str | None                # populated only when route_taken == "answer"
+    answer_mode: Literal["answered", "no_answer"] | None  # see below
     citations: list[Citation]          # populated only when route_taken == "answer"
     investigation: "InvestigationResult | None"  # populated only when route_taken == "investigation"
 ```
+
+**`answer_mode`** (Priority 10) is the machine-readable, authoritative semantic outcome of the answer path: `"answered"` (a substantive, grounded answer was produced) or `"no_answer"` (the system intentionally declined -- the evidence was insufficient/partial, or grounding verification stripped the entire draft). Set once, in `agents.answer.node` (the single authority for this decision -- see `docs/SEMANTIC_BENCHMARK.md`'s "Production answer-outcome contract" for the full pipeline and precedence rules). Only two values, not three: production has no "qualified/hedged answer" generation mode today, so this field never claims one. `None` whenever no answer-path decision was actually made (`route_taken == "investigation"`, the generic-failure fallback in `agents.service._run_graph_and_record`, or a response recorded before this field existed) -- `None` means "unknown/not applicable," never a false "answered".
 
 **`InvestigationResult`** — deliberately separates verified evidence from AI hypothesis, per the "never present uncertain conclusions as facts" requirement:
 ```python

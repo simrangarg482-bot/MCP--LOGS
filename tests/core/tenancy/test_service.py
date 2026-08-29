@@ -411,6 +411,57 @@ async def test_create_organization_with_actor_records_audit_event(monkeypatch) -
     assert audit_calls[0]["resource_id"] == result.id
 
 
+@pytest.mark.asyncio
+async def test_create_organization_with_actor_requires_tenancy_manage_permission() -> None:
+    """The REST `POST /organizations` endpoint passes an already-
+    authenticated `actor` through to `create_organization` -- this confirms
+    that path is gated by `tenancy:manage` like every other mutating
+    operation in this module. Previously unenforced: any authenticated user,
+    in any organization, with any or no permissions, could call this
+    endpoint to create an arbitrary new organization.
+
+    Deliberately does not monkeypatch any `repository` function: the
+    permission check must reject before any database call is attempted.
+    """
+    organization_id = uuid.uuid4()
+    actor = _member_no_permissions(organization_id)
+
+    with pytest.raises(PermissionDeniedError):
+        await tenancy_service.create_organization(
+            None, OrganizationCreate(name="Acme", slug="acme"), actor=actor
+        )
+
+
+@pytest.mark.asyncio
+async def test_create_organization_without_actor_bypasses_permission_check(monkeypatch) -> None:
+    """Self-serve signup (`core.auth.service.signup`) and the dev bootstrap
+    scripts call `create_organization` with no `Identity` at all, since none
+    exists yet at signup time -- confirms this path is untouched by the new
+    `tenancy:manage` gate, which only applies when `actor` is provided.
+    """
+
+    async def fake_get_organization_by_slug(session, slug):
+        return None
+
+    async def fake_insert_organization(session, *, name, slug):
+        return _FakeOrgRow(name=name, slug=slug)
+
+    async def fake_insert_project(session, **kwargs):
+        return None
+
+    monkeypatch.setattr(
+        tenancy_service.repository, "get_organization_by_slug", fake_get_organization_by_slug
+    )
+    monkeypatch.setattr(tenancy_service.repository, "insert_organization", fake_insert_organization)
+    monkeypatch.setattr(tenancy_service.repository, "insert_project", fake_insert_project)
+
+    result = await tenancy_service.create_organization(
+        None, OrganizationCreate(name="Acme", slug="acme")
+    )
+
+    assert result.slug == "acme"
+
+
 # --- accept_invitation hardening -----------------------------------------------
 
 

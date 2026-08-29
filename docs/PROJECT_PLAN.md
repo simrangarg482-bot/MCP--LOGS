@@ -794,6 +794,8 @@ requests, ingestion jobs, documents, document metadata. Also: the
 backend, so vector and metadata stay in one transactionally-consistent
 store for those collections.
 
+> **Current status:** only pgvector is implemented. Qdrant (§8.3-§8.4 below) is design intent, not built — `app/retrieval/qdrant/` is an empty placeholder package and `Settings.default_vector_backend` has no effect. Sections 8.3/8.4 describe the target architecture once a real per-collection need for Qdrant materializes.
+
 ### 8.2 Vector database (Qdrant or pgvector) — what belongs here
 
 Chunk embeddings for semantic search, one collection per content category
@@ -813,14 +815,16 @@ for smaller collections, but a purpose-built vector engine like Qdrant wins
 at larger scale or when payload-filtered ANN search throughput matters more
 than transactional co-location).
 
-### 8.4 The pgvector-vs-Qdrant choice is per-collection, not global
+### 8.4 The pgvector-vs-Qdrant choice would be per-collection, not global (once Qdrant exists)
 
-Both backends sit behind one `retrieval.VectorStore` interface
-(`search`, `upsert`, `delete`), so choosing pgvector for the "incidents"
-collection (moderate size, benefits from transactional consistency with the
-relational incident data) and Qdrant for "documentation" (larger, read-heavy,
-benefits from independent scaling) is a configuration decision per
-collection, not an architectural fork requiring different code paths.
+Both backends are designed to sit behind one `retrieval.VectorStore`
+interface (`search`, `upsert`, `delete`), so that choosing pgvector for the
+"incidents" collection (moderate size, benefits from transactional
+consistency with the relational incident data) and Qdrant for
+"documentation" (larger, read-heavy, benefits from independent scaling)
+would be a configuration decision per collection, not an architectural fork
+requiring different code paths. Today, every collection runs on pgvector —
+there is nothing to configure yet.
 
 ---
 

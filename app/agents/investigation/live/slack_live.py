@@ -25,7 +25,7 @@ matching, not full-text search -- documented here rather than overclaimed.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -125,7 +125,7 @@ class SlackLiveSource:
                     source="slack",
                     reference=f"channel:{channel_id}:ts:{ts}",
                     summary=self._truncate(message.get("text", "")),
-                    retrieved_at=datetime.now(timezone.utc),
+                    retrieved_at=datetime.now(UTC),
                     source_timestamp=self._parse_ts(ts),
                     metadata=metadata,
                 )
@@ -148,6 +148,6 @@ class SlackLiveSource:
     @staticmethod
     def _parse_ts(value: str) -> datetime | None:
         try:
-            return datetime.fromtimestamp(float(value), tz=timezone.utc)
+            return datetime.fromtimestamp(float(value), tz=UTC)
         except (ValueError, TypeError):
             return None

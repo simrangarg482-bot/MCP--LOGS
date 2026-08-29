@@ -44,6 +44,16 @@ export interface AskResponse {
   confidence: number;
   routeTaken: "answer" | "investigation";
   answer: string | null;
+  /**
+   * The production pipeline's own authoritative outcome for the answer
+   * path (Priority 10) -- "answered" (a substantive, grounded answer) or
+   * "no_answer" (the system intentionally declined; evidence was
+   * insufficient or the draft could not be grounded). `null` when no
+   * answer-path decision was made (the investigation route, an
+   * infrastructure-failure fallback, or a response from before this field
+   * existed) -- never assume `null` means "answered".
+   */
+  answerMode: "answered" | "no_answer" | null;
   citations: Citation[];
   investigation: InvestigationResult | null;
 }

@@ -83,7 +83,7 @@ fatal").
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -225,7 +225,7 @@ def _should_augment_with_live_evidence(
         return True
 
     newest = max(timestamps)
-    return datetime.now(timezone.utc) - newest > _LIVE_EVIDENCE_FRESHNESS_WINDOW
+    return datetime.now(UTC) - newest > _LIVE_EVIDENCE_FRESHNESS_WINDOW
 
 
 async def _gather_live_evidence(
@@ -252,7 +252,7 @@ async def _gather_live_evidence(
         logger.warning("investigation_evidence_source_failed", source="live", error=str(exc))
         return []
 
-    since = datetime.now(timezone.utc) - timedelta(
+    since = datetime.now(UTC) - timedelta(
         hours=get_settings().investigation_live_evidence_lookback_hours
     )
 
@@ -373,7 +373,7 @@ async def _gather_postmortem_evidence(
         logger.warning("investigation_evidence_source_failed", source="postmortem", error=str(exc))
         return []
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return [
         EvidenceItem(
             source="postmortem",
@@ -445,7 +445,7 @@ def _chunk_to_evidence(
         source=resolved_source,
         reference=reference,
         summary=summary,
-        retrieved_at=datetime.now(timezone.utc),
+        retrieved_at=datetime.now(UTC),
         source_timestamp=_parse_source_timestamp(chunk.metadata.get("timestamp")),
         metadata=chunk.metadata,
     )

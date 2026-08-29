@@ -121,9 +121,9 @@ Owns `ingestion_jobs`, `documents`, `document_metadata` (per `DATABASE_DESIGN.md
 Owns the `<collection>_chunks` tables for pgvector-backed collections (per `DATABASE_DESIGN.md`). A library — no HTTP surface, no agent logic (see naming-collision note above).
 
 - **`interfaces/`** — the `VectorStore` protocol definition; the contract everything else in this folder implements.
-- **`qdrant/`** — Qdrant-backed implementation.
-- **`pgvector/`** — pgvector-backed implementation.
-- **`ranking/`** — hybrid-search fusion (reciprocal rank fusion) and cross-encoder reranking — backend-agnostic, sits above both implementations.
+- **`qdrant/`** — empty placeholder package; no Qdrant implementation exists yet (see `interfaces/base.py`'s docstring). Not wired into anything.
+- **`pgvector/`** — the pgvector implementation; the only backend actually used today, for every collection.
+- **`ranking/`** — hybrid-search fusion (reciprocal rank fusion) and cross-encoder reranking — backend-agnostic, sits above pgvector today and any future backend.
 
 ## `app/database/`
 

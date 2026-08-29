@@ -120,6 +120,21 @@ class InvestigationResult(BaseModel):
     `hypotheses` (generated) as separate lists rather than one merged
     collection -- exactly the distinction PROJECT_PLAN.md section 5.5
     requires stay structural, not a prompt convention.
+
+    `review_status`/`critique_verdict`/`revision_count`/`critique_issues`
+    are Priority 7 additions (`agents.investigation.critique`) -- all
+    default so every pre-existing construction site keeps working
+    unchanged. `review_status` is the one field a consumer MUST check
+    before trusting `hypotheses` as "reviewed": `"reviewed"` means the
+    bounded critique pass actually completed (whatever its verdict);
+    `"not_reviewed"` means critique never ran (disabled, or nothing to
+    critique); `"review_failed"` means critique was attempted but could not
+    complete (model/timeout/malformed-output failure) -- `hypotheses` in
+    that case is the best available (pre-critique, or pre-revision) result,
+    never silently presented as if it had passed review. `critique_issues`
+    holds short, structured category tags only (e.g.
+    `"overconfidence:hypothesis_0"`) -- never raw model reasoning or a
+    critique transcript (see that module's own docstring).
     """
 
     model_config = ConfigDict(frozen=True)
@@ -128,12 +143,36 @@ class InvestigationResult(BaseModel):
     hypotheses: list[RootCauseHypothesis]
     suggested_owner_team: str | None
     suggested_next_steps: list[str]
+    review_status: Literal["not_reviewed", "reviewed", "review_failed"] = "not_reviewed"
+    critique_verdict: Literal["accept", "revise", "reject"] | None = None
+    revision_count: int = 0
+    critique_issues: list[str] = Field(default_factory=list)
 
 
 class AskResponse(BaseModel):
     """The return shape of `agents.answer_question` / `agents.triage_incident`
     (API_DESIGN.md section 2). Exactly one of `answer`/`investigation` is
     populated, matching `route_taken`.
+
+    `answer_mode` (Priority 10) is the machine-readable, authoritative
+    semantic outcome of the answer path -- `"answered"` (a substantive,
+    grounded answer was produced) or `"no_answer"` (the system intentionally
+    declined because the evidence was insufficient or the draft could not be
+    grounded), set by `agents.answer.node` (the single authority for this
+    decision; see that module's `generate_answer_with_outcome`). Only
+    two values, not three: this codebase's production Answer Agent has no
+    "qualified/hedged answer" generation mode today (`agents.answer.
+    sufficiency.SufficiencyVerdict`'s `"partial"` is currently treated
+    identically to `"insufficient"` -- both decline), so a `"qualified_
+    answer"` value here would misrepresent capability the product doesn't
+    actually have. Deliberately `None`, not defaulted to `"answered"`, for
+    every case where no answer-path decision was actually made: the
+    `route_taken == "investigation"` path, the two generic-failure
+    fallbacks in `agents.service._run_graph_and_record` (an infrastructure
+    failure is not a semantic refusal -- conflating the two would let a bug
+    masquerade as an epistemically-correct decline), and any historical
+    response recorded before this field existed. `None` here means
+    "unknown/not applicable," never a false claim either way.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -141,6 +180,7 @@ class AskResponse(BaseModel):
     confidence: float
     route_taken: Literal["answer", "investigation"]
     answer: str | None = None
+    answer_mode: Literal["answered", "no_answer"] | None = None
     citations: list[Citation] = Field(default_factory=list)
     investigation: InvestigationResult | None = None
 

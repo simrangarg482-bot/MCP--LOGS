@@ -1,0 +1,5 @@
+{
+  "dataset_name": "answer_core_v1",
+  "version": "1.1",
+  "description": "Answer-assertion regression dataset covering all deterministic assertion types (contains, contains_any, contains_all, forbidden_content, regex, exact_match) against canned Mode 1 answers. 4 expected_outcome=pass cases plus 1 negative control (a deliberately-paraphrased answer pinned to fail exact_match at the generation stage)."
+}

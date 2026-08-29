@@ -179,3 +179,43 @@ jobs:
           name: eval-confidence-report
           path: eval_confidence_report.json
           retention-days: 90
+
+  semantic-benchmark:
+    name: AI evaluation regression (answer quality + investigation A/B)
+    runs-on: ubuntu-latest
+    # Same gating and same reasoning as `ai-evaluation` above -- this job's
+    # `--repository-derived` cases need the same real, pre-seeded `test-org`
+    # corpus, not a fresh empty CI Postgres. See docs/SEMANTIC_BENCHMARK.md.
+    if: ${{ secrets.EVAL_DATABASE_URL != '' && secrets.OPENAI_API_KEY != '' }}
+    env:
+      DATABASE_URL: ${{ secrets.EVAL_DATABASE_URL }}
+      REDIS_URL: ${{ secrets.EVAL_REDIS_URL }}
+      JWT_SECRET_KEY: ci-only-placeholder-jwt-secret-not-a-real-secret
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      CONNECTOR_SECRET_MASTER_KEY: 00112233445566778899aabbccddeeff00112233445566778899aabbccddee
+      ENVIRONMENT: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: "0.11.19"
+      - run: uv python install 3.13
+      - run: uv sync --frozen --extra dev
+
+      # Bounded with --limit: this is a cost-incurring live-model run
+      # (section 9), not a place to silently let the corpus grow unbounded.
+      # Exits non-zero only on `verdict=="regression_detected"` (a critique
+      # A/B case classified `critique_damaged`) -- `insufficient_data`/
+      # `baseline_established` are expected, honest outcomes on this
+      # priority's still-small corpus and must not fail the build.
+      - name: Run semantic benchmark (answer quality + investigation A/B)
+        run: >
+          uv run python scripts/run_semantic_evaluation.py
+          --repository-derived --limit 5
+          --report-path run_semantic_evaluation_report.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: semantic-benchmark-report
+          path: run_semantic_evaluation_report.json
+          retention-days: 90

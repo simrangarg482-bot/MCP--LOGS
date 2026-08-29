@@ -87,7 +87,7 @@ silently says nothing useful, which is worse than the call simply raising.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 from langchain_core.callbacks import UsageMetadataCallbackHandler
@@ -104,6 +104,7 @@ from app.agents.telemetry import get_estimated_cost_usd, summarize_usage
 from app.core.exceptions import EKIPError, PermissionDeniedError
 from app.core.incidents import service as incidents_service
 from app.core.incidents.schemas import ActionItem
+from app.core.memory import service as memory_service
 from app.core.users.service import require_permission
 from app.database.models.agent_models import KnowledgeGapReport
 from app.retrieval import service as retrieval_service
@@ -155,7 +156,36 @@ async def answer_question(
     """
     llm = get_llm()
     graph = build_graph(session, llm)
-    initial_state = GraphState(query=query, incident_id=incident_id, actor=actor)
+
+    # Persistent memory (Priority 4). Recalled once, here, before the graph
+    # runs -- not inside a node: it needs no LLM and has no retryable failure
+    # mode, so a node would add graph surface for nothing. Authorization
+    # happens inside `recall_relevant`'s SQL (scoped to this actor's
+    # organization, own user-private memory, and projects they hold a
+    # membership in), so nothing unauthorized can reach the state object.
+    #
+    # A failure here must never cost the user their answer: memory is
+    # supplementary context, and an answer grounded in retrieved evidence is
+    # still a correct answer without it. So this degrades to "no memory"
+    # rather than propagating -- the same "degrade, don't fail" treatment
+    # `agents.retrieval.node` already gives an exhausted search.
+    try:
+        recalled = await memory_service.recall_relevant(session, actor, query)
+    except Exception as exc:  # noqa: BLE001 -- memory is never worth failing a question over
+        logger.warning(
+            "memory_recall_failed_degrading",
+            actor=actor.audit_tag,
+            organization_id=str(actor.organization_id),
+            error=str(exc),
+        )
+        recalled = []
+
+    initial_state = GraphState(
+        query=query,
+        incident_id=incident_id,
+        actor=actor,
+        recalled_memories=recalled,
+    )
 
     return await _run_graph_and_record(
         session,
@@ -164,6 +194,12 @@ async def answer_question(
         input_summary={
             "query": query,
             "incident_id": str(incident_id) if incident_id is not None else None,
+            # Count only, never the memory text: `input_summary` is read by
+            # `GET /observability/agents` (an org-level `observability:read`
+            # surface), and a user-private memory's content must not surface
+            # there. The count is what makes "did memory influence this
+            # answer?" answerable without exposing what was remembered.
+            "recalled_memory_count": len(recalled),
         },
         graph=graph,
         initial_state=initial_state,
@@ -284,7 +320,7 @@ async def generate_postmortem(
             execution.id,
             status="failed",
             error_detail=str(exc)[:2000],
-            completed_at=datetime.now(timezone.utc),
+            completed_at=datetime.now(UTC),
             **summarize_usage(usage_handler),
         )
         raise
@@ -293,7 +329,7 @@ async def generate_postmortem(
         session,
         execution.id,
         status="succeeded",
-        completed_at=datetime.now(timezone.utc),
+        completed_at=datetime.now(UTC),
         **summarize_usage(usage_handler),
     )
     return root_cause, action_items
@@ -380,7 +416,7 @@ def _passes_recency_filter(chunk: ScoredChunk, since: datetime) -> bool:
         except ValueError:
             continue
         if timestamp.tzinfo is None:
-            timestamp = timestamp.replace(tzinfo=timezone.utc)
+            timestamp = timestamp.replace(tzinfo=UTC)
         return timestamp >= since
     return True
 
@@ -491,7 +527,7 @@ async def detect_knowledge_gaps(
             execution.id,
             status="failed",
             error_detail=str(exc)[:2000],
-            completed_at=datetime.now(timezone.utc),
+            completed_at=datetime.now(UTC),
             **summarize_usage(usage_handler),
         )
         raise
@@ -500,7 +536,7 @@ async def detect_knowledge_gaps(
         session,
         execution.id,
         status="succeeded",
-        completed_at=datetime.now(timezone.utc),
+        completed_at=datetime.now(UTC),
         **summarize_usage(usage_handler),
     )
     return [_gap_report_to_schema(row) for row in rows]
@@ -645,7 +681,7 @@ async def _run_graph_and_record(
             execution.id,
             status="failed",
             error_detail=str(exc)[:2000],
-            completed_at=datetime.now(timezone.utc),
+            completed_at=datetime.now(UTC),
             **summarize_usage(usage_handler),
         )
         raise
@@ -662,7 +698,7 @@ async def _run_graph_and_record(
             execution.id,
             status="failed",
             error_detail=str(exc)[:2000],
-            completed_at=datetime.now(timezone.utc),
+            completed_at=datetime.now(UTC),
             **summarize_usage(usage_handler),
         )
         return AskResponse(
@@ -690,7 +726,7 @@ async def _run_graph_and_record(
             execution.id,
             status="failed",
             error_detail="graph completed with no result",
-            completed_at=datetime.now(timezone.utc),
+            completed_at=datetime.now(UTC),
             **summarize_usage(usage_handler),
         )
         return AskResponse(
@@ -705,7 +741,7 @@ async def _run_graph_and_record(
         execution.id,
         status="succeeded",
         confidence_score=final_state.confidence_score,
-        completed_at=datetime.now(timezone.utc),
+        completed_at=datetime.now(UTC),
         **summarize_usage(usage_handler),
     )
     return final_state.result

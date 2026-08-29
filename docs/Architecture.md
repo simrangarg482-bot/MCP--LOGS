@@ -83,7 +83,7 @@ app/
 ├── mcp/          # MCP server(s): tools, resources, prompts — interface layer only
 ├── agents/       # LangGraph orchestration: retrieval, investigation, postmortem, knowledge-gap agents
 ├── ingestion/    # connectors, document processing, chunking, embedding — background workers
-├── retrieval/    # Qdrant / pgvector abstraction, hybrid search, reranking — a library, not a service
+├── retrieval/    # pgvector abstraction (Qdrant planned, not built), hybrid search, reranking — a library, not a service
 ├── database/     # SQLAlchemy models, migrations, session management — shared persistence layer
 └── shared/       # cross-cutting: config, logging, exceptions, common Pydantic schemas
 ```
@@ -128,8 +128,8 @@ app/
 
 ### `retrieval/`
 
-- **Responsibility:** a storage-agnostic retrieval abstraction — hybrid search (dense + BM25), reranking, similarity scoring — with pluggable backends (Qdrant, pgvector).
-- **Owns:** the `VectorStore` interface and both concrete implementations, embedding-model invocation for query-time embedding, reranker invocation.
+- **Responsibility:** a storage-agnostic retrieval abstraction — hybrid search (dense + BM25), reranking, similarity scoring — designed for pluggable backends. Only pgvector is actually implemented; Qdrant is planned (see "Vector storage" section below).
+- **Owns:** the `VectorStore` interface and the pgvector implementation, embedding-model invocation for query-time embedding, reranker invocation.
 - **Must not do:** know anything about incidents, postmortems, or agents — it only knows about documents, chunks, and queries. This keeps it reusable and independently testable.
 - **Public interface:** `search(query, filters, top_k) -> list[ScoredChunk]`, `upsert(chunks) -> None`.
 - **Can call:** `database` (for metadata joins), `shared`.
@@ -298,14 +298,16 @@ Core tables: `users`, `roles`, `permissions`, `documents`, `document_metadata`, 
 
 > **Superseded/extended — see `PROJECT_PLAN.md` §3.2, §8.** Every table above gains an `organization_id`; the tenant-scoped ones also gain a `project_id`. New tables not listed here: `organizations`, `projects`, `sso_configurations`, `external_identity_mappings`, `connector_configs`, `project_memberships`.
 
-### Vector storage: Qdrant vs. pgvector
+### Vector storage: pgvector today, Qdrant planned
 
-Both are supported behind the same `retrieval.VectorStore` interface; the choice is per-collection, not global:
+> **Current status:** only pgvector is actually implemented. `app/retrieval/qdrant/` is an intentionally empty placeholder package (see `app/retrieval/interfaces/base.py`'s own docstring) — every collection runs on pgvector today regardless of any per-collection "choice." `Settings.default_vector_backend` exists but is never read anywhere; it has no effect. The design below describes the intended future shape once a real per-collection need for Qdrant materializes, not the system as it runs now.
 
-- **pgvector (in Neon)** — preferred default. Keeps vectors co-located with their metadata in the same transactional store, so metadata filtering is a normal SQL `WHERE` clause and there's no cross-store consistency concern between "the chunk exists" and "the chunk is searchable." Right choice for collections with moderate scale and where transactional consistency with the relational data (e.g., incidents, audit trail) matters more than raw ANN throughput.
-- **Qdrant** — preferred when a collection needs higher-scale ANN performance, richer payload filtering at vector-search time, or independent scaling of the vector workload from the relational database (e.g., a documentation corpus that grows large and is queried far more often than it's written). Also the natural choice if/when `retrieval/` itself is extracted into its own service, since Qdrant is already a separate process.
+Both are designed to sit behind the same `retrieval.VectorStore` interface, so that when Qdrant is eventually built, the choice can be per-collection, not global:
 
-The `VectorStore` interface (`search`, `upsert`, `delete`) is identical regardless of backend, so this choice is a per-collection configuration decision, not an architectural fork.
+- **pgvector (in Neon)** — the only backend, and the default going forward regardless of Qdrant's future status. Keeps vectors co-located with their metadata in the same transactional store, so metadata filtering is a normal SQL `WHERE` clause and there's no cross-store consistency concern between "the chunk exists" and "the chunk is searchable." Right choice for collections with moderate scale and where transactional consistency with the relational data (e.g., incidents, audit trail) matters more than raw ANN throughput.
+- **Qdrant (not built)** — would be preferred when a collection needs higher-scale ANN performance, richer payload filtering at vector-search time, or independent scaling of the vector workload from the relational database (e.g., a documentation corpus that grows large and is queried far more often than it's written). Also the natural choice if/when `retrieval/` itself is extracted into its own service, since Qdrant is already a separate process. Build this only once a real collection actually needs it — see `app/retrieval/interfaces/base.py`'s docstring.
+
+The `VectorStore` interface (`search`, `upsert`, `delete`) is identical regardless of backend, so adding Qdrant later would be a per-collection configuration decision, not an architectural fork — but "would be" is doing real work in that sentence today.
 
 **Collections:** documentation, incidents, code, conversations — each with its own chunking strategy (e.g., code chunked by function/class boundary, not fixed token windows) and metadata schema, detailed in `DATABASE_DESIGN.md`.
 

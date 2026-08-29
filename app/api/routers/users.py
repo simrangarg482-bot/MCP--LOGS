@@ -34,6 +34,8 @@ from app.api.deps import CurrentIdentity, DbSession
 from app.core.audit.service import record_audit_event
 from app.core.auth import service as auth_service
 from app.core.auth.schemas import LogoutAllResponse
+from app.core.privacy import service as privacy_service
+from app.core.privacy.schemas import DeletionPlan, DeletionResult
 from app.core.users.service import require_permission
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -66,3 +68,56 @@ async def logout_all_sessions_for_user(
         message="Successfully logged out from all sessions",
         revoked_session_count=revoked_count,
     )
+
+
+# --- Data-subject deletion (Priority 3) --------------------------------------
+#
+# Both endpoints reuse this router's existing `tenancy:manage` admin
+# convention (see the module docstring) and are scoped to the caller's own
+# organization -- `core.privacy.service` always derives the organization from
+# `actor.organization_id` and never from a path/body parameter, so an admin
+# of one organization cannot reach another's data even by guessing a
+# `user_id`. See `docs/DATA_LIFECYCLE.md` for what each scope actually does
+# to which tables, and for the limitations this feature does not overcome.
+#
+# There is deliberately no self-service ("delete my own account") endpoint
+# yet: who may erase their own data while still holding org-owned incident
+# history attributable to them is a product/policy question, not one this
+# layer should answer by default. Documented as a pending decision rather
+# than guessed at.
+
+
+@router.get("/{user_id}/data-deletion/plan", response_model=DeletionPlan)
+async def plan_user_data_deletion(
+    user_id: uuid.UUID, actor: CurrentIdentity, session: DbSession
+) -> DeletionPlan:
+    """Dry run: report exactly what deleting this user's data would delete,
+    anonymize, and retain -- without changing anything.
+
+    A `GET` because it is genuinely side-effect-free; it runs the same
+    discovery code the executing endpoint runs, so the preview cannot drift
+    from the real behavior.
+    """
+    return await privacy_service.plan_user_data_deletion(session, actor, user_id)
+
+
+@router.post("/{user_id}/data-deletion", response_model=DeletionResult)
+async def execute_user_data_deletion(
+    user_id: uuid.UUID, actor: CurrentIdentity, session: DbSession
+) -> DeletionResult:
+    """Delete/anonymize this user's own data within the caller's
+    organization, retaining organization-owned knowledge and history.
+
+    Safe to retry: the operation is idempotent, and a repeat run reports
+    `was_noop=true` with zero-row steps rather than failing. Inspect
+    `status` -- `partially_completed` and `failed` are both real outcomes
+    and neither means the person's data is fully gone.
+
+    Deliberately not a `DELETE` verb: this does not remove a `users` row
+    (three `ON DELETE RESTRICT` foreign keys make that impossible -- see
+    `core.privacy.repository.anonymize_user_record`), and labelling it
+    `DELETE /users/{id}` would advertise a row deletion that does not and
+    cannot happen. `POST` to an explicit `data-deletion` sub-resource
+    describes what actually occurs.
+    """
+    return await privacy_service.execute_user_data_deletion(session, actor, user_id)

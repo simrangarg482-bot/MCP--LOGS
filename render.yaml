@@ -1,0 +1,78 @@
+# Render Blueprint (https://render.com/docs/blueprint-spec) -- no Docker
+# involved: Render's native Python runtime runs these build/start commands
+# directly on its own base image. Mirrors the three backend processes this
+# project already runs (docs/operations/deployment.md's Azure Container Apps
+# target: backend, worker), plus the second arq worker
+# (app.agents.workers.main.WorkerSettings) that runs the knowledge-gap/
+# pattern-detection cron jobs -- present in the codebase but never wired into
+# docker-compose.yml's single `worker` service.
+#
+# Postgres (pgvector) and Redis are NOT defined here -- Render's own managed
+# Postgres doesn't ship the pgvector extension, so this deployment uses an
+# external Neon database (already this project's target per
+# app/shared/config/settings.py's docstrings) and an external Redis (e.g.
+# Upstash, TLS/`rediss://`). Set DATABASE_URL/REDIS_URL to those in the
+# ekip-shared env var group below (Render dashboard, not committed here).
+#
+# Deploy: connect this repo in the Render dashboard ("New +" -> "Blueprint"),
+# it discovers this file automatically. Every `sync: false` var must be
+# filled in by hand once, in the dashboard, before the first deploy succeeds.
+
+envVarGroups:
+  - name: ekip-shared
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      - key: PYTHON_VERSION
+        value: 3.13.4
+      - key: DATABASE_URL
+        sync: false # postgresql+asyncpg://<user>:<pass>@<neon-host>/<db>?ssl=require
+      - key: REDIS_URL
+        sync: false # rediss://default:<password>@<upstash-host>:<port>
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: JWT_SECRET_KEY
+        sync: false # generate: python -c "import secrets; print(secrets.token_urlsafe(48))"
+      - key: KMS_PROVIDER
+        value: local
+      - key: CONNECTOR_SECRET_MASTER_KEY
+        sync: false # generate: python -c "import secrets; print(secrets.token_hex(32))"
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false # e.g. https://ekip-frontend.pages.dev
+
+services:
+  - type: web
+    name: ekip-backend
+    runtime: python
+    plan: starter
+    buildCommand: pip install uv && uv sync --frozen --no-dev
+    # Runs once per deploy, before the new instance takes traffic --
+    # equivalent role to docker-compose.yml's one-shot `migrate` service /
+    # infra/main.bicep's `migrateJob` (Render Starter+ plans only; on Free,
+    # run `uv run alembic upgrade head` by hand from the dashboard Shell
+    # after the first deploy instead).
+    preDeployCommand: uv run alembic upgrade head
+    startCommand: uv run uvicorn app.api.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVarGroups:
+      - ekip-shared
+
+  - type: worker
+    name: ekip-ingestion-worker
+    runtime: python
+    plan: starter
+    buildCommand: pip install uv && uv sync --frozen --no-dev
+    startCommand: uv run arq app.ingestion.workers.main.WorkerSettings
+    envVarGroups:
+      - ekip-shared
+
+  - type: worker
+    name: ekip-agents-worker
+    runtime: python
+    plan: starter
+    buildCommand: pip install uv && uv sync --frozen --no-dev
+    startCommand: uv run arq app.agents.workers.main.WorkerSettings
+    envVarGroups:
+      - ekip-shared

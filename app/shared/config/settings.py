@@ -10,8 +10,7 @@ meaning of its own, importable by every other module).
 """
 
 from functools import lru_cache
-from typing import Literal
-from typing import Annotated, ClassVar
+from typing import Annotated, ClassVar, Literal
 
 from pydantic import Field, PostgresDsn, RedisDsn, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -146,6 +145,55 @@ class Settings(BaseSettings):
         ),
     )
 
+    # --- Agent memory (Priority 4, app.core.memory) -------------------------
+    # Every one of these three is a real bound on how much persistent memory
+    # can influence an answer. Memory grows without limit over time, so
+    # "inject whatever is relevant" is not a safe default at any horizon --
+    # these caps are what keep a years-old memory store from crowding out the
+    # freshly-retrieved evidence an answer is actually supposed to be
+    # grounded in. Defaults are deliberately conservative; see
+    # docs/AGENT_MEMORY.md for how they interact.
+    memory_recall_limit: int = Field(
+        default=5,
+        ge=0,
+        le=50,
+        description=(
+            "Maximum number of memories injected into one agent context. "
+            "5 is small on purpose: memory is supplementary context, not the "
+            "evidence base, and the answer path already receives up to 20 "
+            "reranked document chunks. Setting 0 disables memory injection "
+            "entirely without needing a separate feature flag."
+        ),
+    )
+    memory_relevance_threshold: float = Field(
+        default=0.35,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Minimum cosine relevance (1 - cosine_distance) for a recalled "
+            "memory to be injected. A placeholder, honestly labelled: unlike "
+            "confidence_threshold, this has NOT been empirically calibrated, "
+            "because doing so needs a real memory corpus that does not exist "
+            "yet. 0.35 is set low enough to admit genuine topical matches "
+            "and high enough to exclude the unrelated -- verified only "
+            "against the deterministic fixtures in tests/core/memory/, not "
+            "against production data. Raise it if irrelevant memory starts "
+            "reaching answers."
+        ),
+    )
+    memory_context_char_budget: int = Field(
+        default=2000,
+        ge=0,
+        description=(
+            "Total characters of memory text injectable into one context, "
+            "enforced after the per-memory limit and the recall limit. Sized "
+            "against app.agents.retrieval.context_assembly's own 4000-token "
+            "(~16000-character) evidence budget so memory can occupy at most "
+            "roughly an eighth of the assembled context -- memory should "
+            "inform an answer, never dominate it."
+        ),
+    )
+
     # --- Auth (API_DESIGN.md section 1) -------------------------------------
     jwt_secret_key: str = Field(description="Signs/verifies session tokens.")
     jwt_algorithm: str = "HS256"
@@ -235,6 +283,56 @@ class Settings(BaseSettings):
             "main.scheduled_reconciliation) -- live evidence's job is "
             "covering the gap between the last sync and right now, not "
             "re-walking a source's whole history."
+        ),
+    )
+
+    # --- Investigation Agent critique (Priority 7, agents/investigation/
+    # critique.py) -- the bounded pass/revision ceiling itself
+    # (MAX_CRITIQUE_PASSES/MAX_REVISION_ATTEMPTS) is a code constant, NOT a
+    # setting, specifically so no configuration change can silently widen it
+    # into an unbounded loop. Only the softer behavioral thresholds below
+    # are configurable. -----------------------------------------------------
+    investigation_critique_enabled: bool = Field(
+        default=True,
+        description=(
+            "Global kill-switch for the bounded critique/reflection pass "
+            "over Investigation Agent hypotheses. Set False to skip "
+            "critique entirely -- hypotheses are then persisted with "
+            "review_status='not_reviewed', exactly as before this feature "
+            "existed, e.g. if critique LLM calls start tripping rate "
+            "limits or adding unacceptable latency in production."
+        ),
+    )
+    investigation_critique_min_evidence_count: int = Field(
+        default=2,
+        ge=0,
+        description=(
+            "Below this many gathered EvidenceItems, structural validation "
+            "flags the whole investigation 'insufficient_information' and "
+            "rejects it without spending a critique LLM call -- a "
+            "deterministic pre-check for an objectively thin evidence base."
+        ),
+    )
+    investigation_critique_overconfidence_threshold: float = Field(
+        default=0.75,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "A hypothesis whose self-reported `confidence` is at or above "
+            "this value while citing fewer than "
+            "investigation_critique_min_evidence_per_hypothesis pieces of "
+            "evidence is flagged 'overconfidence' by structural validation. "
+            "An initial, uncalibrated value -- see docs/"
+            "INVESTIGATION_CRITIQUE.md's limitations section."
+        ),
+    )
+    investigation_critique_min_evidence_per_hypothesis: int = Field(
+        default=2,
+        ge=1,
+        description=(
+            "Paired with investigation_critique_overconfidence_threshold: "
+            "how many supporting_evidence_ids a high-confidence hypothesis "
+            "must cite before it is NOT flagged as overconfident."
         ),
     )
 

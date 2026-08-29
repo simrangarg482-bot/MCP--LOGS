@@ -21,12 +21,12 @@ Admin already knows, not names this connector would have to resolve" choice
 `SlackConnector` made for channel IDs and `JiraConnector` made for project
 keys.
 
-`config.credential_ref` is expected to be a already-issued OAuth2 access
-token (Graph API requires bearer-token auth, obtained via the organization's
-own app registration + client-credentials flow at connector-setup time, not
-something this connector performs itself) -- same flagged "literal value
-until `shared/security` exists" placeholder every other connector's
-docstring already carries.
+`config.credential_ref` is an already-issued OAuth2 access token (Graph API
+requires bearer-token auth, obtained via the organization's own app
+registration + client-credentials flow at connector-setup time, not
+something this connector performs itself), already decrypted by
+`app.ingestion.service` via `shared/security` before this connector ever
+sees it -- see `base.Connector.authenticate`'s docstring.
 
 Two different Graph endpoints, chosen by sync type:
 

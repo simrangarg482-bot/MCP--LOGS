@@ -27,7 +27,7 @@ applied to spend rather than access.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -61,7 +61,7 @@ async def check_cost_budget(session: AsyncSession, organization_id: uuid.UUID) -
     if settings.max_organization_cost_usd_per_day is None:
         return
 
-    since = datetime.now(timezone.utc) - _BUDGET_WINDOW
+    since = datetime.now(UTC) - _BUDGET_WINDOW
     prompt_tokens, completion_tokens = await repository.get_organization_token_usage_since(
         session, organization_id, since
     )

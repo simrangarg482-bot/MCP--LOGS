@@ -42,13 +42,11 @@ class ResolvedConnectorConfig(BaseModel):
     Deliberately not a copy of `core.tenancy.schemas.ConnectorConfig` --
     importing that type here would create an undocumented ingestion -> core
     dependency (section 9.8 lists ingestion's dependencies as
-    retrieval/database/shared only). `credential_ref` is still a reference
-    into the secrets store, not a resolved secret, at this stage: real secret
-    resolution depends on `shared/security` (section 12.5), not yet built.
-    Until that exists, connector implementations treat `credential_ref` as
-    the literal credential value, flagged as a placeholder at each call site
-    -- the same kind of explicitly-flagged gap as
-    `core.auth.service._resolve_client_secret`.
+    retrieval/database/shared only). `credential_ref` here is the plaintext
+    credential, not a reference: `app.ingestion.service`'s
+    `_execute_ingestion_job` resolves it via `shared.security.decrypt_secret`
+    (section 12.5) before constructing this object, so every connector's
+    `authenticate()` receives an already-decrypted value it can use directly.
     """
 
     model_config = ConfigDict(frozen=True)

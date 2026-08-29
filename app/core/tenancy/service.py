@@ -115,18 +115,33 @@ async def create_organization(
     `actor` is optional and defaults to `None`: an organization does not
     exist yet at the moment it is created, so there is no valid
     organization-scoped Identity to *require* one from (Identity.
-    organization_id is mandatory per ENGINEERING_DECISIONS.md #004) -- who/
-    what is allowed to call this (public self-serve signup vs. an internal
-    admin/sales tool) is still not pinned down anywhere in the docs. `actor`
-    exists purely so a caller that *does* already have one (the REST
-    `POST /organizations` endpoint, reached by an already-authenticated
-    identity creating an additional organization) can have the creation
-    audited under a real actor rather than silently going unaudited; no
-    permission check is added here, since one still isn't specified. Existing
-    callers with no `Identity` available at all (`scripts/seed_test_
-    organization.py`, `scripts/test_milestone6.py`) keep working unchanged by
-    omitting it, in which case no audit event is recorded (nothing to
-    attribute it to).
+    organization_id is mandatory per ENGINEERING_DECISIONS.md #004). This is
+    the sole exception to this module's "every mutating operation requires
+    `tenancy:manage`" rule (see module docstring) for exactly the callers
+    that genuinely have no `Identity` yet: `core.auth.service.signup`'s
+    public self-serve flow, and the dev-only bootstrap scripts
+    (`scripts/seed_test_organization.py`, `scripts/test_milestone6.py`).
+    None of these are gated here -- a brand-new customer creating their own
+    first organization via signup is the intended, unauthenticated path, not
+    a gap.
+
+    A caller that *does* already have an `Identity` -- the REST
+    `POST /organizations` endpoint, reached by an already-authenticated user
+    creating an *additional* organization -- is a different case and is
+    gated by `require_permission(actor, _MANAGE_PERMISSION)` the same as
+    every other mutating operation in this module. This was previously
+    unenforced (any authenticated user, in any organization, with any or no
+    permissions, could call this endpoint to spin up an arbitrary new
+    organization) -- a real, confirmed authorization gap, not an
+    intentionally open one; the docstring here previously said so itself.
+    `tenancy:manage` is checked against the actor's *own current*
+    organization, since the organization being created doesn't exist yet to
+    check anything against -- this doesn't by itself make the created
+    organization reachable by that actor (there is still no multi-org-per-
+    session capability; see PROJECT_STATUS.md's "Organization switching"
+    item), it only restricts who may trigger the creation at all.
+    Unauthorized callers still fail closed with the same
+    `PermissionDeniedError` `require_permission` raises everywhere else.
 
     Auto-creates the "General" default project in the same transaction
     (PROJECT_PLAN.md section 3.2: every organization has at least one project,
@@ -140,6 +155,9 @@ async def create_organization(
     actually storing a duplicate, it just wouldn't surface as this clean an
     error in that narrow race window).
     """
+    if actor is not None:
+        require_permission(actor, _MANAGE_PERMISSION)
+
     existing = await repository.get_organization_by_slug(session, data.slug)
     if existing is not None:
         raise ConflictError(

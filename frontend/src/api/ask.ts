@@ -7,6 +7,7 @@ const MOCK_RESPONSE: AskResponse = {
   routeTaken: "answer",
   answer:
     "This is a mock answer -- set VITE_USE_MOCK_DATA=false to ask the real EKIP retrieval pipeline.",
+  answerMode: "answered",
   citations: [
     {
       documentId: "00000000-0000-0000-0000-000000000001",
@@ -32,6 +33,7 @@ const MOCK_INVESTIGATION_RESPONSE: AskResponse = {
   confidence: 0.58,
   routeTaken: "investigation",
   answer: null,
+  answerMode: null,
   citations: [],
   investigation: {
     evidence: [

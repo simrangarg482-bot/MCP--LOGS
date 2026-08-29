@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import hashlib
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -390,10 +390,53 @@ async def reject_document(
         )
 
     updated = await repository.soft_delete_document(
-        session, document_id, deleted_at=datetime.now(timezone.utc)
+        session, document_id, deleted_at=datetime.now(UTC)
     )
     if updated is None:
         raise RuntimeError("Document disappeared mid-update.")  # unreachable: fetched above
+
+    # Purge the derived chunks/embeddings, not just the source row. The
+    # soft delete above only hides the `documents` row from this module's
+    # own reads; the chunk rows in `<collection>_chunks` (which carry their
+    # own copy of `content` plus its embedding) are a separate table nothing
+    # was cleaning up. `retrieval.pgvector.store` now also excludes
+    # soft-deleted documents at query time, so this is defense in depth
+    # rather than the only barrier -- but a filter alone would leave the
+    # rejected content sitting in storage indefinitely, which is not what
+    # "rejected" should mean. Runs in the same session/transaction as the
+    # soft delete, so the two either both land or both roll back.
+    purged_chunks = await _purge_document_chunks(session, document_id)
+
+    # Deferred import: `core.graph.service` itself imports `core.knowledge.
+    # repository` for live entity resolution during traversal, so a
+    # module-level import here would be circular -- the same reasoning
+    # `core.incidents.service.trigger_postmortem_generation` gives for its
+    # own deferred `agents.service` import. This document is the source
+    # endpoint of any stored `document --documents--> incident` edge
+    # (`core.graph.contract`); rejecting it must remove those edges, not
+    # just leave them to be caught by the next discovery pass, so a rejected
+    # runbook cannot still surface as "related" through the graph.
+    from app.core.graph import service as graph_service
+
+    removed_edges = await graph_service.remove_edges_for_entity(
+        session, organization_id=organization_id, entity_type="document", entity_id=document_id
+    )
+
+    # Same reasoning, one module further: `core.proactive.service` may hold
+    # a finding whose evidence names this document (the `incident_
+    # multi_document` detector's `supporting_document` role). A rejected
+    # document must not keep inflating a finding's support count, so its
+    # evidence row is removed and the finding's support recomputed/
+    # deactivated here rather than left for the next scheduled detection
+    # run alone -- the same "physical cleanup where a real lifecycle hook
+    # exists" rule Priority 5's graph edge removal above already follows.
+    # Deferred import for the identical circular-import reason as
+    # `core.graph.service` above.
+    from app.core.proactive import service as proactive_service
+
+    findings_updated = await proactive_service.handle_evidence_entity_removed(
+        session, organization_id=organization_id, entity_type="document", entity_id=document_id
+    )
 
     await record_audit_event(
         session,
@@ -401,7 +444,36 @@ async def reject_document(
         action="document.reject",
         resource_type="document",
         resource_id=document_id,
-        metadata={},
+        metadata={
+            "purged_chunk_collections": purged_chunks,
+            "graph_edges_removed": removed_edges,
+            "proactive_findings_updated": findings_updated,
+        },
     )
-    logger.info("document_rejected", document_id=str(document_id))
+    logger.info(
+        "document_rejected",
+        document_id=str(document_id),
+        purged_chunks=purged_chunks,
+        graph_edges_removed=removed_edges,
+        proactive_findings_updated=findings_updated,
+    )
     return await _to_schema(session, updated)
+
+
+async def _purge_document_chunks(session: AsyncSession, document_id: uuid.UUID) -> list[str]:
+    """Delete every chunk row derived from `document_id`, across all three
+    collections, returning the collection names purged.
+
+    Sweeps all collections rather than only `"documentation"` (the one
+    `publish_document` writes): the same `documents` table is also populated
+    by `app.ingestion`, whose pipeline classifies content into `"code"` and
+    `"conversations"` too, so a document reaching this function could have
+    chunks in any of them. `retrieval.service.delete` is a no-op for a
+    collection with no matching rows, which is what makes sweeping all
+    three safe and idempotent rather than wasteful.
+    """
+    purged: list[str] = []
+    for collection in ("documentation", "code", "conversations"):
+        await retrieval_service.delete(session, collection, document_id)
+        purged.append(collection)
+    return purged

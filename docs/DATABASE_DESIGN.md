@@ -218,7 +218,9 @@ Index: `(document_id)`, and `(key, value)` for metadata-filtered retrieval.
 
 ## `retrieval/` — owned tables (pgvector-backed collections only)
 
-> **Extended — see `PROJECT_PLAN.md` §5.4-§5.5.** Every chunk (in Postgres, or in Qdrant payload for Qdrant-backed collections) carries `organization_id`, `project_id`, and document-ACL metadata, applied as a mandatory filter on the retrieval query itself — never as a post-filter on results, and never something an LLM is trusted to "ignore." This is the mechanism that guarantees a caller's search can never surface another organization's data.
+> **Current status:** pgvector is the only implemented backend — every collection's chunks genuinely live in the Postgres tables below. Qdrant is not built (`app/retrieval/qdrant/` is an empty placeholder); the "Qdrant payload" mentions below describe the target design if/when it is, not a real, present-day option.
+
+> **Extended — see `PROJECT_PLAN.md` §5.4-§5.5.** Every chunk carries `organization_id`, `project_id`, and document-ACL metadata, applied as a mandatory filter on the retrieval query itself — never as a post-filter on results, and never something an LLM is trusted to "ignore." This is the mechanism that guarantees a caller's search can never surface another organization's data.
 
 Chunk-level tables exist per collection, following the same shape; documented once here and reused:
 
@@ -235,7 +237,7 @@ Chunk-level tables exist per collection, following the same shape; documented on
 
 Index: HNSW or IVFFlat index on `embedding` (algorithm choice deferred — logged as an open item below), plus `(document_id, chunk_index)`.
 
-For collections using **Qdrant** instead (per the per-collection choice in `ARCHITECTURE.md` §8), the equivalent chunk record lives in Qdrant's payload, not in Postgres — only `document_id`/`chunk_index` bookkeeping needed for citation lookups stays in Postgres, joined back to Qdrant by a shared chunk ID.
+If a collection ever moves to **Qdrant** (per the target per-collection design in `ARCHITECTURE.md` §8 — not built today), the equivalent chunk record would live in Qdrant's payload instead of Postgres, with only `document_id`/`chunk_index` bookkeeping needed for citation lookups staying in Postgres, joined back to Qdrant by a shared chunk ID.
 
 ---
 

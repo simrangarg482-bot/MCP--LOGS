@@ -19,12 +19,56 @@ placeholder values, never real connectivity.
   this job — see `docs/operations/security-incidents.md`). Runs with
   `--redact`, so even a real match's CI output never contains the actual
   secret value, only its rule/file/line.
-- **backend**: `uv sync --frozen --extra dev`, `pytest`, `lint-imports`.
+- **backend**: `uv sync --frozen --extra dev`, `pytest`, `lint-imports`, then
+  the **deterministic AI evaluation regression gate** (see below).
 - **frontend**: `npm ci`, `tsc --noEmit`, `eslint`, `vite build`.
 
 This tier is intentionally the only one required to pass before merge —
 everything else needs real infrastructure/secrets a contributor's PR
 shouldn't be blocked on.
+
+### Deterministic AI evaluation (in the `backend` job)
+
+`uv run python scripts/run_evaluation.py --report-path run_evaluation_report.json`
+runs `app/evaluation`'s Mode 1 harness — retrieval (Recall@K/Precision@K/MRR/
+coverage), deterministic grounding + citation validation, answer assertions,
+and investigation evidence/hypothesis checks — against the fixture corpus in
+`app/evaluation/fixtures/`. It lives in *this* tier, not alongside
+`eval_confidence.py` in `e2e-and-eval.yml`, specifically because it needs
+none of what that tier needs: no live database, no `OPENAI_API_KEY`, no
+service containers, no secrets. It is a step in the existing `backend` job
+rather than its own job so it reuses that job's `uv sync` (a separate job
+would rebuild the whole dependency tree for a ~10-second check).
+
+**Exit-code semantics — the important part.** The gate is *not* "fail if any
+evaluation case failed." The fixture suite deliberately ships negative
+controls that are **supposed** to fail (10 of 28 cases as of `v1.1` of the
+four datasets); they are what proves the evaluator detects real defects at
+all. Gating on raw failures would make CI permanently red, and the obvious
+way to "fix" that would be deleting exactly those controls. Instead each
+dataset case declares `expected_outcome` (`"pass"` | `"fail"`) and,
+optionally for expected failures, an `expected_failure_stage`
+(`"retrieval"` | `"generation"`). The job fails only on a genuine
+**regression**:
+
+| Regression | Meaning |
+|---|---|
+| `unexpected_failure` | An `expected_outcome: "pass"` case failed — something that worked broke. |
+| `unexpected_pass` | An `expected_outcome: "fail"` negative control passed — a check built to catch a specific defect has stopped catching it. Note this *raises* the raw pass count, which is why raw counts can't be the gate. |
+| `wrong_failure_stage` | A control failed somewhere other than its pinned stage — still failing, no longer testing what it was written to test. |
+
+A dataset validation error, a runner crash, or an unwritable report path also
+fail the job: each means the gate never actually ran, which must never read
+as success. All six of these conditions were verified locally by simulation
+before this job was added.
+
+The JSON report uploads as the `deterministic-evaluation-report` artifact
+(30-day retention) on **every** run, not just failures — unlike the E2E
+workflow's failure-only Playwright artifact. A green run's metrics are the
+baseline that makes a slow quality drift (still passing, but Recall@5
+sliding) visible at all. The report contains only fixture-corpus content and
+computed metrics: no credentials, no customer data, nothing from any real
+database.
 
 ## `.github/workflows/main-extra.yml` — push to `main` only
 

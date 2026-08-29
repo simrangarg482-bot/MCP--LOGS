@@ -41,6 +41,9 @@ from app.database.models import auth_models  # noqa: F401
 from app.database.models import core_models  # noqa: F401
 from app.database.models import ingestion_models  # noqa: F401
 from app.database.models import mcp_models  # noqa: F401
+from app.database.models import memory_models  # noqa: F401
+from app.database.models import graph_models  # noqa: F401
+from app.database.models import pattern_models  # noqa: F401
 from app.database.models import retrieval_models  # noqa: F401
 from app.database.models import tenancy_models  # noqa: F401
 from app.database.session import Base

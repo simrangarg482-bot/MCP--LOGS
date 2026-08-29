@@ -94,4 +94,5 @@ appropriate (least-privilege) Azure permissions.
 | `docs/operations/local-production.md` | Running the Docker Compose stack |
 | `docs/operations/ci.md` | CI pipeline tiers, secret handling |
 | `docs/operations/deployment.md` | Deployment procedure, Azure status |
+| `docs/operations/deployment-cloudflare.md` | Alternative deployment: Cloudflare Pages + Render, no Docker |
 | `docs/operations/rollback.md` | Rollback/recovery procedures |

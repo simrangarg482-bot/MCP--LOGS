@@ -63,12 +63,14 @@ class Connector(Protocol):
     async def authenticate(self, config: ResolvedConnectorConfig) -> AuthenticatedClient:
         """Build an authenticated client for this source from `config`.
 
-        `config.credential_ref` is a reference into the secrets store, not
-        yet a resolved secret -- see `ResolvedConnectorConfig`'s docstring.
-        Until `shared/security` exists, connector implementations treat it as
-        the literal credential value, flagged as a placeholder at each call
-        site (matching `core.auth.service._resolve_client_secret`'s existing
-        precedent for this exact gap).
+        By the time `config.credential_ref` reaches here, it genuinely is the
+        plaintext credential value (an OAuth bearer token, a PAT, ...), not a
+        reference: `app.ingestion.service`'s `_execute_ingestion_job` decrypts
+        it via `shared.security.decrypt_secret`/`get_kms` before constructing
+        `ResolvedConnectorConfig` -- the encrypted `credential_ref` never
+        leaves that one call site. Connector implementations can therefore
+        use it directly (as a Basic-auth password half, a Bearer header, ...)
+        with no decryption of their own.
         """
         ...
 

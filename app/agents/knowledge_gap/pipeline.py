@@ -21,7 +21,7 @@ on the first one.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from langchain_core.language_models import BaseChatModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -143,7 +143,7 @@ async def detect_knowledge_gaps(
     returning every gap report created or updated by this run (empty if no
     cluster reached `min_cluster_size`).
     """
-    since = datetime.now(timezone.utc) - lookback
+    since = datetime.now(UTC) - lookback
     executions = await repository.list_low_confidence_executions(
         session,
         organization_id,

@@ -23,12 +23,13 @@ fall back to.
 
 `project_permissions` is the extension point for the second, finer-grained
 authorization tier (section 3.6): a project-scoped role can override the
-identity's org-level `permissions` for a specific project. It defaults to
-empty here -- no code path populates it yet (project-level authorization is
-not implemented as of this change; see core/users/service.py's docstring) --
-but the field is part of the target `Identity` shape per PROJECT_PLAN.md, so
-`has_permission`/`authorize` already support it and adding real project-scoped
-resolution later is additive, not another breaking change to this schema.
+identity's org-level `permissions` for a specific project. `core/users/
+service.py`'s `resolve_identity` populates it from `project_memberships` via
+`repository.get_project_permission_map` -- see that module's docstring for
+the resolution query. It defaults to empty here only for identities built
+without going through `resolve_identity` (e.g. `Identity.for_agent`, or a
+user with no project memberships), in which case `has_permission` falls back
+to the org-level `permissions` set for every project, per section 3.6.
 """
 
 from __future__ import annotations
@@ -88,8 +89,10 @@ class Identity(BaseModel):
     roles: tuple[str, ...] = ()
     permissions: frozenset[str] = Field(default_factory=frozenset)
     # Project-scoped permission overrides (PROJECT_PLAN.md section 3.6):
-    # project_id -> permission codes granted *for that project*. Empty by
-    # default; see the module docstring for why this isn't populated yet.
+    # project_id -> permission codes granted *for that project*. Populated by
+    # `core.users.service.resolve_identity`; empty by default for identities
+    # constructed some other way (e.g. `Identity.for_agent`) -- see the
+    # module docstring.
     project_permissions: dict[uuid.UUID, frozenset[str]] = Field(default_factory=dict)
 
     @property
@@ -119,7 +122,7 @@ class Identity(BaseModel):
             return permission_code in self.project_permissions[project_id]
         return permission_code in self.permissions
 
-    @classmethod  # qki agents bohot saare hai
+    @classmethod
     def for_agent(cls, agent_name: str, organization_id: uuid.UUID) -> "Identity":
         """Convenience constructor for internal agent-initiated calls.
 

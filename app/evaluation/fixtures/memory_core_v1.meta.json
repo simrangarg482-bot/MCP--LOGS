@@ -1,0 +1,5 @@
+{
+  "dataset_name": "memory_core_v1",
+  "version": "1.0",
+  "description": "Permission-aware agent-memory recall regression dataset (Priority 4). 9 expected_outcome=pass cases covering relevant recall, irrelevant exclusion, private-memory isolation in BOTH directions (Alice must not see Bob's and vice versa), project-scope membership and non-membership, superseded exclusion and deleted exclusion -- plus 1 negative control that asserts Alice recalls Bob's private memory, which MUST fail at the retrieval stage. That control is the load-bearing case: if the visibility filter ever regressed into a leak, it would start passing, and the expected-outcome CI gate turns that into a build failure rather than a silently greener report."
+}

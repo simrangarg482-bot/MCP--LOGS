@@ -110,6 +110,17 @@ class PgVectorStore:
             )
             .join(Document, Document.id == model.document_id)
             .where(model.organization_id == filters.organization_id)
+            # A soft-deleted document's chunks must never be retrievable.
+            # `documents.deleted_at` is set by `core.knowledge.service.
+            # reject_document`; before this predicate existed, the rejected
+            # document's chunk rows stayed in `<collection>_chunks` (nothing
+            # purged them) and this join happily returned them with their
+            # title/source_url attached -- so the Answer Agent could quote
+            # and cite content a human had explicitly rejected. Enforced
+            # here, in the store, rather than only in the caller: this is
+            # the single chokepoint every retrieval path goes through, and
+            # a filter the caller could forget is not a guarantee.
+            .where(Document.deleted_at.is_(None))
             .where(
                 or_(
                     model.acl_permission_code.is_(None),
@@ -184,6 +195,11 @@ class PgVectorStore:
             .join(Document, Document.id == model.document_id)
             .where(model.content_tsv.op("@@")(tsquery))
             .where(model.organization_id == filters.organization_id)
+            # Same soft-delete exclusion as `search()` above -- see that
+            # method's comment. Both halves of hybrid search need it
+            # independently: fusing a filtered dense list with an
+            # unfiltered lexical one would reintroduce the exact leak.
+            .where(Document.deleted_at.is_(None))
             .where(
                 or_(
                     model.acl_permission_code.is_(None),

@@ -84,6 +84,31 @@ async def list_incidents(
     return result.scalars().all()
 
 
+async def list_incidents_by_severity_since(
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    *,
+    severities: Sequence[str],
+    since: datetime,
+) -> Sequence[Incident]:
+    """Every incident in `organization_id` with `severity` in `severities`,
+    created at or after `since` -- the bounded, indexed candidate query
+    `core.proactive`'s `recurring_incident_severity` detector runs once per
+    organization (`ix_incidents_org_severity` covers the equality half; the
+    `created_at` range narrows a window that is already small in practice).
+    Not `list_incidents`/`IncidentFilter`: that shape is a single-severity,
+    no-window API browsing filter, not a rolling-window multi-severity
+    detection query.
+    """
+    stmt = select(Incident).where(
+        Incident.organization_id == organization_id,
+        Incident.severity.in_(severities),
+        Incident.created_at >= since,
+    )
+    result = await session.execute(stmt)
+    return result.scalars().all()
+
+
 async def update_incident(
     session: AsyncSession, incident_id: uuid.UUID, **fields: Any
 ) -> Incident | None:

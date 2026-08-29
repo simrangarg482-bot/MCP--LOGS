@@ -45,7 +45,7 @@ worked around.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -89,7 +89,7 @@ class GitHubLiveSource:
         if not repos:
             return []
 
-        since_date = since.astimezone(timezone.utc).date().isoformat()
+        since_date = since.astimezone(UTC).date().isoformat()
         headers = {
             "Authorization": f"Bearer {connector_config.credential_ref}",
             "Accept": "application/vnd.github+json",
@@ -140,7 +140,7 @@ class GitHubLiveSource:
                     source="pull_request" if is_pull_request else "issue",
                     reference=item.get("html_url") or f"{repo}#{item.get('number')}",
                     summary=self._build_summary(item.get("title") or "", item.get("body")),
-                    retrieved_at=datetime.now(timezone.utc),
+                    retrieved_at=datetime.now(UTC),
                     source_timestamp=self._parse_timestamp(item.get("updated_at")),
                     metadata={
                         "repo": repo,
@@ -183,7 +183,7 @@ class GitHubLiveSource:
                     source="commit",
                     reference=item.get("html_url") or f"{repo}@{sha}",
                     summary=self._build_summary(commit_info.get("message") or "", None),
-                    retrieved_at=datetime.now(timezone.utc),
+                    retrieved_at=datetime.now(UTC),
                     source_timestamp=self._parse_timestamp(author_info.get("date")),
                     metadata={
                         "repo": repo,

@@ -82,7 +82,11 @@ def _format_evidence_line(item: EvidenceItem) -> str:
 
 
 async def generate_hypotheses(
-    llm: BaseChatModel, query: str, evidence: list[EvidenceItem]
+    llm: BaseChatModel,
+    query: str,
+    evidence: list[EvidenceItem],
+    *,
+    critique_feedback: str | None = None,
 ) -> tuple[list[RootCauseHypothesis], str | None, list[str]]:
     """Run one LLM call over `evidence`, returning
     `(hypotheses, suggested_owner_team, suggested_next_steps)`.
@@ -92,30 +96,46 @@ async def generate_hypotheses(
     mirroring `answer.node`'s equivalent zero-chunks guard); there is
     nothing for the model to reason over otherwise.
 
+    `critique_feedback`, when given, is appended to the system prompt as an
+    explicit instruction to address specific, already-identified problems --
+    this is the ONE bounded revision attempt `agents.investigation.critique`
+    makes (`MAX_REVISION_ATTEMPTS = 1`), reusing this same function rather
+    than a second prompt-building code path. `None` (the default) reproduces
+    the original, pre-Priority-7 prompt byte-for-byte, so every existing
+    call site is unaffected.
+
     Raises `_HypothesisParsingError` if the model's response isn't valid,
     expected-shape JSON -- callers should run this through
     `agents.retry.call_with_retry` the same way `agents.answer.node` does
     for `_UngroundedAnswerError`.
     """
     evidence_block = _build_evidence_block(evidence)
+    system_instructions = (
+        "You are investigating an incident using ONLY the evidence listed "
+        "below. Do not use outside knowledge and do not invent evidence.\n\n"
+        "Respond with ONLY a single JSON object (no markdown code fences, no "
+        "commentary before or after it) with exactly this shape:\n"
+        '{"hypotheses": [{"description": "...", "confidence": 0.0, '
+        '"supporting_evidence_ids": ["..."]}], '
+        '"suggested_owner_team": "team name, or null if unclear", '
+        '"suggested_next_steps": ["short actionable step", "..."]}\n\n'
+        "Rules: `confidence` is a number from 0.0 to 1.0. Every "
+        "`supporting_evidence_ids` entry MUST be copied verbatim from one of "
+        "the bracketed reference strings in the evidence (the text inside "
+        "the square brackets) -- never invent a reference that isn't "
+        "listed. Every hypothesis MUST cite at least one such reference; "
+        "if the evidence doesn't support any hypothesis, return an empty "
+        "`hypotheses` list rather than a weakly-supported guess."
+    )
+    if critique_feedback:
+        system_instructions += (
+            "\n\nA prior draft of your hypotheses was reviewed and found to have "
+            f"specific problems that must be fixed in this revision: {critique_feedback}\n"
+            "Address these problems directly -- lower confidence or drop a claim "
+            "you cannot actually support, rather than repeating it unchanged."
+        )
     messages = build_messages(
-        system_instructions=(
-            "You are investigating an incident using ONLY the evidence listed "
-            "below. Do not use outside knowledge and do not invent evidence.\n\n"
-            "Respond with ONLY a single JSON object (no markdown code fences, no "
-            "commentary before or after it) with exactly this shape:\n"
-            '{"hypotheses": [{"description": "...", "confidence": 0.0, '
-            '"supporting_evidence_ids": ["..."]}], '
-            '"suggested_owner_team": "team name, or null if unclear", '
-            '"suggested_next_steps": ["short actionable step", "..."]}\n\n'
-            "Rules: `confidence` is a number from 0.0 to 1.0. Every "
-            "`supporting_evidence_ids` entry MUST be copied verbatim from one of "
-            "the bracketed reference strings in the evidence (the text inside "
-            "the square brackets) -- never invent a reference that isn't "
-            "listed. Every hypothesis MUST cite at least one such reference; "
-            "if the evidence doesn't support any hypothesis, return an empty "
-            "`hypotheses` list rather than a weakly-supported guess."
-        ),
+        system_instructions=system_instructions,
         evidence_block=evidence_block,
         task=f"Incident: {query}",
     )
@@ -164,9 +184,7 @@ def _parse_response(raw_text: str) -> dict[str, Any] | None:
         return None
 
     if not isinstance(parsed, dict):
-        logger.warning(
-            "investigation_hypothesis_unexpected_shape", raw_type=type(parsed).__name__
-        )
+        logger.warning("investigation_hypothesis_unexpected_shape", raw_type=type(parsed).__name__)
         return None
     return parsed
 

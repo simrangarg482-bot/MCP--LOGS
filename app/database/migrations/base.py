@@ -36,6 +36,9 @@ from app.database.models import ingestion_models  # noqa: F401
 from app.database.models import retrieval_models  # noqa: F401
 from app.database.models import tenancy_models  # noqa: F401
 from app.database.models import mcp_models  # noqa: F401
+from app.database.models import memory_models  # noqa: F401
+from app.database.models import graph_models  # noqa: F401
+from app.database.models import pattern_models  # noqa: F401
 #
 # retrieval_models' embedding dimension is now pinned (ENGINEERING_DECISIONS.md
 # #006), but the vector index type (HNSW vs. IVFFlat) is still deliberately

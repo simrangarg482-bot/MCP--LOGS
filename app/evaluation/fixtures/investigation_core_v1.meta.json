@@ -1,0 +1,5 @@
+{
+  "dataset_name": "investigation_core_v1",
+  "version": "1.1",
+  "description": "Initial Investigation Agent evaluation dataset -- evidence coverage, hypothesis matching/support, and hallucinated-support detection. 1 expected_outcome=pass case plus 4 negative controls, each pinned to its stage (1 retrieval-stage for ungathered evidence, 3 generation-stage for unmatched/under-supported/fabricated-support hypotheses)."
+}

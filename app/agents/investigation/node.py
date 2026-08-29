@@ -1,7 +1,8 @@
 """The Investigation Agent node (PROJECT_PLAN.md section 6.4 /
 AGENT_WORKFLOWS.md section 2.4): orchestrates sub-stage A (evidence
 gathering, `investigation.evidence`) -> sub-stage B (hypothesis generation,
-`investigation.hypothesis`), producing `result.investigation`.
+`investigation.hypothesis`) -> sub-stage C (bounded critique/reflection,
+`investigation.critique`, Priority 7), producing `result.investigation`.
 
 Reached two ways:
   - Via the main `answer_question` graph's `route == "investigation"`
@@ -52,6 +53,7 @@ from langchain_core.language_models import BaseChatModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.graph import GraphState
+from app.agents.investigation import critique as critique_module
 from app.agents.investigation.evidence import gather_evidence
 from app.agents.investigation.hypothesis import generate_hypotheses
 from app.agents.retry import call_with_retry
@@ -119,20 +121,38 @@ def make_investigation_agent_node(
                 _NO_HYPOTHESIS_NEXT_STEPS,
             )
 
+        # Priority 7: bounded critique/reflection over the generated
+        # hypotheses. A no-op (review_status stays "not_reviewed") when
+        # hypothesis generation already produced nothing above -- see
+        # `critique.review_investigation`'s own docstring.
+        review = await critique_module.review_investigation(
+            llm,
+            state.query,
+            evidence,
+            hypotheses,
+            suggested_owner_team,
+            suggested_next_steps,
+            state.retry_count,
+        )
+
         result = AskResponse(
             confidence=state.confidence_score or 0.0,
             route_taken="investigation",
             investigation=InvestigationResult(
                 evidence=evidence,
-                hypotheses=hypotheses,
-                suggested_owner_team=suggested_owner_team,
-                suggested_next_steps=suggested_next_steps,
+                hypotheses=review.hypotheses,
+                suggested_owner_team=review.suggested_owner_team,
+                suggested_next_steps=review.suggested_next_steps,
+                review_status=review.review_status,
+                critique_verdict=review.critique_verdict,
+                revision_count=review.revision_count,
+                critique_issues=review.critique_issues,
             ),
         )
         await _attach_to_timeline(session, state, result)
         return {
             "evidence": evidence,
-            "hypotheses": hypotheses,
+            "hypotheses": review.hypotheses,
             "result": result,
             "retry_count": state.retry_count,
         }

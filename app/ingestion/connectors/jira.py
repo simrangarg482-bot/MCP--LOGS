@@ -69,12 +69,13 @@ searchable content, not a separate document" choice -- skipped per-issue
 when `fields.comment.total == 0`, the same "avoid a wasted call for the
 common case" gate GitHub's own `comments_count` check uses.
 
-`config.credential_ref` is expected to hold `"<email>:<api_token>"` (Jira
-Cloud's own documented Basic-auth credential pair, unencoded) -- this
-connector base64-encodes it locally before use. Still a flagged placeholder
-per `ResolvedConnectorConfig`'s docstring (no real secrets-store resolution
-exists yet), just a different literal shape than Slack's/GitHub's bearer
-tokens, since Jira Cloud's REST API requires Basic auth, not a bearer token,
+`config.credential_ref` holds `"<email>:<api_token>"` (Jira Cloud's own
+documented Basic-auth credential pair, unencoded), already decrypted by
+`app.ingestion.service` via `shared/security` before this connector ever
+sees it -- see `base.Connector.authenticate`'s docstring -- and this
+connector base64-encodes it locally before use. A different credential shape
+than Slack's/GitHub's bearer tokens, since Jira Cloud's REST API requires
+Basic auth, not a bearer token,
 for API-token-based access.
 """
 

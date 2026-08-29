@@ -13,7 +13,12 @@ from __future__ import annotations
 
 from arq.cron import cron
 
-from app.agents.workers.tasks import run_knowledge_gap_detection_task, scheduled_knowledge_gap_scan
+from app.agents.workers.tasks import (
+    run_knowledge_gap_detection_task,
+    run_pattern_detection_task,
+    scheduled_knowledge_gap_scan,
+    scheduled_pattern_detection_scan,
+)
 from app.shared.config.logging import configure_logging
 from app.shared.redis_settings import build_redis_settings
 
@@ -25,7 +30,7 @@ class WorkerSettings:
     CLI command shown in this module's docstring.
     """
 
-    functions = [run_knowledge_gap_detection_task]
+    functions = [run_knowledge_gap_detection_task, run_pattern_detection_task]
     # Daily at 02:00 -- deliberately much less frequent than ingestion's
     # hourly reconciliation: a documentation gap is, by definition, a
     # *repeated* pattern accumulated over `knowledge_gap_lookback_days`
@@ -33,7 +38,23 @@ class WorkerSettings:
     # hour to hour the way "has a new commit landed" does. Running hourly
     # would mostly re-scan the same low-confidence executions and re-merge
     # into the same open reports for no benefit.
-    cron_jobs = [cron(scheduled_knowledge_gap_scan, hour=2, minute=0)]
+    #
+    # Priority 6's pattern-detection scan runs every 6 hours (00/06/12/18) --
+    # a deliberate middle point between the two existing cadences here.
+    # Unlike the knowledge-gap scan, its detectors are cheap (a couple of
+    # bounded, indexed SQL queries, no LLM calls at all -- see
+    # `core.proactive.contract`'s module docstring), so there is no cost
+    # reason to run it only once a day; unlike ingestion's hourly sync,
+    # nothing about "3 incidents in a 14-day window" changes meaningfully
+    # hour to hour either, so there is no freshness reason to match
+    # ingestion's cadence. Reusing this same worker process/queue (rather
+    # than standing up a third one) is itself the smallest-truthful-
+    # integration choice this priority's spec asks for -- see
+    # `docs/PROACTIVE_INTELLIGENCE.md`.
+    cron_jobs = [
+        cron(scheduled_knowledge_gap_scan, hour=2, minute=0),
+        cron(scheduled_pattern_detection_scan, hour={0, 6, 12, 18}, minute=0),
+    ]
     redis_settings = build_redis_settings()
     # See `app.ingestion.workers.main.WorkerSettings.queue_name`'s comment --
     # without an explicit, distinct queue name here too, this worker shares

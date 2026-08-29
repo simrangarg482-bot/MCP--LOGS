@@ -360,6 +360,12 @@ async def record_investigation_result(
     -- `incident_timeline` is meant to be readable on its own
     (DATABASE_DESIGN.md), not require a join back into `agent_executions` to
     reconstruct what an investigation found.
+
+    Priority 7 additions: `review_status`/`critique_verdict`/
+    `revision_count`/`critique_issues` (`agents.investigation.critique`) are
+    written the same way -- plain JSON-safe values, no schema change to this
+    table. `critique_issues` holds only short structured category tags
+    (e.g. `"overconfidence:hypothesis_0"`), never raw model reasoning.
     """
     _ensure_same_organization(actor, organization_id)
     await _get_owned_incident(session, organization_id, incident_id)
@@ -369,6 +375,10 @@ async def record_investigation_result(
         "hypotheses": [h.model_dump(mode="json") for h in investigation.hypotheses],
         "suggested_owner_team": investigation.suggested_owner_team,
         "suggested_next_steps": investigation.suggested_next_steps,
+        "review_status": investigation.review_status,
+        "critique_verdict": investigation.critique_verdict,
+        "revision_count": investigation.revision_count,
+        "critique_issues": investigation.critique_issues,
     }
     row = await repository.insert_timeline_entry(
         session,

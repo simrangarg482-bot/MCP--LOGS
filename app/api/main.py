@@ -39,12 +39,15 @@ from app.api.middleware import RequestContextMiddleware
 from app.api.routers import (
     ask,
     auth,
+    graph,
     health,
     incidents,
+    insights,
     knowledge,
     observability,
     postmortems,
     tenancy,
+    memory,
     users,
 )
 from app.core.exceptions import EKIPError
@@ -141,6 +144,9 @@ def create_app() -> FastAPI:
     app.include_router(tenancy.router)
     app.include_router(tenancy.admin_router)
     app.include_router(users.router)
+    app.include_router(memory.router)
+    app.include_router(graph.router)
+    app.include_router(insights.router)
 
     configure_tracing(app)
 

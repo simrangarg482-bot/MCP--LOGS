@@ -19,13 +19,13 @@ separate per-project key namespace to worry about colliding; project names
 are still needed to scope each WIQL query and to build a human-readable
 `source_url`).
 
-`config.credential_ref` is expected to be a literal Azure DevOps Personal
-Access Token (PAT) -- Azure DevOps' REST API accepts a PAT as the password
-half of HTTP Basic auth with an empty username, so this connector builds
-that header itself the same way `JiraConnector` builds a Basic-auth header
-from its own literal credential shape. Same flagged "literal value until
-`shared/security` exists" placeholder every other connector's docstring
-carries.
+`config.credential_ref` is the plaintext Azure DevOps Personal Access Token
+(PAT), already decrypted by `app.ingestion.service` via `shared/security`
+before this connector ever sees it -- see `base.Connector.authenticate`'s
+docstring. Azure DevOps' REST API accepts a PAT as the password half of HTTP
+Basic auth with an empty username, so this connector builds that header
+itself the same way `JiraConnector` builds a Basic-auth header from its own
+credential shape.
 
 Two-phase-per-project fetch, unlike every other connector in this codebase:
 WIQL only returns matching work item IDs (no field data), so a project's

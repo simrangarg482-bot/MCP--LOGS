@@ -53,6 +53,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+import httpx
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import ConflictError, NotFoundError
@@ -69,11 +71,12 @@ from app.ingestion.connectors.sharepoint import SharePointConnector
 from app.ingestion.connectors.slack import SlackConnector
 from app.ingestion.connectors.teams import TeamsConnector
 from app.ingestion.processors.pipeline import process_document
-from app.ingestion.schemas import ContentType, IngestionJob, ResolvedConnectorConfig
+from app.ingestion.schemas import ContentType, FetchResult, IngestionJob, ResolvedConnectorConfig
 from app.retrieval import service as retrieval_service
 from app.retrieval.schemas import CollectionName, UpsertChunk
 from app.shared.config.logging import get_logger
 from app.shared.config.settings import get_settings
+from app.shared.backoff import full_jitter_backoff_seconds
 from app.shared.rate_limiter import TokenBucketRateLimiter
 from app.shared.schemas import Identity
 from app.shared.security import decrypt_secret, get_kms
@@ -187,6 +190,47 @@ async def get_job_status(session: AsyncSession, job_id: uuid.UUID) -> IngestionJ
     return IngestionJob.model_validate(row)
 
 
+# Narrow, like the DB-side retries above: `httpx.TransportError` (a
+# `ConnectError`/`ConnectTimeout`/`ReadTimeout`/etc. -- the connection
+# itself never completed) is what a flaky local network or DNS resolver
+# actually produces, observed directly against `api.github.com` mid-session.
+# Deliberately NOT catching `httpx.HTTPStatusError` (a real response the
+# server sent, e.g. a 403/404/5xx): that's a legitimate answer from GitHub,
+# not a transport failure, and retrying it identically would just waste the
+# attempt budget -- or worsen an actual rate limit -- for an error that
+# retrying can't fix.
+_MAX_FETCH_TRANSPORT_RETRIES = 3
+_FETCH_RETRY_BACKOFF_CAP_SECONDS = 10.0
+
+
+async def _fetch_batch_with_retry(
+    connector: Connector, client: object, **fetch_kwargs: Any
+) -> FetchResult:
+    """Call `connector.fetch_batch`, retrying up to
+    `_MAX_FETCH_TRANSPORT_RETRIES` times if the connection to the source
+    itself failed to establish -- the same "the network is flaky, not the
+    code" failure mode already handled for the database side, extended to
+    the outbound HTTP calls every connector makes.
+    """
+    for attempt in range(_MAX_FETCH_TRANSPORT_RETRIES):
+        try:
+            return await connector.fetch_batch(client, **fetch_kwargs)
+        except httpx.TransportError as exc:
+            is_last_attempt = attempt == _MAX_FETCH_TRANSPORT_RETRIES - 1
+            if is_last_attempt:
+                raise
+            delay = full_jitter_backoff_seconds(attempt, cap=_FETCH_RETRY_BACKOFF_CAP_SECONDS)
+            logger.warning(
+                "ingestion_fetch_transport_retry",
+                attempt=attempt + 1,
+                max_attempts=_MAX_FETCH_TRANSPORT_RETRIES,
+                delay_seconds=round(delay, 2),
+                error=str(exc),
+            )
+            await asyncio.sleep(delay)
+    raise AssertionError("unreachable: loop above always returns or raises")
+
+
 async def _execute_ingestion_job(
     session: AsyncSession, connector_config_id: uuid.UUID, *, force_full_sync: bool
 ) -> IngestionJob:
@@ -288,8 +332,20 @@ async def _execute_ingestion_job(
     job_row = await repository.insert_ingestion_job(
         session, organization_id=config_row.organization_id, connector_config_id=connector_config_id
     )
+    # Captured once, right here, while `job_row` is guaranteed freshly
+    # loaded -- never re-read via `job_row.id` again below. `session.
+    # rollback()` (in the except block further down) unconditionally
+    # expires every attribute on every object in the session, `id` included;
+    # a later plain `job_row.id` attribute access after that point tries to
+    # lazily reload it, which requires a greenlet-spawned async context that
+    # a bare attribute access sitting in an ordinary expression (a logging
+    # call's kwargs, another call's argument list) does not have --
+    # observed in practice as `sqlalchemy.exc.MissingGreenlet` masking
+    # whatever the *real* failure was. A plain captured UUID has no such
+    # lazy-load behavior at all.
+    job_id = job_row.id
     job_row = await repository.update_ingestion_job(
-        session, job_row.id, status="running", started_at=datetime.now(timezone.utc)
+        session, job_id, status="running", started_at=datetime.now(timezone.utc)
     )
     if job_row is None:
         raise RuntimeError("Ingestion job disappeared mid-update.")  # unreachable: just inserted above
@@ -332,7 +388,7 @@ async def _execute_ingestion_job(
             fetch_kwargs: dict[str, Any] = {"since": since, "cursor": cursor}
             if connector_supports_resume_token:
                 fetch_kwargs["resume_token"] = resume_token_in
-            fetch_result = await connector.fetch_batch(client, **fetch_kwargs)
+            fetch_result = await _fetch_batch_with_retry(connector, client, **fetch_kwargs)
             if fetch_result.resume_token is not None:
                 latest_resume_token = fetch_result.resume_token
 
@@ -351,16 +407,14 @@ async def _execute_ingestion_job(
                 # each document's chunks visible to other sessions as soon
                 # as that document is done rather than only once the whole
                 # (potentially hour-long) sync finishes.
-                async with session.begin_nested():
-                    documents_processed += await _process_one_item(
-                        session,
-                        connector=connector,
-                        raw_item=raw_item,
-                        resolved_config=resolved_config,
-                        actor=actor,
-                    )
-                await session.commit()
-                await set_tenant_context(session, organization_id)  # does not survive COMMIT
+                documents_processed += await _process_one_item_with_retry(
+                    session,
+                    organization_id=organization_id,
+                    connector=connector,
+                    raw_item=raw_item,
+                    resolved_config=resolved_config,
+                    actor=actor,
+                )
 
             if not fetch_result.has_more:
                 break
@@ -369,7 +423,7 @@ async def _execute_ingestion_job(
         completed_at = datetime.now(timezone.utc)
         job_row = await repository.update_ingestion_job(
             session,
-            job_row.id,
+            job_id,
             status="succeeded",
             documents_processed=documents_processed,
             completed_at=completed_at,
@@ -414,7 +468,7 @@ async def _execute_ingestion_job(
         # only this line still shows what originally went wrong.
         logger.warning(
             "ingestion_job_failed",
-            job_id=str(job_row.id),
+            job_id=str(job_id),
             connector_config_id=str(connector_config_id),
             stage=stage,
             documents_processed=documents_processed,
@@ -449,7 +503,7 @@ async def _execute_ingestion_job(
             # anything the rollback just erased.
             job_row = await repository.update_ingestion_job(
                 session,
-                job_row.id,
+                job_id,
                 status="failed",
                 failed_stage=stage,
                 documents_processed=documents_processed,
@@ -478,28 +532,70 @@ async def _execute_ingestion_job(
             # the original one is stuck in.
             logger.warning(
                 "ingestion_job_failure_record_write_failed",
-                job_id=str(job_row.id),
+                job_id=str(job_id),
                 connector_config_id=str(connector_config_id),
                 exc_info=True,
             )
-            async with session_scope() as fallback_session:
-                await set_tenant_context(fallback_session, organization_id)
-                job_row = await repository.update_ingestion_job(
-                    fallback_session,
-                    job_row.id,
-                    status="failed",
-                    failed_stage=stage,
-                    documents_processed=documents_processed,
-                    completed_at=completed_at,
-                )
-                await tenancy_service.update_connector_sync_status(
-                    fallback_session,
-                    actor,
-                    config_row.organization_id,
-                    connector_config_id,
-                    status="error",
-                    config_patch=config_patch,
-                )
+            # A single fallback attempt isn't always enough: observed in
+            # practice, a network unstable enough to kill the original
+            # session mid-item can still be down when the *first* fresh
+            # session is opened too (a flapping connection, not a one-off
+            # drop). Retrying the fallback itself, each attempt on its own
+            # brand-new connection, gives a badly-flapping network multiple
+            # chances to land a fresh connection in a good window rather
+            # than giving up on the very first one.
+            for attempt in range(_MAX_FAILURE_RECORD_RETRIES):
+                is_last_attempt = attempt == _MAX_FAILURE_RECORD_RETRIES - 1
+                try:
+                    async with session_scope() as fallback_session:
+                        await set_tenant_context(fallback_session, organization_id)
+                        job_row = await repository.update_ingestion_job(
+                            fallback_session,
+                            job_id,
+                            status="failed",
+                            failed_stage=stage,
+                            documents_processed=documents_processed,
+                            completed_at=completed_at,
+                        )
+                        await tenancy_service.update_connector_sync_status(
+                            fallback_session,
+                            actor,
+                            config_row.organization_id,
+                            connector_config_id,
+                            status="error",
+                            config_patch=config_patch,
+                        )
+                    break
+                except Exception:
+                    if is_last_attempt:
+                        # Genuinely nothing left to try: every attempt at
+                        # recording the failure, on a fresh connection each
+                        # time, failed too. Logged (not swallowed) so the
+                        # job row's eventual stuck `status="running"` has a
+                        # trace explaining why, then re-raised so arq's own
+                        # retry (which doesn't depend on this record) still
+                        # gets a chance once the network actually recovers.
+                        logger.warning(
+                            "ingestion_job_failure_record_write_exhausted",
+                            job_id=str(job_id),
+                            connector_config_id=str(connector_config_id),
+                            attempts=_MAX_FAILURE_RECORD_RETRIES,
+                            exc_info=True,
+                        )
+                        raise
+                    delay = full_jitter_backoff_seconds(
+                        attempt, cap=_FAILURE_RECORD_RETRY_BACKOFF_CAP_SECONDS
+                    )
+                    logger.warning(
+                        "ingestion_job_failure_record_retry",
+                        job_id=str(job_id),
+                        connector_config_id=str(connector_config_id),
+                        attempt=attempt + 1,
+                        max_attempts=_MAX_FAILURE_RECORD_RETRIES,
+                        delay_seconds=round(delay, 2),
+                        exc_info=True,
+                    )
+                    await asyncio.sleep(delay)
         # Deliberately NOT re-raised for an ordinary `Exception`: this whole
         # call runs inside the one session/transaction the caller's
         # `session_scope()` opened, and that helper's contract is "commit on
@@ -533,6 +629,83 @@ async def _execute_ingestion_job(
     if job_row is None:
         raise RuntimeError("Ingestion job disappeared mid-update.")  # unreachable: updated above
     return IngestionJob.model_validate(job_row)
+
+
+# Bounded, narrow retry -- not a blanket one. `DBAPIError.connection_
+# invalidated` is SQLAlchemy's own signal that the *driver* determined the
+# underlying connection itself died (asyncpg's `ConnectionDoesNotExistError`,
+# a Windows `OSError` mid-socket-read, etc.) rather than the query being
+# wrong -- observed repeatedly against both Neon and this project's own
+# flaky local network. Any other `DBAPIError` (a real constraint violation,
+# a malformed query) would fail identically on every retry, so those still
+# propagate on the first attempt.
+_MAX_ITEM_CONNECTION_RETRIES = 3
+_ITEM_RETRY_BACKOFF_CAP_SECONDS = 10.0
+
+# Separate, slightly more patient budget for the failure-recording fallback
+# below (`_execute_ingestion_job`'s except block) -- by the time that code
+# runs, the job is already ending one way or another, so it can afford a
+# little more total wait than a mid-sync per-item retry before giving up.
+_MAX_FAILURE_RECORD_RETRIES = 3
+_FAILURE_RECORD_RETRY_BACKOFF_CAP_SECONDS = 15.0
+
+
+async def _process_one_item_with_retry(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    connector: Connector,
+    raw_item: object,
+    resolved_config: ResolvedConnectorConfig,
+    actor: Identity,
+) -> int:
+    """Run `_process_one_item` in its own savepoint and commit it, retrying
+    up to `_MAX_ITEM_CONNECTION_RETRIES` times if the connection drops
+    mid-item.
+
+    Previously a single transient connection blip mid-item meant the whole
+    arq job attempt died and had to be retried from page 1 of the sync
+    (per-item commits bound how much *work* an earlier blip could lose, but
+    not whether *this* attempt survived one at all). Retrying here instead
+    costs a few seconds for a blip that resolves quickly, rather than a
+    full sync restart -- most valuable on the exact kind of unstable
+    connection (Neon's pooler, a flaky local network) that keeps causing
+    these mid-sync drops in practice.
+
+    Safe to just retry `_process_one_item` wholesale even after a partial
+    failure: it starts by checking the item's `content_hash` against what's
+    already persisted and returns early (no re-embedding) if unchanged --
+    the same idempotency check that already makes a whole-job arq retry
+    cheap applies just as well to retrying one item.
+    """
+    for attempt in range(_MAX_ITEM_CONNECTION_RETRIES):
+        try:
+            async with session.begin_nested():
+                count = await _process_one_item(
+                    session,
+                    connector=connector,
+                    raw_item=raw_item,
+                    resolved_config=resolved_config,
+                    actor=actor,
+                )
+            await session.commit()
+            await set_tenant_context(session, organization_id)  # does not survive COMMIT
+            return count
+        except DBAPIError as exc:
+            is_last_attempt = attempt == _MAX_ITEM_CONNECTION_RETRIES - 1
+            if not exc.connection_invalidated or is_last_attempt:
+                raise
+            delay = full_jitter_backoff_seconds(attempt, cap=_ITEM_RETRY_BACKOFF_CAP_SECONDS)
+            logger.warning(
+                "ingestion_item_connection_retry",
+                attempt=attempt + 1,
+                max_attempts=_MAX_ITEM_CONNECTION_RETRIES,
+                delay_seconds=round(delay, 2),
+                error=str(exc),
+            )
+            await session.rollback()
+            await asyncio.sleep(delay)
+    raise AssertionError("unreachable: loop above always returns or raises")
 
 
 async def _process_one_item(

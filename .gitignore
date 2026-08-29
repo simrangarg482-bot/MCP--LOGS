@@ -38,6 +38,21 @@ app/database/migrations/versions/__pycache__/
 *.log
 logs/
 
+# --- Evaluation run output ---------------------------------------------------
+# `scripts/run_evaluation.py`'s per-run report: regenerated on every run and
+# uploaded as a CI artifact (see .github/workflows/ci.yml), so a local copy
+# is scratch state, not something to version. Deliberately NOT ignoring
+# `scripts/eval_confidence_report*.json` -- those ARE tracked on purpose:
+# `eval_confidence.py --compare-to` diffs against a committed known-good
+# baseline (see .github/workflows/e2e-and-eval.yml's ai-evaluation job).
+run_evaluation_report.json
+scripts/run_evaluation_report.json
+
+# `scripts/run_semantic_evaluation.py`'s per-run report: same "regenerated
+# scratch state, not a committed baseline" reasoning as above.
+run_semantic_evaluation_report.json
+scripts/run_semantic_evaluation_report.json
+
 # --- IDE / editor ------------------------------------------------------------
 .vscode/
 .idea/

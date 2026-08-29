@@ -12,20 +12,22 @@ permission, and status-transition logic.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
 from app.core.exceptions import ConflictError, NotFoundError, PermissionDeniedError
+from app.core.graph import service as graph_service
 from app.core.knowledge import service as knowledge_service
 from app.core.knowledge.schemas import DocumentProposalCreate, DocumentUpdate
+from app.core.proactive import service as proactive_service
 from app.retrieval.schemas import UpsertChunk
 from app.shared.schemas import ActorKind, Identity
 
 
 class _FakeRow:
     def __init__(self, **kwargs: object) -> None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         self.id: uuid.UUID = kwargs.get("id", uuid.uuid4())  # type: ignore[assignment]
         self.organization_id: uuid.UUID = kwargs["organization_id"]  # type: ignore[assignment]
         self.project_id: uuid.UUID = kwargs.get("project_id", uuid.uuid4())  # type: ignore[assignment]
@@ -144,7 +146,7 @@ async def test_get_document_treats_soft_deleted_row_as_not_found(monkeypatch) ->
     organization_id = uuid.uuid4()
     actor = _reviewer(organization_id)
     row = _FakeRow(
-        organization_id=organization_id, status="proposed", deleted_at=datetime.now(timezone.utc)
+        organization_id=organization_id, status="proposed", deleted_at=datetime.now(UTC)
     )
 
     async def fake_get_document_by_id(session, document_id):
@@ -244,8 +246,24 @@ async def test_reject_document_soft_deletes(monkeypatch) -> None:
         row.deleted_at = deleted_at
         return row
 
+    audit_metadata: dict[str, object] = {}
+
     async def fake_record_audit_event(session, actor, **kwargs):
+        audit_metadata.update(kwargs.get("metadata") or {})
         return None
+
+    purged_collections: list[str] = []
+
+    async def fake_retrieval_delete(session, collection, document_id):
+        purged_collections.append(collection)
+
+    async def fake_remove_edges_for_entity(session, *, organization_id, entity_type, entity_id):
+        return 0
+
+    async def fake_handle_evidence_entity_removed(
+        session, *, organization_id, entity_type, entity_id
+    ):
+        return 0
 
     monkeypatch.setattr(knowledge_service.repository, "get_document_by_id", fake_get_document_by_id)
     monkeypatch.setattr(knowledge_service.repository, "get_metadata_value", fake_get_metadata_value)
@@ -253,6 +271,19 @@ async def test_reject_document_soft_deletes(monkeypatch) -> None:
         knowledge_service.repository, "soft_delete_document", fake_soft_delete_document
     )
     monkeypatch.setattr(knowledge_service, "record_audit_event", fake_record_audit_event)
+    monkeypatch.setattr(knowledge_service.retrieval_service, "delete", fake_retrieval_delete)
+    # `reject_document` deferred-imports `core.graph.service` (avoiding the
+    # load-time circular import back into `core.knowledge.repository`) and
+    # calls it to purge any stored graph edge naming this document -- see
+    # that function's docstring. Patched here rather than left real, the
+    # same reasoning as every other repository fake in this test: no
+    # database session exists in this suite.
+    monkeypatch.setattr(graph_service, "remove_edges_for_entity", fake_remove_edges_for_entity)
+    # Same reasoning, one hook further: `core.proactive.service`'s evidence
+    # cleanup, also deferred-imported by `reject_document`.
+    monkeypatch.setattr(
+        proactive_service, "handle_evidence_entity_removed", fake_handle_evidence_entity_removed
+    )
 
     document = await knowledge_service.reject_document(None, actor, organization_id, row.id)
 
@@ -260,6 +291,15 @@ async def test_reject_document_soft_deletes(monkeypatch) -> None:
     # `status` is left at "proposed" -- rejection is a soft delete, not a
     # third status value (see service.py's docstring).
     assert document.status == "proposed"
+    # Rejection must also purge the derived chunks/embeddings, across every
+    # collection -- a soft-deleted source row whose vectors survive would
+    # stay quotable by the Answer Agent.
+    assert purged_collections == ["documentation", "code", "conversations"]
+    assert audit_metadata["purged_chunk_collections"] == [
+        "documentation",
+        "code",
+        "conversations",
+    ]
 
 
 # --- update_document (human-review editing, PATCH /knowledge/{document_id}) --

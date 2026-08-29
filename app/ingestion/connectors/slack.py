@@ -79,11 +79,12 @@ class SlackConnector:
     async def authenticate(self, config: ResolvedConnectorConfig) -> _SlackClient:
         """Build an authenticated Slack client from `config`.
 
-        `config.credential_ref` is treated as the literal bot token
-        (`xoxb-...`) for now -- see `ResolvedConnectorConfig`'s docstring on
-        why this is a flagged placeholder, not a real secret-store
-        resolution. Calls `auth.test` once so a misconfigured/revoked token
-        fails loudly here rather than silently on the first `fetch_batch`.
+        `config.credential_ref` is the plaintext bot token (`xoxb-...`),
+        already decrypted by `app.ingestion.service` via `shared/security`
+        before this connector ever sees it -- see `base.Connector.
+        authenticate`'s docstring. Calls `auth.test` once so a
+        misconfigured/revoked token fails loudly here rather than silently
+        on the first `fetch_batch`.
         """
         http = httpx.AsyncClient(
             base_url=_SLACK_API_BASE_URL,

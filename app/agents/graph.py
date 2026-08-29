@@ -53,6 +53,7 @@ from langgraph.graph import END, StateGraph
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.memory.schemas import RecalledMemory
 from app.retrieval.schemas import ScoredChunk
 from app.shared.schemas import AskResponse, EvidenceItem, Identity, RootCauseHypothesis
 
@@ -76,6 +77,22 @@ class GraphState(BaseModel):
     # --- retrieval stage -------------------------------------------------
     retrieved_chunks: list[ScoredChunk] = Field(default_factory=list)
     rewritten_query: str | None = None
+
+    # --- persistent memory (Priority 4, app.core.memory) -------------------
+    # Deliberately a SEPARATE field from `retrieved_chunks`, not a few more
+    # `ScoredChunk`s appended to it. Two reasons, both load-bearing:
+    #   1. `ScoredChunk`s become numbered, citable sources
+    #      (`agents.answer.generation.build_context_block` ->
+    #      `build_citations`). Memory is context, not evidence, and must
+    #      never be presented as a citation -- an answer's factual claims
+    #      stay grounded in retrieved documents.
+    #   2. Memory has no `document_id`/offsets, so forging one as a
+    #      `ScoredChunk` would mean inventing provenance it does not have.
+    # Populated once, before the graph runs (`agents.service.answer_question`),
+    # rather than by a node: it needs no LLM and no retry, so a node would add
+    # graph surface for nothing. Empty list = no relevant memory, in which
+    # case every downstream prompt is byte-identical to pre-memory behavior.
+    recalled_memories: list[RecalledMemory] = Field(default_factory=list)
 
     # --- confidence stage --------------------------------------------------
     confidence_score: float | None = None

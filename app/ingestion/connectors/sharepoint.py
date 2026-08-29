@@ -104,9 +104,11 @@ class SharePointConnector:
     async def authenticate(self, config: ResolvedConnectorConfig) -> _SharePointClient:
         """Build an authenticated Graph client from `config`.
 
-        `config.credential_ref` is treated as a literal, already-issued
-        bearer access token -- same flagged placeholder as
-        `TeamsConnector.authenticate`. Probes `GET /sites/{site_id}` against
+        `config.credential_ref` is an already-issued bearer access token,
+        already decrypted by `app.ingestion.service` via `shared/security`
+        before this connector ever sees it -- see `base.Connector.
+        authenticate`'s docstring, same as `TeamsConnector.authenticate`.
+        Probes `GET /sites/{site_id}` against
         the first configured site once, so an invalid/expired token, or an
         unreachable site id, fails loudly here rather than on the first real
         fetch.

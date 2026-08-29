@@ -1,0 +1,192 @@
+{
+  "annotations": [
+    {
+      "annotated_at": "2026-08-26T05:55:44.081783Z",
+      "annotation_schema_version": "annotation-v1",
+      "case_id": "contrast-a-correct-refusal",
+      "case_snapshot_hash": "8073cb8b04f669bc55af5e76d118a4443d473b24f267f30eedce379bd7ce851e",
+      "dataset_version": "semantic-v1",
+      "dimension_ratings": {},
+      "observed_mode": "no_answer",
+      "provenance": "synthetic_controlled_annotation",
+      "rationale": "Text declines outright; evidence genuinely lacks a root cause for this incident.",
+      "reviewer_id": "reviewer-1",
+      "usable_for_calibration": true
+    },
+    {
+      "annotated_at": "2026-08-26T05:56:08.341228Z",
+      "annotation_schema_version": "annotation-v1",
+      "case_id": "contrast-b-correct-answer",
+      "case_snapshot_hash": "05528b165247bad2b604974347849cd6662e28e31992daa834561d433c815dea",
+      "dataset_version": "semantic-v1",
+      "dimension_ratings": {},
+      "observed_mode": "substantive_answer",
+      "provenance": "synthetic_controlled_annotation",
+      "rationale": "States the cause directly and matches the evidence.",
+      "reviewer_id": "reviewer-1",
+      "usable_for_calibration": true
+    },
+    {
+      "annotated_at": "2026-08-26T05:56:34.175632Z",
+      "annotation_schema_version": "annotation-v1",
+      "case_id": "contrast-c-hallucination",
+      "case_snapshot_hash": "e141ec77a3f9557f579554622a1fa9df825af6266e388a6cfc49b0caa8781e9a",
+      "dataset_version": "semantic-v1",
+      "dimension_ratings": {},
+      "observed_mode": "substantive_answer",
+      "provenance": "synthetic_controlled_annotation",
+      "rationale": "States a specific cause with full confidence; evidence never identifies one -- fabricated.",
+      "reviewer_id": "reviewer-1",
+      "usable_for_calibration": true
+    },
+    {
+      "annotated_at": "2026-08-26T05:56:58.868497Z",
+      "annotation_schema_version": "annotation-v1",
+      "case_id": "contrast-d-incorrect-refusal",
+      "case_snapshot_hash": "db4e2854ee6aad749dca8c0bb7eb91015462884ba20bfa41f9ccd732be52cc5d",
+      "dataset_version": "semantic-v1",
+      "dimension_ratings": {},
+      "observed_mode": "no_answer",
+      "provenance": "synthetic_controlled_annotation",
+      "rationale": "Text is the generic decline sentinel; textually a refusal regardless of whether evidence justified it.",
+      "reviewer_id": "reviewer-1",
+      "usable_for_calibration": true
+    },
+    {
+      "annotated_at": "2026-08-26T05:58:24.460647Z",
+      "annotation_schema_version": "annotation-v1",
+      "case_id": "contrast-e-qualified",
+      "case_snapshot_hash": "08ccc3addff8a8603cd44da9f6f0445350096eef9e6a91a65b46e8b0625507d9",
+      "dataset_version": "semantic-v1",
+      "dimension_ratings": {},
+      "observed_mode": "qualified_answer",
+      "provenance": "synthetic_controlled_annotation",
+      "rationale": "Explicitly flags it cannot confirm the value applies; genuine hedge.",
+      "reviewer_id": "reviewer-1",
+      "usable_for_calibration": true
+    },
+    {
+      "annotated_at": "2026-08-26T05:58:24.463693Z",
+      "annotation_schema_version": "annotation-v1",
+      "case_id": "contrast-f-overconfident",
+      "case_snapshot_hash": "0274c0f2faad0f772c745c8333ca28c13f6b8fdda2c3eb23d919c18f4a0fcca1",
+      "dataset_version": "semantic-v1",
+      "dimension_ratings": {},
+      "observed_mode": "substantive_answer",
+      "provenance": "synthetic_controlled_annotation",
+      "rationale": "States one value with full confidence despite conflicting evidence -- no hedge present.",
+      "reviewer_id": "reviewer-1",
+      "usable_for_calibration": true
+    },
+    {
+      "annotated_at": "2026-08-26T05:58:24.466534Z",
+      "annotation_schema_version": "annotation-v1",
+      "case_id": "annot-repo-sso-login-failure",
+      "case_snapshot_hash": "bd99f6e69421c9ebd6beb25ac076a16725bd9c6f7703f7d926329e96ef9d40f1",
+      "dataset_version": "semantic-v1",
+      "dimension_ratings": {},
+      "observed_mode": "substantive_answer",
+      "provenance": "synthetic_controlled_annotation",
+      "rationale": "Direct statement of cause and fix.",
+      "reviewer_id": "reviewer-1",
+      "usable_for_calibration": true
+    },
+    {
+      "annotated_at": "2026-08-26T05:58:24.469583Z",
+      "annotation_schema_version": "annotation-v1",
+      "case_id": "annot-repo-python-version-conflict",
+      "case_snapshot_hash": "956af93b540d9134ba09ccf40403b584182e8c13aa78e217063345658e68d151",
+      "dataset_version": "semantic-v1",
+      "dimension_ratings": {},
+      "observed_mode": "qualified_answer",
+      "provenance": "synthetic_controlled_annotation",
+      "rationale": "Reports the conflicting values found rather than declining outright -- substantive but appropriately hedged.",
+      "reviewer_id": "reviewer-1",
+      "usable_for_calibration": true
+    },
+    {
+      "annotated_at": "2026-08-26T05:58:24.472477Z",
+      "annotation_schema_version": "annotation-v1",
+      "case_id": "annot-repo-neg-parental-leave",
+      "case_snapshot_hash": "eacebd7145b754bde99b500ee7ca470b274818ba6ec957ed18782b17be1bee08",
+      "dataset_version": "semantic-v1",
+      "dimension_ratings": {},
+      "observed_mode": "no_answer",
+      "provenance": "synthetic_controlled_annotation",
+      "rationale": "No HR content ingested; generic decline sentinel used.",
+      "reviewer_id": "reviewer-1",
+      "usable_for_calibration": true
+    },
+    {
+      "annotated_at": "2026-08-26T05:59:04.131264Z",
+      "annotation_schema_version": "annotation-v1",
+      "case_id": "contrast-b-correct-answer",
+      "case_snapshot_hash": "05528b165247bad2b604974347849cd6662e28e31992daa834561d433c815dea",
+      "dataset_version": "semantic-v1",
+      "dimension_ratings": {},
+      "observed_mode": "substantive_answer",
+      "provenance": "synthetic_controlled_annotation",
+      "rationale": "Direct, unhedged causal claim matching the evidence.",
+      "reviewer_id": "reviewer-2",
+      "usable_for_calibration": true
+    },
+    {
+      "annotated_at": "2026-08-26T05:59:04.134062Z",
+      "annotation_schema_version": "annotation-v1",
+      "case_id": "contrast-c-hallucination",
+      "case_snapshot_hash": "e141ec77a3f9557f579554622a1fa9df825af6266e388a6cfc49b0caa8781e9a",
+      "dataset_version": "semantic-v1",
+      "dimension_ratings": {},
+      "observed_mode": "substantive_answer",
+      "provenance": "synthetic_controlled_annotation",
+      "rationale": "Confident specific claim; nothing in the evidence supports a memory leak or deployment 512.",
+      "reviewer_id": "reviewer-2",
+      "usable_for_calibration": true
+    },
+    {
+      "annotated_at": "2026-08-26T05:59:04.136789Z",
+      "annotation_schema_version": "annotation-v1",
+      "case_id": "contrast-e-qualified",
+      "case_snapshot_hash": "08ccc3addff8a8603cd44da9f6f0445350096eef9e6a91a65b46e8b0625507d9",
+      "dataset_version": "semantic-v1",
+      "dimension_ratings": {},
+      "observed_mode": "qualified_answer",
+      "provenance": "synthetic_controlled_annotation",
+      "rationale": "Explicitly says it cannot confirm applicability -- a hedge, not a flat refusal.",
+      "reviewer_id": "reviewer-2",
+      "usable_for_calibration": true
+    },
+    {
+      "annotated_at": "2026-08-26T05:59:04.139425Z",
+      "annotation_schema_version": "annotation-v1",
+      "case_id": "annot-repo-python-version-conflict",
+      "case_snapshot_hash": "956af93b540d9134ba09ccf40403b584182e8c13aa78e217063345658e68d151",
+      "dataset_version": "semantic-v1",
+      "dimension_ratings": {},
+      "observed_mode": "no_answer",
+      "provenance": "synthetic_controlled_annotation",
+      "rationale": "It never actually answers what version is required -- reads as a decline dressed in more words, not a substantive-with-caveat answer.",
+      "reviewer_id": "reviewer-2",
+      "usable_for_calibration": true
+    }
+  ],
+  "resolutions": [
+    {
+      "annotated_at": "2026-08-26T05:59:04.174391Z",
+      "annotation_schema_version": "annotation-v1",
+      "case_id": "annot-repo-python-version-conflict",
+      "case_snapshot_hash": "956af93b540d9134ba09ccf40403b584182e8c13aa78e217063345658e68d151",
+      "dataset_version": "semantic-v1",
+      "dimension_ratings": {},
+      "observed_mode": "qualified_answer",
+      "provenance": "synthetic_controlled_annotation",
+      "rationale": "Distinguishing qualified_answer from no_answer: the text DOES supply substantive content (the specific conflicting version values found), just with appropriate uncertainty about which applies -- a bare refusal would supply no content at all. Siding with reviewer-1.",
+      "resolved_annotation_ids": [
+        "reviewer-1:2026-08-26T05:58:24.469583+00:00",
+        "reviewer-2:2026-08-26T05:59:04.139425+00:00"
+      ],
+      "reviewer_id": "reviewer-3-resolver",
+      "usable_for_calibration": true
+    }
+  ]
+}
