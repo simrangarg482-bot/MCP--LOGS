@@ -1,0 +1,9 @@
+{
+  "name": "ekip-backend-container-worker",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Thin Worker that routes requests into the EKIP backend's Cloudflare Container instance. See wrangler.toml and src/index.ts.",
+  "scripts": {
+    "deploy": "wrangler deploy"
+  }
+}

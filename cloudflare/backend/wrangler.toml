@@ -1,0 +1,43 @@
+# Cloudflare Containers config for the EKIP backend API only.
+#
+# Deliberately NOT used for app.ingestion.workers.main.WorkerSettings or
+# app.agents.workers.main.WorkerSettings (the two arq background workers) --
+# Cloudflare Containers has no standalone/non-HTTP process mode. Per
+# Cloudflare's own docs: "all Container requests are passed through a
+# Worker", and an instance with no incoming requests sleeps after
+# `sleepAfter` (see src/index.ts). A process that does nothing but poll
+# Redis forever, with no incoming HTTP, does not fit that model -- those two
+# workers run on Render instead (../../render.yaml).
+#
+# `image` points at the repo-root Dockerfile (already built for the
+# uvicorn/arq dual-role image; this config only ever runs it in its default
+# CMD, the uvicorn role) -- `wrangler deploy` builds and pushes that image
+# via a local or CI-runner Docker daemon; there is no Docker-free deploy path
+# for Containers today.
+
+name = "ekip-backend"
+main = "src/index.ts"
+compatibility_date = "2026-08-01"
+
+# Non-secret config. Everything secret (DATABASE_URL, REDIS_URL,
+# OPENAI_API_KEY, JWT_SECRET_KEY, CONNECTOR_SECRET_MASTER_KEY,
+# CORS_ALLOWED_ORIGINS) is set via `wrangler secret put <NAME>` instead --
+# see docs/operations/deployment-cloudflare.md -- and forwarded into the
+# container process by src/index.ts's `envVars`.
+[vars]
+ENVIRONMENT = "production"
+LOG_LEVEL = "INFO"
+KMS_PROVIDER = "local"
+
+[[containers]]
+class_name = "BackendContainer"
+image = "../../Dockerfile"
+max_instances = 1
+
+[[durable_objects.bindings]]
+name = "BACKEND_CONTAINER"
+class_name = "BackendContainer"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["BackendContainer"]

@@ -1,0 +1,45 @@
+name: Deploy to Cloudflare
+
+# Triggered by a push to GitHub, as requested -- Cloudflare Pages has its own
+# built-in GitHub integration (configured in the Cloudflare dashboard, not
+# here) for the frontend, so this workflow only handles the backend
+# Container, which `wrangler deploy` builds via Docker (ubuntu-latest runners
+# ship Docker preinstalled, so no extra setup step is needed for that part).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - "alembic.ini"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "Dockerfile"
+      - "cloudflare/backend/**"
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv sync --frozen --no-dev
+      - run: uv run alembic upgrade head
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+  deploy-backend:
+    needs: migrate
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cloudflare/backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install
+      - run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

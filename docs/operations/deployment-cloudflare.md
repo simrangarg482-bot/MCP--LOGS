@@ -1,10 +1,29 @@
-# Deployment (Cloudflare + Render, no Docker)
+# Deployment: Cloudflare Pages + Cloudflare Containers + Render
 
 An alternative to `docs/operations/deployment.md`'s Azure target, for when
 Azure infrastructure access is unavailable (see that doc's "Current status"
 — the Azure path is blocked on subscription permissions, not on anything
-architectural). This path needs no Docker image build from you: Cloudflare
-Pages and Render's native Python runtime both build straight from source.
+architectural).
+
+**Docker is required at one point in this path**: `wrangler deploy` builds
+and pushes the backend's container image via Docker (Cloudflare's own docs:
+"On deploy, Wrangler uploads your Worker, builds and pushes the container
+image with Docker"). The GitHub Actions workflow below runs that build on a
+GitHub-hosted runner (Docker preinstalled), so it never needs to happen on
+your own machine — but it is a real `docker build` somewhere, unavoidably,
+for the Containers half of this deployment. Nothing else in this path
+touches Docker.
+
+## Why the two arq workers aren't on Cloudflare too
+
+Cloudflare Containers only supports request-triggered instances: "all
+Container requests are passed through a Worker" (Cloudflare's own docs), and
+an idle instance sleeps after `sleepAfter` (10 minutes by default) with no
+supported standalone/non-HTTP process mode. `app.ingestion.workers.main.
+WorkerSettings` and `app.agents.workers.main.WorkerSettings` are both
+processes that do nothing but poll Redis forever and never serve HTTP — they
+architecturally do not fit the Containers model. They run on Render instead
+(`render.yaml`, unchanged from that plan otherwise).
 
 ## Target architecture
 
@@ -14,9 +33,14 @@ Pages and Render's native Python runtime both build straight from source.
                     └────────┬─────────┘
                              │ HTTPS (VITE_API_BASE_URL)
                     ┌────────▼─────────┐
-                    │   ekip-backend    │  Render web service
-                    │  (FastAPI, GET    │  uvicorn app.api.main:app
-                    │  /health, /ready) │
+                    │  Worker (thin)    │  cloudflare/backend/src/index.ts
+                    │  routes every     │
+                    │  request in       │
+                    └────────┬─────────┘
+                    ┌────────▼─────────┐
+                    │ Container instance│  FastAPI (Dockerfile's default
+                    │ (Durable Object-  │  CMD: uvicorn app.api.main:app)
+                    │  backed)          │
                     └───┬───────────┬──┘
                         │           │
               ┌─────────▼─┐   ┌────▼──────────┐
@@ -25,99 +49,43 @@ Pages and Render's native Python runtime both build straight from source.
               │ (pgvector)│   │   (rediss://)  │
               └─────┬─────┘   └───┬────────┬───┘
                     │             │        │
-       ┌────────────▼──┐   ┌──────▼───┐ ┌──▼────────────────┐
-       │ ekip-ingestion-│   │  ekip-   │ │ (same Redis queue, │
-       │ worker (Render │   │ agents-  │ │  separate queue    │
-       │ worker; arq)   │   │ worker   │ │  name each)         │
-       └────────────────┘   │ (Render  │ └────────────────────┘
-                             │ worker;  │
-                             │ arq)     │
-                             └──────────┘
+       ┌────────────▼──┐   ┌──────▼───┐ ┌──▼──────┐
+       │ ekip-ingestion-│   │  ekip-   │ │(same     │
+       │ worker (Render;│   │ agents-  │ │ Redis,   │
+       │ no Docker)     │   │ worker   │ │ different│
+       └────────────────┘   │ (Render) │ │ queue    │
+                             └──────────┘ │ names)   │
+                                          └──────────┘
 ```
 
-Four deployables total, matching four things this codebase already runs as
-separate processes:
+| Process | Entrypoint | Where | Docker involved? |
+|---|---|---|---|
+| Frontend | `frontend/` Vite build | Cloudflare Pages | No |
+| Backend API | `uvicorn app.api.main:app` (Dockerfile's default CMD) | Cloudflare Containers | Yes, at `wrangler deploy` build time only |
+| Ingestion worker | `arq app.ingestion.workers.main.WorkerSettings` | Render background worker | No |
+| Agents worker | `arq app.agents.workers.main.WorkerSettings` | Render background worker | No |
 
-| Process | Entrypoint | Where |
-|---|---|---|
-| Frontend | `frontend/` Vite build | Cloudflare Pages |
-| Backend API | `uvicorn app.api.main:app` | Render web service |
-| Ingestion worker | `arq app.ingestion.workers.main.WorkerSettings` | Render background worker |
-| Agents worker | `arq app.agents.workers.main.WorkerSettings` | Render background worker |
-
-The "agents worker" runs the knowledge-gap and pattern-detection scheduled
-scans (`app/agents/workers/main.py`'s `cron_jobs`) — a second, separate arq
-process from the ingestion worker, on the same Redis instance but its own
-queue name (`arq:queue:agents` vs ingestion's default). It exists in the
-codebase today but was never added to `docker-compose.yml`'s single `worker`
-service; this deployment path is the first place both run.
-
-The LangGraph agents themselves (answer/investigation/postmortem —
-`app/agents/`) are **not** a separate deployable: they execute synchronously
-inside the backend process while it handles `/ask` and
-`/incidents/{id}/investigate` requests, exactly as in the Azure design.
+The LangGraph agents (`app/agents/`) are not a separate deployable — they
+execute synchronously inside the backend container while it handles `/ask`
+and `/incidents/{id}/investigate` requests.
 
 ## Prerequisites
 
 - A [Neon](https://neon.tech) Postgres project, `vector` extension enabled
-  (`CREATE EXTENSION IF NOT EXISTS vector;`) — Neon's free tier supports it.
-- An [Upstash](https://upstash.com) Redis database (or any Redis reachable
-  over TLS) — grab its `rediss://` connection string.
-- A [Render](https://render.com) account, this repo connected.
-- A [Cloudflare](https://dash.cloudflare.com) account, Pages enabled.
+  (`CREATE EXTENSION IF NOT EXISTS vector;`).
+- An [Upstash](https://upstash.com) Redis database (TLS, `rediss://`).
+- A [Render](https://render.com) account, this repo connected, for the two
+  workers only.
+- A [Cloudflare](https://dash.cloudflare.com) account with Pages and
+  Containers enabled, and a Cloudflare API token (Workers Scripts: Edit,
+  Containers: Edit) saved as this repo's `CLOUDFLARE_API_TOKEN` GitHub
+  secret.
+- `DATABASE_URL` also saved as a GitHub secret (used by the `migrate` job in
+  `.github/workflows/deploy-cloudflare.yml`).
 
-## 1. Backend + both workers (Render)
+## 1. Frontend — Cloudflare Pages
 
-`render.yaml` at the repo root is a Render Blueprint defining all three
-Python services. In the Render dashboard: **New +** → **Blueprint** → pick
-this repo → Render reads `render.yaml` automatically.
-
-Before the first deploy succeeds, fill in the `sync: false` values in the
-`ekip-shared` env var group (Render dashboard → the group, not this file):
-
-| Var | Value |
-|---|---|
-| `DATABASE_URL` | `postgresql+asyncpg://<user>:<pass>@<neon-host>/<db>?ssl=require` |
-| `REDIS_URL` | `rediss://default:<password>@<upstash-host>:<port>` |
-| `OPENAI_API_KEY` | your real key |
-| `JWT_SECRET_KEY` | `python -c "import secrets; print(secrets.token_urlsafe(48))"` |
-| `CONNECTOR_SECRET_MASTER_KEY` | `python -c "import secrets; print(secrets.token_hex(32))"` |
-| `CORS_ALLOWED_ORIGINS` | your Cloudflare Pages URL, e.g. `https://ekip-frontend.pages.dev` (set after step 2) |
-
-All three services (`ekip-backend`, `ekip-ingestion-worker`,
-`ekip-agents-worker`) read this same group — every one of them constructs
-`Settings()` at startup and needs the required fields (`DATABASE_URL`,
-`REDIS_URL`, `OPENAI_API_KEY`, `JWT_SECRET_KEY`) present, not just the
-backend.
-
-`ekip-backend`'s `preDeployCommand` runs `alembic upgrade head` once per
-deploy before the new instance takes traffic (Starter plan and above; on
-Render's Free plan there's no pre-deploy hook — run
-`uv run alembic upgrade head` by hand from the dashboard's Shell tab after
-the first deploy instead).
-
-**KMS caveat**: `render.yaml` sets `KMS_PROVIDER=local`, which
-`app/shared/config/settings.py` refuses whenever `ENVIRONMENT=production`
-(`_reject_local_kms_in_production`) — and `render.yaml` also sets
-`ENVIRONMENT=production`. Pick one before deploying:
-
-- Set `ENVIRONMENT=production` and switch to `KMS_PROVIDER=azure` (needs a
-  real Azure Key Vault plus `azure_key_vault_url`/`azure_key_vault_key_name`
-  and a service principal's credentials as env vars, since
-  `DefaultAzureCredential` won't have a Render-native managed identity to
-  fall back to — this reintroduces a real Azure dependency, just for
-  connector-secret envelope encryption, not compute), **or**
-- Leave `KMS_PROVIDER=local` and set `ENVIRONMENT=development` instead in
-  the shared env group, accepting `LocalKeyManagementService`'s weaker
-  guarantee (see that class's own docstring) for this deployment.
-
-Not resolved here — this is a real security tradeoff the settings module
-itself is built to force a deliberate choice on, not a default to pick
-silently.
-
-## 2. Frontend (Cloudflare Pages)
-
-In the Cloudflare dashboard: **Workers & Pages** → **Create** → **Pages** →
+Cloudflare dashboard → **Workers & Pages** → **Create** → **Pages** →
 **Connect to Git** → this repo.
 
 | Setting | Value |
@@ -125,46 +93,94 @@ In the Cloudflare dashboard: **Workers & Pages** → **Create** → **Pages** �
 | Root directory | `frontend` |
 | Build command | `npm run build` |
 | Build output directory | `dist` |
+| Env vars | `VITE_API_BASE_URL=<Worker URL from step 2>`, `VITE_USE_MOCK_DATA=false` |
 
-Environment variables (Pages project → Settings → Environment variables):
+`frontend/public/_redirects` (`/* /index.html 200`) handles SPA routing —
+Pages' equivalent of `nginx.conf`'s `try_files` in the Docker build.
 
-| Var | Value |
-|---|---|
-| `VITE_API_BASE_URL` | `ekip-backend`'s Render URL, e.g. `https://ekip-backend.onrender.com` |
-| `VITE_USE_MOCK_DATA` | `false` |
+## 2. Backend — Cloudflare Containers
 
-`frontend/public/_redirects` (`/* /index.html 200`) makes Pages serve
-`index.html` for every client-side route, the same job `nginx.conf`'s
-`try_files ... /index.html` does in the Docker build — Pages has no nginx
-config of its own to read.
+Files already in this repo: `cloudflare/backend/wrangler.toml`,
+`cloudflare/backend/src/index.ts`, `cloudflare/backend/package.json`, and
+`.github/workflows/deploy-cloudflare.yml`.
 
-After the first Pages deploy, copy its `https://<project>.pages.dev` URL
-back into Render's `CORS_ALLOWED_ORIGINS` (step 1) — the backend rejects
-credentialed cross-origin requests from any origin not on that list
-(`app/shared/config/settings.py`'s `_reject_wildcard_origin`: no wildcard is
-ever accepted).
-
-## 3. Verify
+**One-time setup**, from your machine (needs `npm`, and Docker running
+locally only for this manual first pass — every push after this deploys via
+the GitHub Actions workflow instead, whose runner supplies Docker itself):
 
 ```bash
-curl https://ekip-backend.onrender.com/health
-curl https://ekip-backend.onrender.com/ready     # checks DB/Redis reachability
+cd cloudflare/backend
+npm install --save-dev wrangler
+npm install @cloudflare/containers
+npx wrangler login
+
+# Secrets -- set once; wrangler prompts for each value on stdin.
+npx wrangler secret put DATABASE_URL                 # postgresql+asyncpg://<user>:<pass>@<neon-host>/<db>?ssl=require
+npx wrangler secret put REDIS_URL                    # rediss://default:<password>@<upstash-host>:<port>
+npx wrangler secret put OPENAI_API_KEY
+npx wrangler secret put JWT_SECRET_KEY               # python -c "import secrets; print(secrets.token_urlsafe(48))"
+npx wrangler secret put CONNECTOR_SECRET_MASTER_KEY   # python -c "import secrets; print(secrets.token_hex(32))"
+npx wrangler secret put CORS_ALLOWED_ORIGINS         # your Pages URL, e.g. https://ekip-frontend.pages.dev
+
+npx wrangler deploy   # first deploy; note the workers.dev URL it prints
 ```
 
-Then open the Pages URL, sign up a user (`POST /auth/signup` via the UI),
-and ask a question against a connector-free workspace to confirm the
-confidence-gated "I don't know" path works before connecting real sources.
+After this, every push to `main` touching `app/`, `Dockerfile`, or
+`cloudflare/backend/` re-runs migrations and redeploys automatically via
+`.github/workflows/deploy-cloudflare.yml` — no local Docker needed for those
+later deploys.
+
+**KMS caveat**: `wrangler.toml` sets `ENVIRONMENT=production` and
+`KMS_PROVIDER=local`. `app/shared/config/settings.py` refuses exactly that
+combination (`_reject_local_kms_in_production`) — the container will crash
+at startup until you resolve this. Either:
+- switch to `KMS_PROVIDER=azure` (needs a real Azure Key Vault, its
+  `azure_key_vault_url`/`azure_key_vault_key_name` in `wrangler.toml`'s
+  `[vars]`, and a service principal's credentials as additional
+  `wrangler secret put` values, since there's no Azure-managed-identity
+  fallback outside Azure compute), or
+- change `ENVIRONMENT` to `"development"` in `wrangler.toml`'s `[vars]`,
+  accepting `LocalKeyManagementService`'s weaker guarantee (see its own
+  docstring) for this deployment.
+
+Not resolved here — a deliberate security tradeoff, not a default to pick
+silently.
+
+## 3. Both workers — Render
+
+`render.yaml` at the repo root defines `ekip-ingestion-worker` and
+`ekip-agents-worker`. Render dashboard → **New +** → **Blueprint** → this
+repo → Render reads `render.yaml` automatically. Fill in the `sync: false`
+values in the `ekip-shared` env var group — same `DATABASE_URL`/`REDIS_URL`
+as step 2, so both the Cloudflare-hosted backend and these two Render
+workers read from and write to the same Postgres/Redis.
+
+## 4. Verify
+
+```bash
+curl https://<worker-name>.<account>.workers.dev/health
+curl https://<worker-name>.<account>.workers.dev/ready     # checks DB/Redis reachability
+```
+
+Then open the Pages URL, sign up a user, and ask a question against a
+connector-free workspace to confirm the confidence-gated "I don't know" path
+works before connecting real sources. Check Render's logs for both workers
+to confirm they connected to Redis and picked up their respective queues
+(`arq:queue:agents` for the agents worker; ingestion's default queue name
+for the other).
 
 ## What this path does not give you
 
-- **Render's free/starter plans have no VNet/private networking** — Neon and
-  Upstash are reached over the public internet (both are TLS-only by
-  default, which is the load-bearing protection here, same principle as
-  `docs/operations/deployment.md`'s Azure TLS requirements).
-- **No managed identity** — unlike the Azure design's shared user-assigned
-  identity for Key Vault access, this path's secrets are plain Render
-  environment variables. Acceptable for a smaller/non-regulated deployment;
-  revisit if the KMS caveat above pushes you toward real Key Vault access.
-- **Render's free instances spin down after inactivity** — the first request
-  after idle will be slow (cold start); the `starter` plan in `render.yaml`
-  avoids this but costs more than free.
+- **Cold starts on the backend.** After 10 minutes idle, the container
+  instance sleeps; the next request re-runs the Dockerfile's `CMD` from
+  scratch (a few seconds), not instant. Raise `sleepAfter` in
+  `cloudflare/backend/src/index.ts` or accept the cold start.
+- **No horizontal scaling of the backend by default.** `wrangler.toml` sets
+  `max_instances = 1` and `src/index.ts` routes every request to one named
+  instance — correct for this backend today (all state lives in Postgres/
+  Redis, nothing in-process), but revisit both values together if traffic
+  ever needs more than one instance.
+- **No managed identity / VNet.** Neon and Upstash are reached over the
+  public internet (TLS-only by default, the load-bearing protection here);
+  secrets live as Cloudflare/Render environment variables, not a KMS-backed
+  vault, unless you resolve the KMS caveat above.
