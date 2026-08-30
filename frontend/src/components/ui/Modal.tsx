@@ -32,7 +32,7 @@ export function Modal({ open, onClose, title, description, children, className }
   if (!open) return null;
 
   return createPortal(
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 px-4">
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-900/50 px-0 backdrop-blur-[2px] sm:items-center sm:px-4">
       <div
         ref={dialogRef}
         role="dialog"
@@ -40,7 +40,7 @@ export function Modal({ open, onClose, title, description, children, className }
         aria-labelledby="modal-title"
         tabIndex={-1}
         className={cn(
-          "flex max-h-[85vh] w-full max-w-lg flex-col rounded-lg border border-border bg-white shadow-panel",
+          "flex max-h-[92vh] w-full max-w-lg flex-col rounded-t-2xl border border-border bg-white shadow-panel sm:max-h-[85vh] sm:rounded-2xl",
           className,
         )}
       >

@@ -23,7 +23,7 @@ ActionItemStatus = Literal["open", "in_progress", "done"]
 # DATABASE_DESIGN.md: ingestion_jobs.status. `failed_stage` (a separate free-text
 # field, not part of this vocabulary) records *which* pipeline stage failed when
 # status == "failed", per PROJECT_PLAN.md section 4.5's resume-from-stage design.
-IngestionJobStatus = Literal["queued", "running", "succeeded", "failed"]
+IngestionJobStatus = Literal["queued", "running", "succeeded", "failed", "dead_lettered"]
 
 # Where an agent execution / audited action originated (DATABASE_DESIGN.md:
 # agent_executions.trigger_source, and the same vocabulary reused elsewhere).
@@ -52,4 +52,4 @@ class ErrorBody(TypedDict, total=False):
 
     error_code: str
     message: str
-    detail: dict | None 
+    detail: dict | None

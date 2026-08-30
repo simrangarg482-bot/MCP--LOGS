@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { AlertCircle, ShieldAlert, CheckCircle2, BookOpen, Plug, Bot } from "lucide-react";
+import { AlertCircle, ShieldAlert, CheckCircle2, BookOpen, Plug, Bot, ArrowRight, MessageCircleQuestion, Plus } from "lucide-react";
 import {
   Bar,
   BarChart,
@@ -22,6 +22,7 @@ import { StatusBadge } from "@/components/data/StatusBadge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
 import { LoadingState } from "@/components/ui/LoadingState";
 import { ErrorState } from "@/components/ui/ErrorState";
+import { Button } from "@/components/ui/Button";
 import { listIncidents } from "@/api/incidents";
 import { listConnectors } from "@/api/connectors";
 import { listAgentStats } from "@/api/agents";
@@ -65,9 +66,11 @@ export function DashboardPage() {
 
   const incidents = recentIncidentsQuery.data ?? [];
   const breakdownIncidents = breakdownIncidentsQuery.data ?? [];
-  const openCount = incidents.filter((i) => i.status === "open" || i.status === "investigating").length;
-  const criticalCount = incidents.filter((i) => i.severity === "critical").length;
-  const resolvedCount = incidents.filter((i) => i.status === "resolved" || i.status === "closed").length;
+  const openCount = breakdownIncidents.filter((i) => i.status === "open" || i.status === "investigating").length;
+  const criticalCount = breakdownIncidents.filter((i) => i.severity === "critical").length;
+  const resolvedCount = breakdownIncidents.filter((i) => i.status === "resolved" || i.status === "closed").length;
+  const connectedSources = connectorsQuery.data?.filter((connector) => connector.status === "active").length ?? 0;
+  const totalSources = connectorsQuery.data?.filter((connector) => connector.status !== "disconnected").length ?? 0;
 
   const severityBreakdown = (["critical", "high", "medium", "low"] as const)
     .map((severity) => ({
@@ -108,7 +111,18 @@ export function DashboardPage() {
       <PageHeader
         title="Dashboard"
         description="Current state of the engineering environment across incidents, knowledge, and agents."
+        actions={<Button variant="primary" onClick={() => navigate("/ask")}><MessageCircleQuestion className="h-4 w-4" />Ask EKIP</Button>}
       />
+
+      <div className="grid gap-3 lg:grid-cols-[1fr_auto]">
+        <div className="rounded-xl border border-accent-border bg-gradient-to-r from-accent-subtle to-white px-5 py-4">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div><p className="text-sm font-semibold text-ink">Knowledge readiness</p><p className="mt-1 text-xs text-ink-muted">{connectedSources} of {totalSources} configured sources active · {knowledgeQuery.data?.total ?? 0} searchable documents</p></div>
+            <Button size="sm" variant="secondary" onClick={() => navigate("/connectors")}>Review sources<ArrowRight className="h-3.5 w-3.5" /></Button>
+          </div>
+        </div>
+        <Button variant="secondary" className="h-full min-h-16 justify-start px-5 lg:min-w-48" onClick={() => navigate("/incidents/new")}><Plus className="h-4 w-4 text-accent" /><span className="text-left"><span className="block text-xs font-semibold">Create incident</span><span className="block text-[11px] font-normal text-ink-muted">Start a response</span></span></Button>
+      </div>
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         <MetricCard label="Open Incidents" value={openCount} icon={AlertCircle} tone="neutral" />

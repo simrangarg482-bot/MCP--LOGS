@@ -30,6 +30,12 @@ export function AppLayout() {
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-background">
+      <a
+        href="#main-content"
+        className="fixed left-4 top-3 z-[70] -translate-y-20 rounded-md bg-accent px-3 py-2 text-sm font-medium text-white shadow-panel transition-transform focus:translate-y-0"
+      >
+        Skip to content
+      </a>
       {/* Persistent sidebar on desktop (lg+). Below that, the sidebar is an
           off-canvas overlay toggled by the Topbar's hamburger button. */}
       <div className="hidden lg:flex">
@@ -58,8 +64,10 @@ export function AppLayout() {
 
       <div className="flex flex-1 flex-col overflow-hidden">
         <Topbar isMobileNavOpen={mobileNavOpen} onToggleSidebar={() => setMobileNavOpen((open) => !open)} />
-        <main className="flex-1 overflow-y-auto px-4 py-6 scrollbar-thin sm:px-6">
-          <Outlet />
+        <main id="main-content" tabIndex={-1} className="flex-1 overflow-y-auto scrollbar-thin">
+          <div className="mx-auto min-h-full w-full max-w-[1600px] px-4 py-5 sm:px-6 sm:py-6 lg:px-8">
+            <Outlet />
+          </div>
         </main>
       </div>
     </div>

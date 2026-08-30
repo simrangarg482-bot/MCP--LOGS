@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Plug, Plus } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Plug, Plus } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { ConnectorCard } from "@/components/domain/ConnectorCard";
 import { ConnectConnectorModal } from "@/components/domain/ConnectConnectorModal";
@@ -13,6 +13,7 @@ import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { StatusBadge } from "@/components/data/StatusBadge";
 import {
   createAzureDevOpsConnector,
+  createEnterpriseConnector,
   createConfluenceConnector,
   createGithubConnector,
   createJiraConnector,
@@ -23,12 +24,13 @@ import {
   listConnectors,
   triggerConnectorSync,
 } from "@/api/connectors";
-import { listIngestionRuns } from "@/api/ingestion";
+import { listIngestionRuns, replayIngestionRun } from "@/api/ingestion";
 import type { Connector } from "@/types/connector";
 import { useToast } from "@/context/ToastContext";
 import { useAuth } from "@/context/AuthContext";
 import { formatDateTime, formatRelativeTime } from "@/utils/date";
 import { titleCase } from "@/utils/format";
+import { SearchBar } from "@/components/data/SearchBar";
 
 export function ConnectorsPage() {
   const { toast } = useToast();
@@ -41,6 +43,8 @@ export function ConnectorsPage() {
   const [viewing, setViewing] = useState<Connector | null>(null);
   const [isConnectOpen, setIsConnectOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Connector | null>(null);
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "error">("all");
 
   const connectorsQuery = useQuery({ queryKey: ["connectors"], queryFn: listConnectors });
   // `disconnect_connector` (backend) is a status change, not a dropped row
@@ -49,7 +53,14 @@ export function ConnectorsPage() {
   // filters "disconnected" rows out of the visible grid so deleting one
   // reads as deletion here, while its job/document history stays intact
   // server-side for anyone with direct database/audit-log access.
-  const visibleConnectors = connectorsQuery.data?.filter((c) => c.status !== "disconnected") ?? [];
+  const configuredConnectors = connectorsQuery.data?.filter((connector) => connector.status !== "disconnected") ?? [];
+  const visibleConnectors = configuredConnectors.filter((connector) => {
+    const matchesSearch = titleCase(connector.source).toLowerCase().includes(search.trim().toLowerCase());
+    const matchesStatus = statusFilter === "all" || connector.status === statusFilter;
+    return matchesSearch && matchesStatus;
+  });
+  const activeCount = configuredConnectors.filter((connector) => connector.status === "active").length;
+  const errorCount = configuredConnectors.filter((connector) => connector.status === "error").length;
 
   const runsQuery = useQuery({
     queryKey: ["ingestion-runs", viewing?.id],
@@ -65,6 +76,18 @@ export function ConnectorsPage() {
     },
     onError: (_, connector) => {
       toast({ variant: "error", title: `Failed to sync ${titleCase(connector.source)}` });
+    },
+  });
+
+  const replayMutation = useMutation({
+    mutationFn: ({ connectorId, jobId }: { connectorId: string; jobId: string }) =>
+      replayIngestionRun(connectorId, jobId),
+    onSuccess: () => {
+      toast({ variant: "info", title: "Dead-lettered ingestion run queued for replay" });
+      queryClient.invalidateQueries({ queryKey: ["ingestion-runs", viewing?.id] });
+    },
+    onError: () => {
+      toast({ variant: "error", title: "Failed to replay ingestion run" });
     },
   });
 
@@ -165,6 +188,16 @@ export function ConnectorsPage() {
     },
   });
 
+  const enterpriseMutation = useMutation({
+    mutationFn: ({ source, token, config }: { source: "google_drive" | "gitlab" | "notion" | "servicenow" | "pagerduty"; token: string; config: Record<string, unknown> }) =>
+      createEnterpriseConnector(source, token, config),
+    onSuccess: () => {
+      toast({ variant: "success", title: "Enterprise connector added" });
+      queryClient.invalidateQueries({ queryKey: ["connectors"] });
+    },
+    onError: () => toast({ variant: "error", title: "Failed to add enterprise connector" }),
+  });
+
   return (
     <div className="flex flex-col gap-5">
       <PageHeader
@@ -184,15 +217,35 @@ export function ConnectorsPage() {
         }
       />
 
+      {connectorsQuery.data && configuredConnectors.length > 0 && (
+        <>
+          <div className="grid grid-cols-3 gap-3">
+            <button type="button" onClick={() => setStatusFilter("all")} className={`rounded-xl border bg-white p-3 text-left shadow-subtle ${statusFilter === "all" ? "border-accent" : "border-border"}`}>
+              <span className="flex items-center gap-2 text-xs text-ink-muted"><Plug className="h-3.5 w-3.5" />Configured</span><span className="mt-1 block text-xl font-semibold text-ink">{configuredConnectors.length}</span>
+            </button>
+            <button type="button" onClick={() => setStatusFilter("active")} className={`rounded-xl border bg-white p-3 text-left shadow-subtle ${statusFilter === "active" ? "border-success" : "border-border"}`}>
+              <span className="flex items-center gap-2 text-xs text-ink-muted"><CheckCircle2 className="h-3.5 w-3.5 text-success" />Active</span><span className="mt-1 block text-xl font-semibold text-ink">{activeCount}</span>
+            </button>
+            <button type="button" onClick={() => setStatusFilter("error")} className={`rounded-xl border bg-white p-3 text-left shadow-subtle ${statusFilter === "error" ? "border-critical" : "border-border"}`}>
+              <span className="flex items-center gap-2 text-xs text-ink-muted"><AlertTriangle className="h-3.5 w-3.5 text-critical" />Needs attention</span><span className="mt-1 block text-xl font-semibold text-ink">{errorCount}</span>
+            </button>
+          </div>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <SearchBar value={search} onChange={setSearch} placeholder="Find a connected source…" className="w-full sm:max-w-sm" />
+            <p className="text-xs text-ink-muted">Showing {visibleConnectors.length} of {configuredConnectors.length} sources</p>
+          </div>
+        </>
+      )}
+
       {connectorsQuery.isLoading && <LoadingState label="Loading connectors…" />}
       {connectorsQuery.isError && <ErrorState onRetry={() => connectorsQuery.refetch()} />}
       {connectorsQuery.data && visibleConnectors.length === 0 && (
         <EmptyState
           icon={Plug}
-          title="No connectors configured"
-          description="Connect GitHub, Slack, Jira, Confluence, Teams, Azure DevOps, or SharePoint to start ingesting data EKIP can answer questions about."
+          title={configuredConnectors.length === 0 ? "No connectors configured" : "No connectors match this view"}
+          description={configuredConnectors.length === 0 ? "Connect an engineering source to start building searchable, evidence-backed knowledge." : "Try another search term or select a different status."}
           action={
-            canManage ? (
+            canManage && configuredConnectors.length === 0 ? (
               <Button variant="primary" className="gap-1.5" onClick={() => setIsConnectOpen(true)}>
                 <Plus className="h-4 w-4" />
                 Connect a source
@@ -229,6 +282,7 @@ export function ConnectorsPage() {
           teamsMutation.isPending ||
           azureDevOpsMutation.isPending ||
           sharePointMutation.isPending
+          || enterpriseMutation.isPending
         }
         onSubmitGithub={async (token, repos) => {
           await githubMutation.mutateAsync({ token, repos });
@@ -250,6 +304,9 @@ export function ConnectorsPage() {
         }}
         onSubmitSharePoint={async (token, siteIds) => {
           await sharePointMutation.mutateAsync({ token, siteIds });
+        }}
+        onSubmitEnterprise={async (source, token, config) => {
+          await enterpriseMutation.mutateAsync({ source, token, config });
         }}
       />
 
@@ -321,8 +378,26 @@ export function ConnectorsPage() {
                         <span>{run.documentsProcessed} documents processed</span>
                         {run.completedAt && <span>{formatDateTime(run.completedAt)}</span>}
                       </div>
-                      {run.status === "failed" && run.failedStage && (
-                        <p className="text-critical">Failed at stage: {run.failedStage}</p>
+                      <p className="text-ink-subtle">
+                        {run.pagesFetched ?? 0} pages · {run.itemsDiscovered ?? 0} items ·{" "}
+                        {run.itemsSkipped ?? 0} unchanged · {run.chunksEmbedded ?? 0} chunks ·{" "}
+                        {run.retryCount ?? 0} retries
+                      </p>
+                      {(run.status === "failed" || run.status === "dead_lettered") && run.failedStage && (
+                        <p className="text-critical">
+                          Failed at stage: {run.failedStage}
+                          {run.lastErrorType ? ` (${run.lastErrorType})` : ""}
+                        </p>
+                      )}
+                      {run.status === "dead_lettered" && canManage && (
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          isLoading={replayMutation.isPending}
+                          onClick={() => replayMutation.mutate({ connectorId: run.connectorConfigId, jobId: run.id })}
+                        >
+                          Replay run
+                        </Button>
                       )}
                     </li>
                   ))}

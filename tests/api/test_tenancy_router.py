@@ -12,12 +12,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api import main as api_main
-from app.api.deps import get_current_identity
+from app.api.deps import get_arq_pool, get_current_identity
 from app.api.routers import tenancy as tenancy_router
 from app.core.auth.schemas import SessionTokens
 from app.core.tenancy.schemas import (
     AccessRule,
     ConnectorConfig,
+    IngestionRun,
     Invitation,
     Organization,
     Project,
@@ -146,6 +147,88 @@ def test_delete_connector_calls_disconnect_with_callers_own_organization(client,
     assert captured["actor"] is actor
     assert captured["organization_id"] == actor.organization_id
     assert captured["connector_id"] == connector_id
+
+
+def test_connector_event_is_enqueued_idempotently(client, monkeypatch) -> None:
+    test_client, actor = client
+    connector = _connector_config(actor.organization_id)
+    captured: dict[str, object] = {}
+
+    async def fake_get_connector(session, passed_actor, organization_id, connector_id):
+        assert passed_actor is actor
+        assert organization_id == actor.organization_id
+        return connector
+
+    class _Pool:
+        async def enqueue_job(self, function, connector_id, **kwargs):
+            captured.update(function=function, connector_id=connector_id, kwargs=kwargs)
+            return None  # ARQ returns None when the deterministic job id already exists.
+
+    monkeypatch.setattr(tenancy_router.tenancy_service, "get_connector", fake_get_connector)
+    api_main.app.dependency_overrides[get_arq_pool] = lambda: _Pool()
+
+    response = test_client.post(
+        f"/tenancy/connectors/{connector.id}/events",
+        json={"event_id": "github-delivery-42", "event_type": "push"},
+    )
+
+    assert response.status_code == 202
+    assert response.json()["status"] == "duplicate"
+    assert captured["function"] == "run_ingestion_job_task"
+    assert captured["connector_id"] == str(connector.id)
+    assert captured["kwargs"]["_job_id"].startswith(f"ingestion-event:{connector.id}:")
+
+
+def test_dead_lettered_run_can_be_replayed(client, monkeypatch) -> None:
+    test_client, actor = client
+    connector = _connector_config(actor.organization_id)
+    now = datetime.now(timezone.utc)
+    run = IngestionRun(
+        id=uuid.uuid4(),
+        organization_id=actor.organization_id,
+        connector_config_id=connector.id,
+        status="dead_lettered",
+        failed_stage="fetch",
+        documents_processed=3,
+        started_at=now,
+        completed_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    enqueued: list[tuple[str, str, dict]] = []
+
+    async def fake_get_replayable(session, passed_actor, organization_id, connector_id, job_id):
+        assert passed_actor is actor
+        assert organization_id == actor.organization_id
+        assert connector_id == connector.id
+        assert job_id == run.id
+        return run
+
+    class _Pool:
+        async def enqueue_job(self, function, connector_id, **kwargs):
+            enqueued.append((function, connector_id, kwargs))
+            return object()
+
+    monkeypatch.setattr(
+        tenancy_router.tenancy_service,
+        "get_replayable_ingestion_run",
+        fake_get_replayable,
+    )
+    api_main.app.dependency_overrides[get_arq_pool] = lambda: _Pool()
+
+    response = test_client.post(
+        f"/tenancy/connectors/{connector.id}/runs/{run.id}/replay"
+    )
+
+    assert response.status_code == 202
+    assert response.json()["replayed_job_id"] == str(run.id)
+    assert enqueued == [
+        (
+            "run_ingestion_job_task",
+            str(connector.id),
+            {"_job_id": f"ingestion-replay:{run.id}"},
+        )
+    ]
 
 
 # --- admin_router: organizations/projects/sso/access-rules/invitations -------

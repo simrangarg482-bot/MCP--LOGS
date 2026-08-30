@@ -100,7 +100,9 @@ _CONNECTOR_CLASSES = {
 }
 
 
-def test_one_connector(source: str, spec: harness_config.ConnectorSpec, organization_id: uuid.UUID) -> None:
+def _run_one_connector(
+    source: str, spec: harness_config.ConnectorSpec, organization_id: uuid.UUID
+) -> None:
     print(f"\nConnector: {source}")
 
     if not spec.available:
@@ -170,7 +172,7 @@ def main() -> bool:
     organization_id = uuid.UUID(identity["organization_id"])
 
     for source, spec in cfg.connectors.items():
-        test_one_connector(source, spec, organization_id)
+        _run_one_connector(source, spec, organization_id)
 
     print("\nConnector: google_drive")
     print("Authentication       N/A")

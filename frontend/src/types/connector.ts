@@ -10,6 +10,11 @@ export type ConnectorSource =
   | "confluence"
   | "sharepoint"
   | "runbooks"
+  | "google_drive"
+  | "gitlab"
+  | "notion"
+  | "servicenow"
+  | "pagerduty"
   | "monitoring";
 
 /** Mirrors `app.core.tenancy.schemas.ConnectorStatus`. */

@@ -107,8 +107,10 @@ async def _introspect(question: str, organization_id: uuid.UUID) -> dict:
             session, query=question, incident_id=None, actor=actor, llm=llm, retry_count={}
         )
         filters = SearchFilters(organization_id=organization_id, permission_codes=frozenset())
-        candidates = await retrieval_service.search(session, rewritten, filters, 40)
-        reranked = await rerank(rewritten, candidates, top_k=20)
+        # Keep introspection aligned with the production Retrieval Agent's
+        # latency-tuned 24-candidate / 12-context budget.
+        candidates = await retrieval_service.search(session, rewritten, filters, 24)
+        reranked = await rerank(rewritten, candidates, top_k=12)
         assembled = assemble_context(reranked)
         answer = await generate_answer(llm, question, assembled) if assembled else "(no candidates retrieved)"
         citations = build_citations(answer, assembled) if assembled else []

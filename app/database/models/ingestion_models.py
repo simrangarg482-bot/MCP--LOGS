@@ -90,6 +90,12 @@ class IngestionJob(Base):
     # resume-from-stage design (a retry re-runs from here, not from scratch).
     failed_stage: Mapped[str | None] = mapped_column(Text, nullable=True)
     documents_processed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    pages_fetched: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    items_discovered: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    items_skipped: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    chunks_embedded: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error_type: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(

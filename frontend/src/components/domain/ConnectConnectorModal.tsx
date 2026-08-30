@@ -16,10 +16,15 @@ interface ConnectConnectorModalProps {
   onSubmitTeams: (token: string, teamId: string, channels: string[]) => Promise<void>;
   onSubmitAzureDevOps: (token: string, organization: string, projects: string[]) => Promise<void>;
   onSubmitSharePoint: (token: string, siteIds: string[]) => Promise<void>;
+  onSubmitEnterprise: (
+    source: "google_drive" | "gitlab" | "notion" | "servicenow" | "pagerduty",
+    token: string,
+    config: Record<string, unknown>,
+  ) => Promise<void>;
   isSubmitting: boolean;
 }
 
-type SourceTab = "github" | "slack" | "jira" | "confluence" | "teams" | "azure_devops" | "sharepoint";
+type SourceTab = "github" | "slack" | "jira" | "confluence" | "teams" | "azure_devops" | "sharepoint" | "google_drive" | "gitlab" | "notion" | "servicenow" | "pagerduty";
 
 /** Shared list-of-string-keys editor: Slack channel IDs, Jira project keys,
  * and Confluence space keys are all the same shape (a token field plus a
@@ -82,6 +87,7 @@ export function ConnectConnectorModal({
   onSubmitTeams,
   onSubmitAzureDevOps,
   onSubmitSharePoint,
+  onSubmitEnterprise,
   isSubmitting,
 }: ConnectConnectorModalProps) {
   const [tab, setTab] = useState<SourceTab>("github");
@@ -110,6 +116,9 @@ export function ConnectConnectorModal({
 
   const [sharePointToken, setSharePointToken] = useState("");
   const [sharePointSiteIds, setSharePointSiteIds] = useState<string[]>([""]);
+  const [enterpriseToken, setEnterpriseToken] = useState("");
+  const [enterpriseBaseUrl, setEnterpriseBaseUrl] = useState("");
+  const [enterpriseScopes, setEnterpriseScopes] = useState<string[]>([""]);
 
   function resetAndClose() {
     setGithubToken("");
@@ -130,6 +139,9 @@ export function ConnectConnectorModal({
     setAzureDevOpsProjects([""]);
     setSharePointToken("");
     setSharePointSiteIds([""]);
+    setEnterpriseToken("");
+    setEnterpriseBaseUrl("");
+    setEnterpriseScopes([""]);
     setTab("github");
     onClose();
   }
@@ -192,6 +204,19 @@ export function ConnectConnectorModal({
     resetAndClose();
   }
 
+  async function handleEnterpriseSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    if (!enterpriseToken.trim()) return;
+    const values = enterpriseScopes.map((value) => value.trim()).filter(Boolean);
+    let config: Record<string, unknown> = {};
+    if (tab === "google_drive") config = { folder_ids: values };
+    if (tab === "gitlab") config = { base_url: enterpriseBaseUrl.trim() || "https://gitlab.com", projects: values };
+    if (tab === "servicenow") config = { instance_url: enterpriseBaseUrl.trim(), tables: values.length ? values : ["incident", "kb_knowledge"] };
+    if (tab === "pagerduty") config = { service_ids: values };
+    await onSubmitEnterprise(tab as "google_drive" | "gitlab" | "notion" | "servicenow" | "pagerduty", enterpriseToken.trim(), config);
+    resetAndClose();
+  }
+
   return (
     <Modal
       open={open}
@@ -210,6 +235,11 @@ export function ConnectConnectorModal({
             { key: "teams", label: "Teams" },
             { key: "azure_devops", label: "Azure DevOps" },
             { key: "sharepoint", label: "SharePoint" },
+            { key: "google_drive", label: "Drive" },
+            { key: "gitlab", label: "GitLab" },
+            { key: "notion", label: "Notion" },
+            { key: "servicenow", label: "ServiceNow" },
+            { key: "pagerduty", label: "PagerDuty" },
           ]}
           activeKey={tab}
           onChange={(key) => setTab(key as SourceTab)}
@@ -507,6 +537,37 @@ export function ConnectConnectorModal({
 
           <Button type="submit" variant="primary" isLoading={isSubmitting} className="mt-2">
             Connect SharePoint
+          </Button>
+        </form>
+      )}
+
+      {(["google_drive", "gitlab", "notion", "servicenow", "pagerduty"] as string[]).includes(tab) && (
+        <form onSubmit={handleEnterpriseSubmit} className="flex flex-col gap-3">
+          <div>
+            <label htmlFor="enterprise-token" className="mb-1.5 block text-xs font-medium text-ink-muted">
+              {tab === "servicenow" ? "OAuth token or username:password" : "API access token"}
+            </label>
+            <Input id="enterprise-token" type="password" required value={enterpriseToken} onChange={(e) => setEnterpriseToken(e.target.value)} />
+          </div>
+          {(tab === "gitlab" || tab === "servicenow") && (
+            <div>
+              <label htmlFor="enterprise-base-url" className="mb-1.5 block text-xs font-medium text-ink-muted">
+                {tab === "gitlab" ? "GitLab URL" : "Instance URL"}
+              </label>
+              <Input id="enterprise-base-url" type="url" required={tab === "servicenow"} placeholder={tab === "gitlab" ? "https://gitlab.com" : "https://acme.service-now.com"} value={enterpriseBaseUrl} onChange={(e) => setEnterpriseBaseUrl(e.target.value)} />
+            </div>
+          )}
+          {tab !== "notion" && (
+            <KeyListField
+              legend={tab === "google_drive" ? "Folder IDs (empty means all accessible files)" : tab === "gitlab" ? "Projects (group/project)" : tab === "servicenow" ? "Tables" : "Service IDs (empty means all)"}
+              placeholder={tab === "google_drive" ? "1AbCd..." : tab === "gitlab" ? "group/project" : tab === "servicenow" ? "incident" : "PABC123"}
+              ariaLabelPrefix="Scope"
+              values={enterpriseScopes}
+              onChange={setEnterpriseScopes}
+            />
+          )}
+          <Button type="submit" variant="primary" isLoading={isSubmitting} className="mt-2">
+            Connect {tab.replace("_", " ")}
           </Button>
         </form>
       )}

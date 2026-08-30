@@ -59,6 +59,7 @@ Two `APIRouter` instances live in this one file:
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from typing import Annotated
 
@@ -76,6 +77,7 @@ from app.core.tenancy.schemas import (
     AccessRuleCreate,
     ConnectorConfig,
     ConnectorConfigCreate,
+    ConnectorEventTrigger,
     IngestionRun,
     Invitation,
     InvitationAcceptRequest,
@@ -146,6 +148,40 @@ async def sync_connector(
     return {"status": "enqueued", "connector_config_id": str(connector.id)}
 
 
+@router.post(
+    "/connectors/{connector_config_id}/events",
+    status_code=202,
+    dependencies=[Depends(_SYNC_RATE_LIMIT)],
+)
+async def trigger_connector_event(
+    connector_config_id: uuid.UUID,
+    data: ConnectorEventTrigger,
+    actor: CurrentIdentity,
+    session: DbSession,
+    arq_pool: ArqPool,
+) -> dict[str, str]:
+    """Webhook-adapter boundary for low-latency incremental ingestion.
+
+    Provider-specific edge adapters verify GitHub/Slack/Jira signatures and
+    normalize deliveries into this authenticated contract. ``event_id`` is
+    folded into ARQ's job id so provider redelivery is idempotent.
+    """
+    connector = await tenancy_service.get_connector(
+        session, actor, actor.organization_id, connector_config_id
+    )
+    event_digest = hashlib.sha256(data.event_id.encode()).hexdigest()[:32]
+    queued = await arq_pool.enqueue_job(
+        "run_ingestion_job_task",
+        str(connector.id),
+        _job_id=f"ingestion-event:{connector.id}:{event_digest}",
+    )
+    return {
+        "status": "enqueued" if queued is not None else "duplicate",
+        "connector_config_id": str(connector.id),
+        "event_id": data.event_id,
+    }
+
+
 @router.delete("/connectors/{connector_config_id}", response_model=ConnectorConfig)
 async def delete_connector(
     connector_config_id: uuid.UUID, actor: CurrentIdentity, session: DbSession
@@ -182,6 +218,38 @@ async def list_ingestion_runs(
     return await tenancy_service.list_ingestion_runs(
         session, actor, actor.organization_id, connector_config_id, limit=limit, offset=offset
     )
+
+
+@router.post(
+    "/connectors/{connector_config_id}/runs/{job_id}/replay",
+    status_code=202,
+    dependencies=[Depends(_SYNC_RATE_LIMIT)],
+)
+async def replay_ingestion_run(
+    connector_config_id: uuid.UUID,
+    job_id: uuid.UUID,
+    actor: CurrentIdentity,
+    session: DbSession,
+    arq_pool: ArqPool,
+) -> dict[str, str]:
+    """Explicitly replay a dead-lettered run as a fresh, auditable attempt."""
+    run = await tenancy_service.get_replayable_ingestion_run(
+        session,
+        actor,
+        actor.organization_id,
+        connector_config_id,
+        job_id,
+    )
+    queued = await arq_pool.enqueue_job(
+        "run_ingestion_job_task",
+        str(run.connector_config_id),
+        _job_id=f"ingestion-replay:{run.id}",
+    )
+    return {
+        "status": "enqueued" if queued is not None else "duplicate",
+        "connector_config_id": str(run.connector_config_id),
+        "replayed_job_id": str(run.id),
+    }
 
 
 admin_router = APIRouter(tags=["tenancy-admin"])

@@ -5,14 +5,14 @@ Azure infrastructure access is unavailable (see that doc's "Current status"
 — the Azure path is blocked on subscription permissions, not on anything
 architectural).
 
-**Docker is required at one point in this path**: `wrangler deploy` builds
-and pushes the backend's container image via Docker (Cloudflare's own docs:
-"On deploy, Wrangler uploads your Worker, builds and pushes the container
-image with Docker"). The GitHub Actions workflow below runs that build on a
-GitHub-hosted runner (Docker preinstalled), so it never needs to happen on
-your own machine — but it is a real `docker build` somewhere, unavoidably,
-for the Containers half of this deployment. Nothing else in this path
-touches Docker.
+**Docker is required at one point in this path, but never on your machine**:
+`wrangler deploy` builds and pushes the backend's container image via Docker
+(Cloudflare's own docs: "On deploy, Wrangler uploads your Worker, builds and
+pushes the container image with Docker"). `.github/workflows/
+deploy-cloudflare.yml` runs that build — and every other step, including
+pushing secrets — entirely on a GitHub-hosted runner (Docker preinstalled).
+Nothing in this path requires installing Docker, Node, or the wrangler CLI
+locally; you only ever add secrets to GitHub and push.
 
 ## Why the two arq workers aren't on Cloudflare too
 
@@ -78,10 +78,21 @@ and `/incidents/{id}/investigate` requests.
   workers only.
 - A [Cloudflare](https://dash.cloudflare.com) account with Pages and
   Containers enabled, and a Cloudflare API token (Workers Scripts: Edit,
-  Containers: Edit) saved as this repo's `CLOUDFLARE_API_TOKEN` GitHub
-  secret.
-- `DATABASE_URL` also saved as a GitHub secret (used by the `migrate` job in
-  `.github/workflows/deploy-cloudflare.yml`).
+  Containers: Edit).
+- Every value below saved as a GitHub Actions repo secret (Settings →
+  Secrets and variables → Actions → "New repository secret") — this is the
+  only manual setup step; no local Docker/Node/wrangler needed anywhere:
+
+  | Secret name | Value |
+  |---|---|
+  | `CLOUDFLARE_API_TOKEN` | the API token above |
+  | `CLOUDFLARE_ACCOUNT_ID` | Cloudflare dashboard → Workers & Pages → Overview (right sidebar); only strictly required if the token has access to more than one account |
+  | `DATABASE_URL` | `postgresql+asyncpg://<user>:<pass>@<neon-host>/<db>?ssl=require` |
+  | `REDIS_URL` | `rediss://default:<password>@<upstash-host>:<port>` |
+  | `OPENAI_API_KEY` | your real key |
+  | `JWT_SECRET_KEY` | `python -c "import secrets; print(secrets.token_urlsafe(48))"` |
+  | `CONNECTOR_SECRET_MASTER_KEY` | `python -c "import secrets; print(secrets.token_hex(32))"` |
+  | `CORS_ALLOWED_ORIGINS` | your Pages URL, e.g. `https://ekip-frontend.pages.dev` (set once you have it from step 1) |
 
 ## 1. Frontend — Cloudflare Pages
 
@@ -102,33 +113,19 @@ Pages' equivalent of `nginx.conf`'s `try_files` in the Docker build.
 
 Files already in this repo: `cloudflare/backend/wrangler.toml`,
 `cloudflare/backend/src/index.ts`, `cloudflare/backend/package.json`, and
-`.github/workflows/deploy-cloudflare.yml`.
+`.github/workflows/deploy-cloudflare.yml`. Nothing to run locally — once the
+GitHub secrets from the prerequisites section above are set, push (or
+manually trigger the workflow the first time from the Actions tab) and
+`.github/workflows/deploy-cloudflare.yml` does everything: installs
+`wrangler`/`@cloudflare/containers` on the runner, pushes every secret to
+the Worker (`wrangler secret put`, non-interactive via
+`CLOUDFLARE_API_TOKEN`), runs `alembic upgrade head`, then `wrangler deploy`
+(which builds and pushes the container image via the runner's own Docker,
+never yours). Check the Actions run's log for the `*.workers.dev` URL
+`wrangler deploy` prints — that's the backend's public URL.
 
-**One-time setup**, from your machine (needs `npm`, and Docker running
-locally only for this manual first pass — every push after this deploys via
-the GitHub Actions workflow instead, whose runner supplies Docker itself):
-
-```bash
-cd cloudflare/backend
-npm install --save-dev wrangler
-npm install @cloudflare/containers
-npx wrangler login
-
-# Secrets -- set once; wrangler prompts for each value on stdin.
-npx wrangler secret put DATABASE_URL                 # postgresql+asyncpg://<user>:<pass>@<neon-host>/<db>?ssl=require
-npx wrangler secret put REDIS_URL                    # rediss://default:<password>@<upstash-host>:<port>
-npx wrangler secret put OPENAI_API_KEY
-npx wrangler secret put JWT_SECRET_KEY               # python -c "import secrets; print(secrets.token_urlsafe(48))"
-npx wrangler secret put CONNECTOR_SECRET_MASTER_KEY   # python -c "import secrets; print(secrets.token_hex(32))"
-npx wrangler secret put CORS_ALLOWED_ORIGINS         # your Pages URL, e.g. https://ekip-frontend.pages.dev
-
-npx wrangler deploy   # first deploy; note the workers.dev URL it prints
-```
-
-After this, every push to `main` touching `app/`, `Dockerfile`, or
-`cloudflare/backend/` re-runs migrations and redeploys automatically via
-`.github/workflows/deploy-cloudflare.yml` — no local Docker needed for those
-later deploys.
+Every later push to `main` touching `app/`, `Dockerfile`, or
+`cloudflare/backend/` re-runs the same workflow automatically.
 
 **KMS caveat**: `wrangler.toml` sets `ENVIRONMENT=production` and
 `KMS_PROVIDER=local`. `app/shared/config/settings.py` refuses exactly that

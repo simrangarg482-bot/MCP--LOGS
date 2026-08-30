@@ -88,3 +88,37 @@ async def test_normal_status_transitions_are_unaffected() -> None:
     )
 
     assert result.status == "active"
+
+
+@pytest.mark.asyncio
+async def test_ingestion_checkpoint_patch_preserves_status_and_user_config() -> None:
+    row = _FakeConnectorConfigRow(status="active")
+    row.config = {"repos": [{"repo": "acme/api"}]}
+    session = _FakeSession(row)
+
+    result = await repository.patch_connector_config_ingestion_checkpoint(
+        session,
+        row.id,
+        config_patch={"_ingestion_checkpoint": {"cursor": "page-2"}},
+    )
+
+    assert result.status == "active"
+    assert result.config == {
+        "repos": [{"repo": "acme/api"}],
+        "_ingestion_checkpoint": {"cursor": "page-2"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_ingestion_checkpoint_does_not_mutate_disconnected_connector() -> None:
+    row = _FakeConnectorConfigRow(status="disconnected")
+    row.config = {"repos": [{"repo": "acme/api"}]}
+    session = _FakeSession(row)
+
+    await repository.patch_connector_config_ingestion_checkpoint(
+        session,
+        row.id,
+        config_patch={"_ingestion_checkpoint": {"cursor": "page-2"}},
+    )
+
+    assert row.config == {"repos": [{"repo": "acme/api"}]}

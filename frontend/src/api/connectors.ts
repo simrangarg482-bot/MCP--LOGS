@@ -2,6 +2,7 @@ import { apiRequest, mockDelay } from "./client";
 import { USE_MOCK_DATA } from "./config";
 import type {
   Connector,
+  ConnectorSource,
   CreateAzureDevOpsConnectorInput,
   CreateConfluenceConnectorInput,
   CreateGithubConnectorInput,
@@ -17,6 +18,17 @@ export async function listConnectors(): Promise<Connector[]> {
     return mockDelay(mockConnectors);
   }
   return apiRequest<Connector[]>(`/tenancy/connectors`);
+}
+
+export async function createEnterpriseConnector(
+  source: Extract<ConnectorSource, "google_drive" | "gitlab" | "notion" | "servicenow" | "pagerduty">,
+  token: string,
+  config: Record<string, unknown>,
+): Promise<Connector> {
+  return apiRequest<Connector>(`/tenancy/connectors`, {
+    method: "POST",
+    body: { source, credentialRef: token, config },
+  });
 }
 
 export async function createGithubConnector(input: CreateGithubConnectorInput): Promise<Connector> {

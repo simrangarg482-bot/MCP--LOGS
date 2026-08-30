@@ -68,6 +68,11 @@ ConnectorSource = Literal[
     "confluence",
     "sharepoint",
     "runbooks",
+    "google_drive",
+    "gitlab",
+    "notion",
+    "servicenow",
+    "pagerduty",
     "monitoring",
 ]
 """`"monitoring"` (added alongside `agents.investigation.live.
@@ -77,7 +82,7 @@ reachable only as a live-evidence source for the Investigation Agent, not as
 a document-ingestion connector. A `connector_configs` row with
 `source="monitoring"` is therefore only ever consulted by
 `agents.investigation.evidence`, never by `app.ingestion.workers`; registering
-one will not enqueue ingestion jobs the way the other seven sources would.
+one will not enqueue ingestion jobs the way the ingestion-backed sources do.
 """
 ConnectorStatus = Literal["connecting", "active", "error", "disconnected"]
 AccessRuleType = Literal["domain", "group"]
@@ -223,8 +228,16 @@ class ConnectorConfig(BaseModel):
     updated_at: datetime
 
 
+class ConnectorEventTrigger(BaseModel):
+    """Normalized event from a signature-verifying provider adapter."""
+
+    event_id: str = Field(min_length=1, max_length=512)
+    event_type: str = Field(min_length=1, max_length=128)
+    occurred_at: datetime | None = None
+
+
 # Matches `app.shared.schemas.common.IngestionJobStatus` exactly.
-IngestionRunStatus = Literal["queued", "running", "succeeded", "failed"]
+IngestionRunStatus = Literal["queued", "running", "succeeded", "failed", "dead_lettered"]
 
 
 class IngestionRun(BaseModel):
@@ -252,6 +265,12 @@ class IngestionRun(BaseModel):
     status: IngestionRunStatus
     failed_stage: str | None
     documents_processed: int
+    pages_fetched: int = 0
+    items_discovered: int = 0
+    items_skipped: int = 0
+    chunks_embedded: int = 0
+    retry_count: int = 0
+    last_error_type: str | None = None
     started_at: datetime | None
     completed_at: datetime | None
     created_at: datetime
@@ -274,8 +293,20 @@ class IngestionJobStats(BaseModel):
     run_count: int
     succeeded_count: int
     failed_count: int
+    dead_lettered_count: int = 0
     avg_duration_seconds: float | None
     total_documents_processed: int
+    total_pages_fetched: int = 0
+    total_items_discovered: int = 0
+    total_items_skipped: int = 0
+    total_chunks_embedded: int = 0
+    total_retries: int = 0
+
+
+class IngestionQueueHealth(BaseModel):
+    queued_jobs: int
+    oldest_queued_age_seconds: float | None
+    worker_max_concurrency: int
 
 
 # --- Organization access rules (domain / group auto-join) --------------------

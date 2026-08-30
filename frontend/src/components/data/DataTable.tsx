@@ -46,7 +46,7 @@ export function DataTable<T>({
   return (
     <div className="overflow-x-auto scrollbar-thin">
       <table className="w-full min-w-[720px] border-collapse text-left text-sm">
-        <thead className="sticky top-0 z-10 bg-slate-50">
+        <thead className="sticky top-0 z-10 bg-slate-50/95 backdrop-blur">
           <tr className="border-b border-border">
             {columns.map((col) => {
               const isSorted = sortKey === col.key;
@@ -56,7 +56,7 @@ export function DataTable<T>({
                   scope="col"
                   aria-sort={col.sortable ? (isSorted ? (sortDir === "asc" ? "ascending" : "descending") : "none") : undefined}
                   className={cn(
-                    "whitespace-nowrap px-4 py-2.5 text-xs font-medium text-ink-muted",
+                    "whitespace-nowrap px-4 py-3 text-[11px] font-semibold uppercase tracking-wide text-ink-muted",
                     col.headerClassName,
                   )}
                 >
@@ -108,7 +108,7 @@ export function DataTable<T>({
                 )}
               >
                 {columns.map((col) => (
-                  <td key={col.key} className={cn("whitespace-nowrap px-4 py-3 text-ink", col.className)}>
+                  <td key={col.key} className={cn("whitespace-nowrap px-4 py-3.5 text-ink", col.className)}>
                     {col.render(row)}
                   </td>
                 ))}

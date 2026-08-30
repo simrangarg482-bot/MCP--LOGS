@@ -11,6 +11,11 @@ export type KnowledgeSource =
   | "confluence"
   | "sharepoint"
   | "runbooks"
+  | "google_drive"
+  | "gitlab"
+  | "notion"
+  | "servicenow"
+  | "pagerduty"
   | "monitoring";
 
 /** Mirrors `app.shared.schemas.DocumentStatus` -- a rejected proposal is soft-deleted, not a third status value. */

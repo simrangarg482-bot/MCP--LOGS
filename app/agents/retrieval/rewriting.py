@@ -17,6 +17,7 @@ ingestion's undocumented-but-necessary reads earlier in this project.
 
 from __future__ import annotations
 
+import re
 import uuid
 
 from langchain_core.language_models import BaseChatModel
@@ -48,10 +49,37 @@ _VAGUE_REFERENCE_TERMS = (
     "same issue",
 )
 
+_ABBREVIATIONS = {
+    "sso": "single sign-on",
+    "oidc": "OpenID Connect",
+    "saml": "Security Assertion Markup Language",
+    "rbac": "role-based access control",
+    "slo": "service level objective",
+    "sla": "service level agreement",
+    "p0": "priority zero",
+    "p1": "priority one",
+    "rca": "root cause analysis",
+}
+
 
 def _looks_vague(query: str) -> bool:
     lowered = query.lower()
     return any(term in lowered for term in _VAGUE_REFERENCE_TERMS)
+
+
+def _expand_abbreviations(query: str) -> str:
+    """Expand common enterprise terms without spending an LLM round-trip."""
+    expanded = query
+    for abbreviation, meaning in _ABBREVIATIONS.items():
+        pattern = rf"\b{re.escape(abbreviation)}\b"
+        if re.search(pattern, expanded, flags=re.IGNORECASE):
+            expanded = re.sub(
+                pattern,
+                lambda match, expansion=meaning: f"{match.group(0)} ({expansion})",
+                expanded,
+                flags=re.IGNORECASE,
+            )
+    return expanded
 
 
 async def rewrite_query(
@@ -73,6 +101,7 @@ async def rewrite_query(
     documented terminal-error behavior of its own in AGENT_WORKFLOWS.md
     section 2.1 (only the hybrid-retrieval stage does).
     """
+    query = _expand_abbreviations(query.strip())
     incident_description: str | None = None
     if incident_id is not None:
         # Deliberately not wrapped in the same try/except as the LLM call

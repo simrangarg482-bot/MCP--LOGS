@@ -90,6 +90,11 @@ async def search(
 
     query_embedding = await embedding.embed_query(query)
 
+    if collection is None and not include_metadata:
+        dense = await _store.search_all(session, query_embedding, filters, top_k)
+        lexical = await _store.lexical_search_all(session, query, filters, top_k)
+        return reciprocal_rank_fusion([dense, lexical], top_k=top_k)
+
     result_lists: list[list[ScoredChunk]] = []
     for collection_name in collections_to_search:
         result_lists.append(

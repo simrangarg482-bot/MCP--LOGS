@@ -18,7 +18,12 @@ import pytest
 
 from app.core.exceptions import ConflictError, NotFoundError, PermissionDeniedError, ValidationError
 from app.core.tenancy import service as tenancy_service
-from app.core.tenancy.schemas import ConnectorConfigCreate, OrganizationCreate, SSOConfigurationCreate
+from app.core.tenancy.schemas import (
+    ConnectorConfig,
+    ConnectorConfigCreate,
+    OrganizationCreate,
+    SSOConfigurationCreate,
+)
 from app.shared.schemas import ActorKind, Identity
 from app.shared.security import decrypt_secret, get_kms
 
@@ -88,6 +93,24 @@ async def test_register_connector_encrypts_credential_before_storing(monkeypatch
     # security-audit fix: identical sensitivity, previously inconsistent).
     assert result.credential_ref == tenancy_service._REDACTED_CREDENTIAL
     assert result.credential_ref != stored_credential_ref
+
+
+def test_connector_redaction_removes_worker_owned_config_state() -> None:
+    row = _FakeConnectorConfigRow(
+        organization_id=uuid.uuid4(),
+        source="sharepoint",
+        credential_ref="encrypted-ref",
+        config={
+            "site_ids": ["public-site-id"],
+            "_resume_token": "sensitive-delta-link",
+            "_ingestion_checkpoint": {"cursor": "sensitive-page-cursor"},
+        },
+    )
+
+    result = tenancy_service._redact_credential(ConnectorConfig.model_validate(row))
+
+    assert result.credential_ref == tenancy_service._REDACTED_CREDENTIAL
+    assert result.config == {"site_ids": ["public-site-id"]}
 
 
 @pytest.mark.asyncio

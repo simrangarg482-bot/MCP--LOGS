@@ -24,17 +24,20 @@ platform-wide view, not an oversight in this router).
 
 from __future__ import annotations
 
+import time
 from datetime import datetime
 
 from fastapi import APIRouter
 
 from app.agents import service as agents_service
 from app.agents.schemas import AgentExecutionStats
-from app.api.deps import CurrentIdentity, DbSession
+from app.api.deps import ArqPool, CurrentIdentity, DbSession
 from app.core.observability import service as observability_service
 from app.core.observability.schemas import McpToolStats
 from app.core.tenancy import service as tenancy_service
-from app.core.tenancy.schemas import IngestionJobStats
+from app.core.tenancy.schemas import IngestionJobStats, IngestionQueueHealth
+from app.core.users.service import require_permission
+from app.shared.config.settings import get_settings
 
 router = APIRouter(prefix="/observability", tags=["observability"])
 
@@ -64,3 +67,24 @@ async def get_ingestion_job_stats(
     since: datetime | None = None,
 ) -> list[IngestionJobStats]:
     return await tenancy_service.get_ingestion_job_stats(session, actor, since=since)
+
+
+@router.get("/ingestion/queue", response_model=IngestionQueueHealth)
+async def get_ingestion_queue_health(
+    actor: CurrentIdentity,
+    arq_pool: ArqPool,
+) -> IngestionQueueHealth:
+    """Live queue pressure complementing database-backed run history."""
+    require_permission(actor, "observability:read")
+    queue_name = "arq:queue:ingestion"
+    queued_jobs = int(await arq_pool.zcard(queue_name))
+    oldest = await arq_pool.zrange(queue_name, 0, 0, withscores=True)
+    oldest_age = None
+    if oldest:
+        _job, score_ms = oldest[0]
+        oldest_age = max(0.0, time.time() - (float(score_ms) / 1000))
+    return IngestionQueueHealth(
+        queued_jobs=queued_jobs,
+        oldest_queued_age_seconds=oldest_age,
+        worker_max_concurrency=get_settings().ingestion_worker_max_jobs,
+    )

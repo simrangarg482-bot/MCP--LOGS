@@ -5,6 +5,13 @@ name: Deploy to Cloudflare
 # here) for the frontend, so this workflow only handles the backend
 # Container, which `wrangler deploy` builds via Docker (ubuntu-latest runners
 # ship Docker preinstalled, so no extra setup step is needed for that part).
+#
+# Deliberately does EVERYTHING here, including pushing secrets
+# (`wrangler secret put`) -- so nothing in this deployment ever requires
+# Docker, Node, or the wrangler CLI installed on a developer machine. Set
+# every value this workflow references (below) as a GitHub Actions repo
+# secret once (Settings -> Secrets and variables -> Actions); every push
+# after that redeploys with no further local setup.
 
 on:
   push:
@@ -39,7 +46,23 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - run: npm install
+      - run: npm install --save-dev wrangler && npm install @cloudflare/containers
+      # Re-pushes every secret on every deploy -- `wrangler secret put` is
+      # idempotent (overwrite, not append), so this is safe to repeat rather
+      # than a one-time-only step, and means no secret ever has to be set by
+      # hand from a developer machine.
+      - name: Push secrets to the Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          echo "${{ secrets.DATABASE_URL }}" | npx wrangler secret put DATABASE_URL
+          echo "${{ secrets.REDIS_URL }}" | npx wrangler secret put REDIS_URL
+          echo "${{ secrets.OPENAI_API_KEY }}" | npx wrangler secret put OPENAI_API_KEY
+          echo "${{ secrets.JWT_SECRET_KEY }}" | npx wrangler secret put JWT_SECRET_KEY
+          echo "${{ secrets.CONNECTOR_SECRET_MASTER_KEY }}" | npx wrangler secret put CONNECTOR_SECRET_MASTER_KEY
+          echo "${{ secrets.CORS_ALLOWED_ORIGINS }}" | npx wrangler secret put CORS_ALLOWED_ORIGINS
       - run: npx wrangler deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

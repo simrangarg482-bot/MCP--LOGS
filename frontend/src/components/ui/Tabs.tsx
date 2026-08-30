@@ -57,7 +57,7 @@ export function Tabs({ items, activeKey, onChange, idPrefix = "tabs" }: TabsProp
   }
 
   return (
-    <div role="tablist" className="flex items-center gap-1 overflow-x-auto border-b border-border scrollbar-thin">
+    <div role="tablist" className="flex items-center gap-1 overflow-x-auto border-b border-border pb-px scrollbar-thin">
       {items.map((item, index) => {
         const isActive = item.key === activeKey;
         return (

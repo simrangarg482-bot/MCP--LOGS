@@ -16,11 +16,18 @@ from __future__ import annotations
 
 from arq.cron import cron
 
-from app.ingestion.workers.tasks import run_ingestion_job_task, scheduled_reconciliation
+from app.ingestion.workers.tasks import MAX_JOB_TRIES, run_ingestion_job_task, scheduled_reconciliation
 from app.shared.config.logging import configure_logging
+from app.shared.config.settings import get_settings
+from app.shared.config.tracing import configure_worker_tracing
 from app.shared.redis_settings import build_redis_settings
 
 configure_logging()
+_settings = get_settings()
+
+
+async def _on_startup(ctx: dict) -> None:
+    configure_worker_tracing("ekip-ingestion-worker")
 
 
 class WorkerSettings:
@@ -29,6 +36,7 @@ class WorkerSettings:
     """
 
     functions = [run_ingestion_job_task]
+    on_startup = _on_startup
     # Hourly reconciliation (minute=0, every hour) -- PROJECT_PLAN.md
     # section 4.4's "periodic reconciliation pass ... even for
     # webhook-supported sources". Omitting `hour` means "every hour", per
@@ -52,7 +60,7 @@ class WorkerSettings:
     # arq's own default retry has no backoff built in, so relying on
     # `max_tries` alone would satisfy only the "bounded" half of section
     # 4.5's requirement, not the "exponential backoff" half.
-    max_tries = 3
+    max_tries = MAX_JOB_TRIES
     # arq's own default (300s) is tight for a first *full* sync: each
     # `fetch_batch` call is throttled by the per-connector token bucket in
     # `app.shared.rate_limiter` (e.g. Slack's own declared
@@ -73,9 +81,14 @@ class WorkerSettings:
     # one call per document, competing for the same CPU as everything
     # else running on the machine. 30 minutes was a reasoned estimate, not
     # a measurement; this is the measurement. Still not unbounded headroom
-    # -- an even larger repo (or a slower machine) can still exceed this --
-    # see `app.ingestion.service._execute_ingestion_job`'s own docstring
-    # for why true stage-level resume (rather than a bigger fixed ceiling)
-    # is the real fix for that, flagged there as a larger, separate
-    # undertaking rather than assumed already solved by this number.
-    job_timeout = 3600
+    # -- an even larger repo (or a slower machine) can still exceed this.
+    # Page-level durable checkpoints in `app.ingestion.service` now make
+    # that ceiling recoverable: the next attempt resumes remote pagination
+    # rather than restarting from page one.
+    job_timeout = _settings.ingestion_job_timeout_seconds
+    # ARQ defaults to ten concurrent jobs. Each ingestion job performs
+    # sentence-transformer inference and can hold a sizeable document batch
+    # in memory; ten concurrent full syncs on a small worker cause CPU/memory
+    # contention that presents to operators as random connector timeouts.
+    # Keep this explicit and configurable per deployment size.
+    max_jobs = _settings.ingestion_worker_max_jobs

@@ -39,11 +39,41 @@ envVarGroups:
       - key: JWT_SECRET_KEY
         sync: false # generate: python -c "import secrets; print(secrets.token_urlsafe(48))"
       - key: KMS_PROVIDER
-        value: local
-      - key: CONNECTOR_SECRET_MASTER_KEY
-        sync: false # generate: python -c "import secrets; print(secrets.token_hex(32))"
+        value: azure
+      - key: AZURE_KEY_VAULT_URL
+        sync: false
+      - key: AZURE_KEY_VAULT_KEY_NAME
+        sync: false
+      # DefaultAzureCredential uses these on Render (which has no Azure
+      # managed identity). Keep all three as secret dashboard values.
+      - key: AZURE_TENANT_ID
+        sync: false
+      - key: AZURE_CLIENT_ID
+        sync: false
+      - key: AZURE_CLIENT_SECRET
+        sync: false
       - key: CORS_ALLOWED_ORIGINS
         sync: false # e.g. https://ekip-frontend.pages.dev (unused by the workers themselves, kept here only because Settings() loads the whole env)
+      - key: INGESTION_JOB_TIMEOUT_SECONDS
+        value: 3600
+      - key: INGESTION_WORKER_MAX_JOBS
+        value: 2
+      - key: INGESTION_CHECKPOINT_TTL_SECONDS
+        value: 86400
+      - key: INGESTION_MAX_PAGES_PER_ATTEMPT
+        value: 10000
+      - key: INGESTION_MAX_ITEMS_PER_PAGE
+        value: 2000
+      - key: INGESTION_MAX_DOCUMENT_BYTES
+        value: 10000000
+      - key: INGESTION_MAX_CHUNKS_PER_DOCUMENT
+        value: 1000
+      - key: EMBEDDING_WORKER_THREADS
+        value: 1
+      - key: EMBEDDING_BATCH_SIZE
+        value: 32
+      - key: OTEL_EXPORTER_OTLP_ENDPOINT
+        sync: false
 
 services:
   - type: worker

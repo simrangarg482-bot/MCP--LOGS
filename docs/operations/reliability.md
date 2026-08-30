@@ -23,9 +23,26 @@ None of these had an infinite-retry risk (all confirmed bounded before this phas
 
 **Worker `job_timeout` asymmetry fixed**: `app.ingestion.workers.main` explicitly set 1800s; `app.agents.workers.main` had silently fallen through to arq's 300s default despite an analogous "could scale with organization volume" concern. Now explicitly 600s, with reasoning documented inline for why it's not simply copied from ingestion's value.
 
-**Ingestion `job_timeout` raised 1800s → 3600s (real-world follow-up)**: a real full sync against an actual GitHub connector hit the 30-minute ceiling and was killed mid-embedding, losing the entire (transactional) sync. Root cause: `app.ingestion.connectors.github`'s full sync runs four phases per repo (files, commits, pulls, issues), each embedding synchronously via a local, CPU-bound `sentence-transformers` model (`app.retrieval.embedding`) -- one call per document, on whatever CPU the machine has free. 1800s was a reasoned estimate; 3600s is a measurement-informed adjustment, not a guarantee -- an even larger repo (or slower hardware) can still exceed it. The real fix for that ceiling is stage-level resumability (retrying from where a sync left off, not from the top), explicitly flagged as a separate, larger undertaking in `_execute_ingestion_job`'s own docstring, not attempted here.
+**Ingestion timeout recovery**: a real full sync against GitHub exceeded the original 30-minute ceiling because every repository walks files, commits, pull requests, and issues while generating local CPU-bound embeddings. The hard ceiling remains bounded and is configurable with `INGESTION_JOB_TIMEOUT_SECONDS` (3600s default), but it is no longer the primary progress mechanism. After every fully persisted connector page, `_execute_ingestion_job` stores a versioned cursor, fixed incremental watermark, connector-config fingerprint, and timestamp. A timeout/retry resumes that cursor; an expired checkpoint, changed connector configuration, or different full/incremental mode invalidates it and restarts safely. Checkpoint age is bounded by `INGESTION_CHECKPOINT_TTL_SECONDS` (24h default).
 
-**Known, disclosed nuance** (not fixed, documented): `run_ingestion_job_task` redelivery is data-idempotent (content-hash dedup prevents duplicate `Document`/chunk rows) but not audit-row-idempotent (a redelivered job creates a second `ingestion_jobs` row). Low-severity, not addressed this phase.
+**Worker saturation and duplicate execution**: ingestion worker concurrency is explicit (`INGESTION_WORKER_MAX_JOBS`, default 2) instead of ARQ's resource-heavy default of 10. A Redis token-guarded connector lock prevents a manual sync, reconciliation tick, or second worker replica from processing the same connector concurrently. The lock has a TTL beyond the hard job ceiling and uses compare-and-delete release, so a dead process cannot leave a permanent lock and one worker cannot release another's lock.
+
+**Provider throttling/outages**: connector reads retry transport failures and HTTP 408/425/429/500/502/503/504. `Retry-After` is honored with a 60s cap; permanent 4xx responses still fail immediately.
+
+**Known nuance**: ARQ redelivery after a real failed attempt creates a separate `ingestion_jobs` history row, while document/chunk writes remain content-hash idempotent. Concurrent duplicate deliveries are suppressed by the Redis connector lock. After the third failed attempt, the last run becomes `dead_lettered` and must be explicitly replayed with `POST /tenancy/connectors/{connector_id}/runs/{job_id}/replay`; exhausted work is never retried forever.
+
+## Ingestion resource guards
+
+Every connector is subject to hard, configurable attempt limits before untrusted provider data can exhaust a worker:
+
+| Setting | Default | Protects against |
+|---|---:|---|
+| `INGESTION_MAX_PAGES_PER_ATTEMPT` | 10,000 | cyclic or effectively unbounded pagination |
+| `INGESTION_MAX_ITEMS_PER_PAGE` | 2,000 | unexpectedly oversized provider responses |
+| `INGESTION_MAX_DOCUMENT_BYTES` | 10 MB | single-document memory spikes |
+| `INGESTION_MAX_CHUNKS_PER_DOCUMENT` | 1,000 | pathological chunk/embedding amplification |
+
+The shared connector contract also rejects `has_more=true` without a cursor and repeated cursors. These failures are recorded as `IngestionSafetyLimitError`, are visible in run history without leaking exception text, and follow the same bounded retry/dead-letter policy.
 
 ## Rate limiting (Phase 6.5)
 
@@ -44,7 +61,11 @@ New `app/api/rate_limit.py` — three dependency factories (`rate_limit_by_ip`/`
 | `POST /search/similar-incidents`, `POST /search/recent-changes` | user | 30/min | Lighter than `/ask`/`/investigate`. |
 | `POST /tenancy/connectors/{id}/sync` | organization | 10/min | Aggregate org load on the shared ingestion queue/connector budgets, not per-user. |
 
-**In-process only**, same disclosed limitation `app.ingestion`'s own budgets already carry: multiple API replicas would each enforce an independent view, multiplying the real ceiling by replica count. A Redis-backed distributed limiter is the correct production fix once this application runs more than one replica -- flagged as follow-up, not silently assumed solved.
+The human-facing API limits remain process-local. Ingestion provider budgets are now Redis-backed: the Lua token-bucket operation uses Redis server time and atomically refills/consumes connector and organization buckets, so adding worker replicas does not multiply outbound provider traffic. If an ingestion task is invoked outside ARQ without Redis context (principally unit tests and direct maintenance calls), it deliberately falls back to the existing in-process limiter.
+
+## Embedding and persistence throughput
+
+Sentence-transformer inference runs on a dedicated bounded executor (`EMBEDDING_WORKER_THREADS`, default 1) instead of the event loop's shared executor. A timed-out encode cannot spawn an unbounded number of replacement threads, and `EMBEDDING_BATCH_SIZE` controls the model batch. Chunk vectors are persisted with one multi-values PostgreSQL upsert per document/collection instead of one round trip per chunk. This is process isolation inside the ingestion worker, not an independently autoscaled embedding service; deployments that need GPU-backed horizontal embedding scale should split that boundary in a later architecture change.
 
 ## AI cost budget enforcement (Phase 6.6)
 
@@ -58,7 +79,7 @@ Phase 5 built *telemetry* (recording actual token usage after the fact); this ph
 
 ## Not done this phase (disclosed, not silent)
 
-- **6.7 Performance benchmarking**: not run. Requires a live database/Redis/OpenAI to produce meaningful numbers against real latency -- this environment has none (see `docs/operations/migration-recovery.md`'s disposable-database blocker, unresolved).
-- **6.8 Failure injection**: partially covered by existing tests (`tests/api/test_health.py` mocks DB/Redis unavailability at the check-function level; `app.api.main._lifespan`'s Redis-startup-failure handling is exercised). Real socket-level failure injection (an actual connection refusal, an actual OpenAI timeout) was not attempted -- same environment blocker.
+- **6.7 Performance benchmarking**: the repeatable procedure and acceptance gates are defined in `docs/operations/ingestion-runbook.md`. Baseline numbers still have to be captured in the target environment because provider, database, Redis, and CPU latency determine the meaningful result.
+- **6.8 Failure injection**: automated tests cover provider timeouts/429s, database disconnect retries, cancellation, lock failures, cyclic pagination, and final-attempt dead-lettering. The target-environment socket/process drills are defined in `docs/operations/ingestion-runbook.md`; they are intentionally not claimed as executed against infrastructure that was not available here.
 - Azure Key Vault client timeout -- flagged, not configured (low severity, not a hot-path call).
-- Distributed (Redis-backed) rate limiting -- flagged as the correct fix once this application runs multiple replicas; in-process is correct for the current single-replica deployment shape.
+- Human-facing API rate limiting remains process-local; ingestion worker rate limiting is distributed through Redis.

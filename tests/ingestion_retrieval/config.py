@@ -77,7 +77,11 @@ def _slack_spec() -> ConnectorSpec:
     channel_ids = _csv("EKIP_TEST_SLACK_CHANNEL_IDS")
     if not token or not channel_ids:
         return ConnectorSpec(
-            "slack", False, None, {}, "EKIP_TEST_SLACK_BOT_TOKEN / EKIP_TEST_SLACK_CHANNEL_IDS not set"
+            "slack",
+            False,
+            None,
+            {},
+            "EKIP_TEST_SLACK_BOT_TOKEN / EKIP_TEST_SLACK_CHANNEL_IDS not set",
         )
     return ConnectorSpec("slack", True, token, {"channels": channel_ids})
 
@@ -87,7 +91,9 @@ def _github_spec() -> ConnectorSpec:
     repo = _get("EKIP_TEST_GITHUB_REPO")
     ref = _get("EKIP_TEST_GITHUB_REF", "main")
     if not token or not repo:
-        return ConnectorSpec("github", False, None, {}, "EKIP_TEST_GITHUB_TOKEN / EKIP_TEST_GITHUB_REPO not set")
+        return ConnectorSpec(
+            "github", False, None, {}, "EKIP_TEST_GITHUB_TOKEN / EKIP_TEST_GITHUB_REPO not set"
+        )
     return ConnectorSpec("github", True, token, {"repos": [{"repo": repo, "ref": ref}]})
 
 
@@ -104,7 +110,9 @@ def _jira_spec() -> ConnectorSpec:
             {},
             "EKIP_TEST_JIRA_BASE_URL / EKIP_TEST_JIRA_EMAIL / EKIP_TEST_JIRA_API_TOKEN / EKIP_TEST_JIRA_PROJECTS not set",
         )
-    return ConnectorSpec("jira", True, f"{email}:{api_token}", {"base_url": base_url, "projects": projects})
+    return ConnectorSpec(
+        "jira", True, f"{email}:{api_token}", {"base_url": base_url, "projects": projects}
+    )
 
 
 def _confluence_spec() -> ConnectorSpec:
@@ -182,6 +190,70 @@ def _runbooks_spec() -> ConnectorSpec:
     return ConnectorSpec("runbooks", True, "unused", {})
 
 
+def _google_drive_spec() -> ConnectorSpec:
+    token = _get("EKIP_TEST_GOOGLE_DRIVE_ACCESS_TOKEN")
+    if not token:
+        return ConnectorSpec(
+            "google_drive", False, None, {}, "EKIP_TEST_GOOGLE_DRIVE_ACCESS_TOKEN not set"
+        )
+    return ConnectorSpec(
+        "google_drive", True, token, {"folder_ids": _csv("EKIP_TEST_GOOGLE_DRIVE_FOLDER_IDS")}
+    )
+
+
+def _gitlab_spec() -> ConnectorSpec:
+    token = _get("EKIP_TEST_GITLAB_TOKEN")
+    projects = _csv("EKIP_TEST_GITLAB_PROJECTS")
+    if not token or not projects:
+        return ConnectorSpec(
+            "gitlab", False, None, {}, "EKIP_TEST_GITLAB_TOKEN / EKIP_TEST_GITLAB_PROJECTS not set"
+        )
+    return ConnectorSpec(
+        "gitlab",
+        True,
+        token,
+        {"base_url": _get("EKIP_TEST_GITLAB_BASE_URL", "https://gitlab.com"), "projects": projects},
+    )
+
+
+def _notion_spec() -> ConnectorSpec:
+    token = _get("EKIP_TEST_NOTION_TOKEN")
+    return ConnectorSpec(
+        "notion", bool(token), token, {}, "EKIP_TEST_NOTION_TOKEN not set" if not token else ""
+    )
+
+
+def _servicenow_spec() -> ConnectorSpec:
+    credential = _get("EKIP_TEST_SERVICENOW_CREDENTIAL")
+    instance_url = _get("EKIP_TEST_SERVICENOW_INSTANCE_URL")
+    if not credential or not instance_url:
+        return ConnectorSpec(
+            "servicenow",
+            False,
+            None,
+            {},
+            "EKIP_TEST_SERVICENOW_CREDENTIAL / EKIP_TEST_SERVICENOW_INSTANCE_URL not set",
+        )
+    return ConnectorSpec(
+        "servicenow",
+        True,
+        credential,
+        {
+            "instance_url": instance_url,
+            "tables": _csv("EKIP_TEST_SERVICENOW_TABLES") or ["incident", "kb_knowledge"],
+        },
+    )
+
+
+def _pagerduty_spec() -> ConnectorSpec:
+    token = _get("EKIP_TEST_PAGERDUTY_TOKEN")
+    if not token:
+        return ConnectorSpec("pagerduty", False, None, {}, "EKIP_TEST_PAGERDUTY_TOKEN not set")
+    return ConnectorSpec(
+        "pagerduty", True, token, {"service_ids": _csv("EKIP_TEST_PAGERDUTY_SERVICE_IDS")}
+    )
+
+
 @dataclass(frozen=True)
 class Config:
     base_url: str
@@ -205,6 +277,11 @@ def load_config() -> Config:
             _sharepoint_spec(),
             _azure_devops_spec(),
             _runbooks_spec(),
+            _google_drive_spec(),
+            _gitlab_spec(),
+            _notion_spec(),
+            _servicenow_spec(),
+            _pagerduty_spec(),
         )
     }
     return Config(

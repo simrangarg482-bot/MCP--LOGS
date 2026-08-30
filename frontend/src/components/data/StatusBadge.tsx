@@ -22,6 +22,7 @@ const STATUS_TONE: Record<AnyStatus, BadgeTone> = {
   running: "accent",
   succeeded: "success",
   failed: "critical",
+  dead_lettered: "critical",
 };
 
 export function StatusBadge({ status }: { status: AnyStatus }) {

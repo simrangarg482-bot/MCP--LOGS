@@ -20,6 +20,8 @@ from app.database.session import session_scope
 from app.ingestion import repository, service
 from app.shared.backoff import full_jitter_backoff_seconds
 from app.shared.config.logging import get_logger
+from app.shared.config.settings import get_settings
+from app.shared.distributed_rate_limiter import RedisTokenBucketRateLimiter
 
 logger = get_logger(__name__)
 
@@ -30,6 +32,50 @@ logger = get_logger(__name__)
 # -- so this task computes and requests its own defer via `Retry`, rather
 # than relying on arq's default behavior to already satisfy this literally.
 _MAX_BACKOFF_SECONDS = 300
+MAX_JOB_TRIES = 3
+_LOCK_RELEASE_SCRIPT = """
+if redis.call('get', KEYS[1]) == ARGV[1] then
+    return redis.call('del', KEYS[1])
+end
+return 0
+"""
+
+
+async def _acquire_connector_lock(
+    ctx: dict, connector_config_id: str
+) -> tuple[object, str, str] | None:
+    """Acquire a crash-safe, cross-process lock for one connector sync.
+
+    API clicks and hourly reconciliation can enqueue the same connector at
+    once, and production commonly runs more than one worker replica. The
+    token prevents one worker from releasing another's lock; the TTL makes a
+    hard process death self-healing. Direct unit invocations without ARQ's
+    Redis context retain the pre-lock behavior.
+    """
+    redis = ctx.get("redis")
+    if redis is None:
+        logger.warning("ingestion_connector_lock_unavailable", connector_config_id=connector_config_id)
+        return (None, "", "")
+    key = f"ekip:ingestion:lock:{connector_config_id}"
+    token = f"{ctx.get('job_id', '')}:{uuid.uuid4()}"
+    ttl = get_settings().ingestion_job_timeout_seconds + _MAX_BACKOFF_SECONDS
+    acquired = await redis.set(key, token, ex=ttl, nx=True)
+    if not acquired:
+        return None
+    return redis, key, token
+
+
+async def _release_connector_lock(lock: tuple[object, str, str]) -> None:
+    redis, key, token = lock
+    if redis is None:
+        return
+    try:
+        await redis.eval(_LOCK_RELEASE_SCRIPT, 1, key, token)
+    except Exception:
+        # The TTL is the recovery mechanism if Redis disappears during
+        # cleanup. Never replace the job's real outcome with a lock cleanup
+        # exception.
+        logger.warning("ingestion_connector_lock_release_failed", lock_key=key, exc_info=True)
 
 
 async def run_ingestion_job_task(ctx: dict, connector_config_id: str) -> None:
@@ -65,9 +111,42 @@ async def run_ingestion_job_task(ctx: dict, connector_config_id: str) -> None:
         connector_config_id=connector_config_id,
     )
     try:
+        lock = await _acquire_connector_lock(ctx, connector_config_id)
+    except Exception as exc:
+        if attempt >= MAX_JOB_TRIES:
+            _log_exhausted(connector_config_id, attempt, error=f"lock acquisition failed: {exc}")
+            structlog.contextvars.clear_contextvars()
+            return
+        _schedule_retry(connector_config_id, attempt, error=f"lock acquisition failed: {exc}", cause=exc)
+        return
+    if lock is None:
+        logger.info(
+            "ingestion_job_task_skipped_duplicate",
+            connector_config_id=connector_config_id,
+            attempt=attempt,
+        )
+        structlog.contextvars.clear_contextvars()
+        return
+    try:
         try:
             async with session_scope() as session:
-                job = await service.run_ingestion_job(session, uuid.UUID(connector_config_id))
+                rate_limit_kwargs = (
+                    {
+                        "rate_limiter": RedisTokenBucketRateLimiter(ctx["redis"]),
+                        "attempt_number": attempt,
+                    }
+                    if ctx.get("redis") is not None
+                    else {}
+                )
+                job = await service.run_ingestion_job(
+                    session,
+                    uuid.UUID(connector_config_id),
+                    **rate_limit_kwargs,
+                )
+                if job.status == "failed" and attempt >= MAX_JOB_TRIES:
+                    job = await service.dead_letter_ingestion_job(
+                        session, job.id, job.organization_id
+                    )
         except EKIPError as exc:
             if exc.error_code == "connector_config.disconnected":
                 # Deliberately NOT a `_schedule_retry` case: this is not a
@@ -85,12 +164,27 @@ async def run_ingestion_job_task(ctx: dict, connector_config_id: str) -> None:
                     attempt=attempt,
                 )
                 return
+            if attempt >= MAX_JOB_TRIES:
+                _log_exhausted(connector_config_id, attempt, error=str(exc))
+                return
             _schedule_retry(connector_config_id, attempt, error=str(exc), cause=exc)
             return
         except Exception as exc:
+            if attempt >= MAX_JOB_TRIES:
+                _log_exhausted(connector_config_id, attempt, error=str(exc))
+                return
             _schedule_retry(connector_config_id, attempt, error=str(exc), cause=exc)
             return
 
+        if job.status == "dead_lettered":
+            logger.error(
+                "ingestion_job_dead_lettered",
+                job_id=str(job.id),
+                connector_config_id=connector_config_id,
+                attempt=attempt,
+                failed_stage=job.failed_stage,
+            )
+            return
         if job.status == "failed":
             _schedule_retry(
                 connector_config_id, attempt, error=f"job failed at stage '{job.failed_stage}'"
@@ -98,7 +192,17 @@ async def run_ingestion_job_task(ctx: dict, connector_config_id: str) -> None:
             return
         logger.info("ingestion_job_task_completed", job_id=str(job.id), status=job.status)
     finally:
+        await _release_connector_lock(lock)
         structlog.contextvars.clear_contextvars()
+
+
+def _log_exhausted(connector_config_id: str, attempt: int, *, error: str) -> None:
+    logger.error(
+        "ingestion_job_exhausted_before_start",
+        connector_config_id=connector_config_id,
+        attempt=attempt,
+        error=error,
+    )
 
 
 def _schedule_retry(

@@ -5,10 +5,22 @@
 @layer base {
   html {
     -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
   }
 
   body {
     @apply bg-background text-ink font-sans text-base antialiased;
+    margin: 0;
+    min-width: 320px;
+  }
+
+  body::before {
+    background: radial-gradient(circle at 80% -20%, rgb(219 234 254 / 0.55), transparent 34rem);
+    content: "";
+    inset: 0;
+    pointer-events: none;
+    position: fixed;
+    z-index: -1;
   }
 
   :focus-visible {

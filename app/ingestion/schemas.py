@@ -133,6 +133,12 @@ class IngestionJob(BaseModel):
     status: IngestionJobStatus
     failed_stage: str | None
     documents_processed: int
+    pages_fetched: int = 0
+    items_discovered: int = 0
+    items_skipped: int = 0
+    chunks_embedded: int = 0
+    retry_count: int = 0
+    last_error_type: str | None = None
     started_at: datetime | None
     completed_at: datetime | None
     created_at: datetime

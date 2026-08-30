@@ -15,3 +15,16 @@ export async function listIngestionRuns(connectorConfigId: string): Promise<Inge
   }
   return apiRequest<IngestionRun[]>(`/tenancy/connectors/${connectorConfigId}/runs`);
 }
+
+export async function replayIngestionRun(
+  connectorConfigId: string,
+  jobId: string,
+): Promise<{ status: string }> {
+  if (USE_MOCK_DATA) {
+    return mockDelay({ status: "enqueued" });
+  }
+  return apiRequest<{ status: string }>(
+    `/tenancy/connectors/${connectorConfigId}/runs/${jobId}/replay`,
+    { method: "POST" },
+  );
+}

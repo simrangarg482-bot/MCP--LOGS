@@ -48,8 +48,8 @@ logger = get_logger(__name__)
 # wider than the final context window, per PROJECT_PLAN.md section 5.3's
 # two-stage pattern (cheap recall over a larger set, expensive precision
 # over a smaller one).
-_CANDIDATE_POOL_SIZE = 40
-_RERANKED_TOP_K = 20
+_CANDIDATE_POOL_SIZE = 24
+_RERANKED_TOP_K = 12
 
 
 def make_retrieval_agent_node(

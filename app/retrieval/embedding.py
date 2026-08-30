@@ -30,11 +30,17 @@ ranking result.
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
+from functools import partial
 
 from sentence_transformers import SentenceTransformer
+from opentelemetry import trace
+
+from app.shared.config.settings import get_settings
 
 _MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"  # ENGINEERING_DECISIONS.md #006
+tracer = trace.get_tracer(__name__)
 
 # Bounds the CPU-bound `encode()` call (and, on first use per process, the
 # model-weights download it triggers via `_get_model`) so a stall here
@@ -62,13 +68,39 @@ def _get_model() -> SentenceTransformer:
     return SentenceTransformer(_MODEL_NAME)
 
 
+@lru_cache
+def _get_embedding_executor() -> ThreadPoolExecutor:
+    """Dedicated bounded executor so timed-out encodes cannot multiply in
+    asyncio's shared, comparatively large default executor.
+    """
+    return ThreadPoolExecutor(
+        max_workers=get_settings().embedding_worker_threads,
+        thread_name_prefix="ekip-embedding",
+    )
+
+
+async def _encode(value: str | list[str]):
+    model = _get_model()
+    loop = asyncio.get_running_loop()
+    call = partial(
+        model.encode,
+        value,
+        normalize_embeddings=True,
+        batch_size=get_settings().embedding_batch_size,
+    )
+    item_count = len(value) if isinstance(value, list) else 1
+    with tracer.start_as_current_span("retrieval.embed") as span:
+        span.set_attribute("embedding.model", _MODEL_NAME)
+        span.set_attribute("embedding.item_count", item_count)
+        return await asyncio.wait_for(
+            loop.run_in_executor(_get_embedding_executor(), call),
+            timeout=_ENCODE_TIMEOUT_SECONDS,
+        )
+
+
 async def embed_query(query: str) -> list[float]:
     """Embed a single search query string."""
-    model = _get_model()
-    vector = await asyncio.wait_for(
-        asyncio.to_thread(model.encode, query, normalize_embeddings=True),
-        timeout=_ENCODE_TIMEOUT_SECONDS,
-    )
+    vector = await _encode(query)
     return vector.tolist()
 
 
@@ -83,9 +115,5 @@ async def embed_texts(texts: list[str]) -> list[list[float]]:
     """
     if not texts:
         return []
-    model = _get_model()
-    vectors = await asyncio.wait_for(
-        asyncio.to_thread(model.encode, texts, normalize_embeddings=True),
-        timeout=_ENCODE_TIMEOUT_SECONDS,
-    )
+    vectors = await _encode(texts)
     return vectors.tolist()

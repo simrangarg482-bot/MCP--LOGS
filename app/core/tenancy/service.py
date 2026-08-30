@@ -41,7 +41,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit.service import record_audit_event
 from app.core.exceptions import ConflictError, NotFoundError, PermissionDeniedError, ValidationError
 from app.core.tenancy import repository
-from app.database.session import set_tenant_context
 from app.core.tenancy.schemas import (
     AccessRule,
     AccessRuleCreate,
@@ -61,6 +60,7 @@ from app.core.tenancy.schemas import (
 )
 from app.core.users import repository as users_repository
 from app.core.users.service import require_permission, require_project_permission
+from app.database.session import set_tenant_context
 from app.shared.config.logging import get_logger
 from app.shared.schemas import Identity
 from app.shared.security import encrypt_secret, generate_opaque_token, get_kms, hash_opaque_token
@@ -442,7 +442,14 @@ def _redact_credential(config: ConnectorConfig) -> ConnectorConfig:
     inconsistency a Phase 3 security audit found: identical sensitivity,
     previously returned unredacted here).
     """
-    return config.model_copy(update={"credential_ref": _REDACTED_CREDENTIAL})
+    # Underscore-prefixed values are reserved worker state (for example
+    # SharePoint delta links and ingestion pagination checkpoints). Provider
+    # cursors can embed bearer-like query parameters and must never be
+    # serialized through the connector-management API.
+    public_config = {key: value for key, value in config.config.items() if not key.startswith("_")}
+    return config.model_copy(
+        update={"credential_ref": _REDACTED_CREDENTIAL, "config": public_config}
+    )
 
 
 async def register_connector(
@@ -593,6 +600,34 @@ async def list_ingestion_runs(
     return [IngestionRun.model_validate(row) for row in rows]
 
 
+async def get_replayable_ingestion_run(
+    session: AsyncSession,
+    actor: Identity,
+    organization_id: uuid.UUID,
+    connector_config_id: uuid.UUID,
+    job_id: uuid.UUID,
+) -> IngestionRun:
+    """Authorize an explicit replay of one exhausted ingestion attempt."""
+    connector = await get_connector(session, actor, organization_id, connector_config_id)
+    row = await repository.get_ingestion_run(
+        session, organization_id, connector.id, job_id
+    )
+    if row is None:
+        raise NotFoundError(
+            "Ingestion run not found.",
+            error_code="ingestion_job.not_found",
+            detail={"job_id": str(job_id)},
+        )
+    run = IngestionRun.model_validate(row)
+    if run.status != "dead_lettered":
+        raise ConflictError(
+            "Only a dead-lettered ingestion run can be replayed.",
+            error_code="ingestion_job.not_replayable",
+            detail={"job_id": str(job_id), "status": run.status},
+        )
+    return run
+
+
 async def get_ingestion_job_stats(
     session: AsyncSession, actor: Identity, *, since: datetime | None = None
 ) -> list[IngestionJobStats]:
@@ -611,10 +646,16 @@ async def get_ingestion_job_stats(
             run_count=row.run_count,
             succeeded_count=int(row.succeeded_count or 0),
             failed_count=int(row.failed_count or 0),
+            dead_lettered_count=int(getattr(row, "dead_lettered_count", 0) or 0),
             avg_duration_seconds=(
                 float(row.avg_duration_seconds) if row.avg_duration_seconds is not None else None
             ),
             total_documents_processed=int(row.total_documents_processed or 0),
+            total_pages_fetched=int(getattr(row, "total_pages_fetched", 0) or 0),
+            total_items_discovered=int(getattr(row, "total_items_discovered", 0) or 0),
+            total_items_skipped=int(getattr(row, "total_items_skipped", 0) or 0),
+            total_chunks_embedded=int(getattr(row, "total_chunks_embedded", 0) or 0),
+            total_retries=int(getattr(row, "total_retries", 0) or 0),
         )
         for row in rows
     ]
@@ -682,6 +723,38 @@ async def update_connector_sync_status(
         resource_id=connector_config_id,
         metadata={"status": status},
     )
+    return _redact_credential(ConnectorConfig.model_validate(row))
+
+
+async def checkpoint_connector_sync(
+    session: AsyncSession,
+    actor: Identity,
+    organization_id: uuid.UUID,
+    connector_config_id: uuid.UUID,
+    *,
+    config_patch: dict,
+) -> ConnectorConfig:
+    """Durably save an ingestion cursor without emitting an audit event.
+
+    Status changes remain audited through :func:`update_connector_sync_status`.
+    This separate system-only path exists because pagination checkpoints are
+    operational state written after every completed page, not user/domain
+    actions. Tenant ownership is still checked at both the service and query
+    boundaries.
+    """
+    _ensure_same_organization(actor, organization_id)
+    existing = await repository.get_connector_config_by_id(session, connector_config_id)
+    if existing is None or existing.organization_id != organization_id:
+        raise NotFoundError(
+            "Connector configuration not found.",
+            error_code="connector_config.not_found",
+            detail={"connector_config_id": str(connector_config_id)},
+        )
+    row = await repository.patch_connector_config_ingestion_checkpoint(
+        session, connector_config_id, config_patch=config_patch
+    )
+    if row is None:
+        raise RuntimeError("Connector configuration disappeared mid-update.")
     return _redact_credential(ConnectorConfig.model_validate(row))
 
 

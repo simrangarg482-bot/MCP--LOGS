@@ -162,11 +162,21 @@ def _normalize_top_similarity(raw_fused_score: float) -> float:
 
 
 def _normalize_rerank_score(raw_score: float) -> float:
-    """Cross-encoder scores (`agents.retrieval.reranking`) are unbounded
-    logits, not a 0-1 similarity -- squash through a sigmoid so this signal
-    sits on a comparable scale to the other 0-1 signals before weighting.
+    """Calibrate the fixed MS-MARCO cross-encoder logit onto 0-1.
+
+    A plain ``sigmoid(raw_score)`` was badly miscalibrated for this model:
+    live, answer-bearing results commonly score between -8 and -3, so it
+    mapped useful evidence to effectively zero and routed every benchmark
+    question to Investigation.  The center (-8) and temperature (2) are
+    based on the 2026-08-30 controlled live trace: -8 is borderline and -3
+    is strong. Sufficiency and grounding still fail closed after this gate;
+    this calibration only lets plausible evidence reach those checks.
     """
-    return 1.0 / (1.0 + math.exp(-raw_score))
+    calibrated_logit = (raw_score + 8.0) / 2.0
+    if calibrated_logit >= 0:
+        return 1.0 / (1.0 + math.exp(-calibrated_logit))
+    exp_value = math.exp(calibrated_logit)
+    return exp_value / (1.0 + exp_value)
 
 
 def _distinct_source_count_signal(chunks: list[ScoredChunk]) -> float:

@@ -1,6 +1,6 @@
 # EKIP Live Connector Integration Tests
 
-Real, pytest-shaped integration tests for all 8 of EKIP's ingestion
+Real, pytest-shaped integration tests for all 13 of EKIP's ingestion
 connectors — one file per connector, each making genuine network calls (or,
 for Runbooks, a genuine database read) against real external services using
 real credentials. **No existing application, connector, or unit-test file
@@ -62,6 +62,11 @@ connector specifically).
 | `test_sharepoint_live.py` | Real Graph `/me` auth check; real file fetch + normalize (pre-filtered to supported extensions); Graph `@odata.nextLink` pagination; client-side `since` filtering | `EKIP_TEST_SHAREPOINT_ACCESS_TOKEN` (already-issued Graph token, expires ~1hr), `EKIP_TEST_SHAREPOINT_SITE_IDS` |
 | `test_azure_devops_live.py` | Real `_apis/projects` auth check; real WIQL work-item query + normalize; pagination via WIQL result-list length; real WIQL `[System.ChangedDate] >=` filtering | `EKIP_TEST_AZURE_DEVOPS_ORG`, `EKIP_TEST_AZURE_DEVOPS_PAT`, `EKIP_TEST_AZURE_DEVOPS_PROJECTS` |
 | `test_runbooks_live.py` | No network call (internal connector) — real DB read of the bootstrapped test org's postmortems + normalize; page-length-heuristic pagination; `since` pass-through | None (needs project's own `DATABASE_URL` only) |
+
+The combined `test_enterprise_connectors_live.py` additionally checks real
+authentication, first-page fetch, and normalization for Google Drive, GitLab,
+Notion, ServiceNow, and PagerDuty. Its required `EKIP_TEST_*` values are
+documented in `tests/ingestion_retrieval/.env.example`.
 
 Every file also has a docstring at the top with the exact same detail.
 

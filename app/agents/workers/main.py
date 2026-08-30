@@ -20,9 +20,14 @@ from app.agents.workers.tasks import (
     scheduled_pattern_detection_scan,
 )
 from app.shared.config.logging import configure_logging
+from app.shared.config.tracing import configure_worker_tracing
 from app.shared.redis_settings import build_redis_settings
 
 configure_logging()
+
+
+async def _on_startup(ctx: dict) -> None:
+    configure_worker_tracing("ekip-agents-worker")
 
 
 class WorkerSettings:
@@ -31,6 +36,7 @@ class WorkerSettings:
     """
 
     functions = [run_knowledge_gap_detection_task, run_pattern_detection_task]
+    on_startup = _on_startup
     # Daily at 02:00 -- deliberately much less frequent than ingestion's
     # hourly reconciliation: a documentation gap is, by definition, a
     # *repeated* pattern accumulated over `knowledge_gap_lookback_days`

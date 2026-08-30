@@ -43,6 +43,27 @@ from opentelemetry.sdk.trace.export import (
 from app.shared.config.settings import get_settings
 
 
+def _build_provider(service_name: str) -> TracerProvider:
+    settings = get_settings()
+    provider = TracerProvider(resource=Resource.create({SERVICE_NAME: service_name}))
+    if settings.otel_exporter_otlp_endpoint:
+        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
+            OTLPSpanExporter,
+        )
+
+        provider.add_span_processor(
+            BatchSpanProcessor(OTLPSpanExporter(endpoint=settings.otel_exporter_otlp_endpoint))
+        )
+    elif settings.environment == "development":
+        provider.add_span_processor(SimpleSpanProcessor(ConsoleSpanExporter()))
+    return provider
+
+
+def configure_worker_tracing(service_name: str) -> None:
+    """Configure tracing for a non-HTTP worker process."""
+    trace.set_tracer_provider(_build_provider(service_name))
+
+
 def configure_tracing(app: FastAPI) -> None:
     """Set up a `TracerProvider` and instrument `app`. Call once, at process
     startup, after `configure_logging()`.
@@ -52,41 +73,6 @@ def configure_tracing(app: FastAPI) -> None:
     concern here since this project only ever calls it once, from
     `app.api.main.create_app`.
     """
-    settings = get_settings()
-    provider = TracerProvider(
-        resource=Resource.create({SERVICE_NAME: "ekip-api"}),
-    )
-
-    if settings.otel_exporter_otlp_endpoint:
-        # Deferred import: `opentelemetry-exporter-otlp` is an optional
-        # dependency, only needed once a real endpoint is actually
-        # configured -- avoids adding a hard dependency this project has no
-        # deployed collector to point at yet.
-        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
-            OTLPSpanExporter,
-        )
-
-        provider.add_span_processor(
-            BatchSpanProcessor(OTLPSpanExporter(endpoint=settings.otel_exporter_otlp_endpoint))
-        )
-    elif settings.environment == "development":
-        # `SimpleSpanProcessor`, not `BatchSpanProcessor`, deliberately:
-        # `BatchSpanProcessor` spawns a background daemon thread that
-        # periodically flushes on its own schedule, independent of process
-        # lifecycle -- fine in a long-running server, but in a short-lived
-        # process (or a pytest run that never sets `environment=production`/
-        # `test` explicitly, so falls through to this same branch) that
-        # thread can still be mid-flush after `sys.stdout` is already
-        # closed, raising "I/O operation on closed file" from a background
-        # thread pytest has no way to associate with any test. Console
-        # export is low-volume by nature (developer-visible tracing, not a
-        # production sink) -- synchronous, in-process export costs nothing
-        # meaningful here and removes the dangling-thread failure mode
-        # entirely.
-        provider.add_span_processor(SimpleSpanProcessor(ConsoleSpanExporter()))
-    # else (test, or production with no endpoint configured): spans are
-    # created but never exported -- a `TracerProvider` with no processors is
-    # a valid, inert no-op, not an error.
-
+    provider = _build_provider("ekip-api")
     trace.set_tracer_provider(provider)
     FastAPIInstrumentor.instrument_app(app)

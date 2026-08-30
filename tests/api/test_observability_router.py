@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from app.agents.schemas import AgentExecutionStats
 from app.api import main as api_main
-from app.api.deps import get_current_identity
+from app.api.deps import get_arq_pool, get_current_identity
 from app.api.routers import observability as observability_router
 from app.core.observability.schemas import McpToolStats
 from app.core.tenancy.schemas import IngestionJobStats
@@ -154,3 +154,33 @@ def test_get_ingestion_job_stats_returns_stats(client, monkeypatch) -> None:
     assert body["run_count"] == 12
     assert body["failed_count"] == 2
     assert body["total_documents_processed"] == 340
+
+
+def test_get_ingestion_queue_health_returns_live_pressure(client, monkeypatch) -> None:
+    test_client, _actor = client
+
+    class _Pool:
+        async def zcard(self, key):
+            assert key == "arq:queue:ingestion"
+            return 7
+
+        async def zrange(self, key, start, end, *, withscores):
+            assert (key, start, end, withscores) == (
+                "arq:queue:ingestion",
+                0,
+                0,
+                True,
+            )
+            return [(b"job", 1_000_000.0)]
+
+    api_main.app.dependency_overrides[get_arq_pool] = lambda: _Pool()
+    monkeypatch.setattr(observability_router.time, "time", lambda: 1_005.5)
+
+    response = test_client.get("/observability/ingestion/queue")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "queued_jobs": 7,
+        "oldest_queued_age_seconds": 5.5,
+        "worker_max_concurrency": 2,
+    }

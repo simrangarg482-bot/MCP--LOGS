@@ -10,6 +10,11 @@ import {
   BookOpen,
   Activity,
   Trash2,
+  Database,
+  FolderOpen,
+  GitBranch,
+  Notebook,
+  Siren,
 } from "lucide-react";
 import type { Connector } from "@/types/connector";
 import { Card, CardContent } from "@/components/ui/Card";
@@ -27,6 +32,11 @@ const SOURCE_ICON: Record<Connector["source"], LucideIcon> = {
   confluence: FileText,
   sharepoint: FileText,
   runbooks: BookOpen,
+  google_drive: FolderOpen,
+  gitlab: GitBranch,
+  notion: Notebook,
+  servicenow: Database,
+  pagerduty: Siren,
   monitoring: Activity,
 };
 

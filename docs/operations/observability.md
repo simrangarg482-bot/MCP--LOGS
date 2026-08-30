@@ -100,6 +100,7 @@ following the same shape (count/error/latency, grouped by name):
 | `GET /observability/agents` | agent_name | `agent_executions` |
 | `GET /observability/mcp` | tool_name | `mcp_requests` |
 | `GET /observability/ingestion` | connector_config_id | `ingestion_jobs` |
+| `GET /observability/ingestion/queue` | live queue | Redis ARQ sorted set |
 
 `/observability/ingestion` is new this phase — the one dashboard gap found
 during the Phase 5 audit (agents and MCP already had one; ingestion had
@@ -118,15 +119,22 @@ genuinely optional and mapping only what the real endpoint returns — mock
 mode's richer illustrative catalog (with a working "Test Tool" drawer) is
 unchanged and still clearly gated behind `VITE_USE_MOCK_DATA`.
 
-## Ingestion telemetry — what's still coarse
+## Ingestion telemetry
 
-`ingestion_jobs` has no retry-count column (a retry re-runs the whole sync
-from the top today, per `_execute_ingestion_job`'s own docstring — there's
-no per-attempt counter to expose) and no chunk-count column (only
-`documents_processed`). The new `/observability/ingestion` dashboard uses
-only what already exists (status, timestamps, `documents_processed`) rather
-than adding new columns for this pass — a real, disclosed gap versus
-agents' telemetry, not silently glossed over.
+Each ingestion run records pages fetched, items discovered, unchanged items
+skipped, chunks embedded, retry count, and the last exception class. The
+exception message is intentionally excluded because provider/driver messages
+can contain sensitive URLs or account details. The aggregate endpoint exposes
+totals plus dead-letter counts; the queue endpoint exposes current depth,
+oldest queued age, and configured worker concurrency.
+
+Operational checkpoint/locking events are emitted as structured logs:
+`ingestion_job_resumed_from_checkpoint`,
+`ingestion_job_task_skipped_duplicate`, `ingestion_fetch_retry`,
+`ingestion_job_dead_lettered`, and
+`ingestion_connector_lock_release_failed`. The checkpoint cursor itself is
+never logged or returned by the connector API; resume events log only a
+short SHA-256 fingerprint for correlation.
 
 ## Alerting
 
@@ -147,6 +155,8 @@ produces:
 | Redis failures | `arq_pool_unavailable_at_startup` or `readiness_redis_check_failed` log events occur | `app.api.main`/`app.api.routers.health` logs |
 | DB failures | `readiness_database_check_failed` log events occur, or `/ready` reports `database.status != "ok"` | `app.api.routers.health` |
 | Ingestion failures | `/observability/ingestion`'s `failed_count` for a connector rises over a window | new dashboard |
+| Ingestion queue backlog | `queued_jobs > 2 * worker_max_concurrency` for 10m, or `oldest_queued_age_seconds > 300` | `/observability/ingestion/queue` |
+| Dead-lettered ingestion | `dead_lettered_count > 0` in the evaluation window | `/observability/ingestion`, `ingestion_job_dead_lettered` |
 | LLM failures | `agent_execution_unexpected_failure` log rate, or `/observability/agents`'s `failed_count` | agent execution telemetry |
 | Token/cost anomaly | `/observability/agents`'s `estimated_cost_usd` for an organization exceeds a budget threshold over a window | new telemetry (this phase) |
 | Authentication anomaly | repeated `permission_denied`/`auth.*` error-code log events from one actor/IP over a short window | `core.users.service.require_permission`'s own logging |
@@ -155,8 +165,8 @@ produces:
 
 - Tracing has no real exporter target deployed — spans exist, nothing
   outside this process sees them yet.
-- No per-stage retrieval/agent tracing beyond the HTTP boundary.
-- Ingestion telemetry has no retry-count or chunk-count columns.
+- Worker spans require an OTLP endpoint to be useful outside the process.
+- Provider-specific webhook signature validation lives in edge adapters; the application endpoint accepts only authenticated, normalized events.
 - Alerting is defined, not wired to any live backend.
 - `estimated_cost_usd` is an estimate from published pricing, never real
   OpenAI billing data.

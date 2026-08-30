@@ -278,6 +278,21 @@ async def list_ingestion_runs(
     return result.scalars().all()
 
 
+async def get_ingestion_run(
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    connector_config_id: uuid.UUID,
+    job_id: uuid.UUID,
+) -> IngestionJob | None:
+    stmt = select(IngestionJob).where(
+        IngestionJob.id == job_id,
+        IngestionJob.organization_id == organization_id,
+        IngestionJob.connector_config_id == connector_config_id,
+    )
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none()
+
+
 async def get_ingestion_job_stats(
     session: AsyncSession, organization_id: uuid.UUID, *, since: datetime | None = None
 ) -> list[Any]:
@@ -295,6 +310,7 @@ async def get_ingestion_job_stats(
     """
     succeeded_case = case((IngestionJob.status == "succeeded", 1), else_=0)
     failed_case = case((IngestionJob.status == "failed", 1), else_=0)
+    dead_lettered_case = case((IngestionJob.status == "dead_lettered", 1), else_=0)
     duration_seconds_case = case(
         (
             IngestionJob.completed_at.is_not(None) & IngestionJob.started_at.is_not(None),
@@ -309,8 +325,14 @@ async def get_ingestion_job_stats(
             func.count().label("run_count"),
             func.sum(succeeded_case).label("succeeded_count"),
             func.sum(failed_case).label("failed_count"),
+            func.sum(dead_lettered_case).label("dead_lettered_count"),
             func.avg(duration_seconds_case).label("avg_duration_seconds"),
             func.sum(IngestionJob.documents_processed).label("total_documents_processed"),
+            func.sum(IngestionJob.pages_fetched).label("total_pages_fetched"),
+            func.sum(IngestionJob.items_discovered).label("total_items_discovered"),
+            func.sum(IngestionJob.items_skipped).label("total_items_skipped"),
+            func.sum(IngestionJob.chunks_embedded).label("total_chunks_embedded"),
+            func.sum(IngestionJob.retry_count).label("total_retries"),
         )
         .where(IngestionJob.organization_id == organization_id)
         .group_by(IngestionJob.connector_config_id)
@@ -370,6 +392,32 @@ async def update_connector_config_sync_status(
         row.last_synced_at = last_synced_at
     if config_patch is not None:
         row.config = {**row.config, **config_patch}
+    await session.flush()
+    await session.refresh(row)
+    return row
+
+
+async def patch_connector_config_ingestion_checkpoint(
+    session: AsyncSession,
+    connector_config_id: uuid.UUID,
+    *,
+    config_patch: dict,
+) -> ConnectorConfig | None:
+    """Persist high-frequency, worker-owned pagination progress.
+
+    This intentionally does not change connector status or ``last_synced_at``
+    and does not use the audited status-update path: a large source can emit
+    thousands of pages, and turning each durability checkpoint into a domain
+    audit event would make the audit log unusable. A disconnected connector
+    is left untouched so an in-flight worker cannot mutate user-deleted
+    configuration after the disconnect wins the race.
+    """
+    row = await session.get(ConnectorConfig, connector_config_id)
+    if row is None:
+        return None
+    if row.status == "disconnected":
+        return row
+    row.config = {**row.config, **config_patch}
     await session.flush()
     await session.refresh(row)
     return row

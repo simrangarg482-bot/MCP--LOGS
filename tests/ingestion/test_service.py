@@ -14,6 +14,7 @@ import asyncio
 import uuid
 from datetime import datetime, timezone
 
+import httpx
 import pytest
 
 from app.core.exceptions import ConflictError
@@ -434,8 +435,159 @@ async def test_execute_ingestion_job_reads_and_persists_resume_token(monkeypatch
     # ...and whatever fetch_batch returned this time is what gets persisted
     # for *next* time.
     assert captured_sync_status["config_patch"] == {
-        "_resume_token": '{"site-1": "https://example.com/new-delta"}'
+        "_resume_token": '{"site-1": "https://example.com/new-delta"}',
+        "_ingestion_checkpoint": None,
     }
+
+
+def test_ingestion_checkpoint_round_trips_and_is_invalidated_by_config_change() -> None:
+    now = datetime.now(timezone.utc)
+    config = {"repos": [{"repo": "acme/api"}], "_resume_token": "opaque"}
+    since = now.replace(microsecond=0)
+    checkpoint = ingestion_service._build_ingestion_checkpoint(
+        source="github",
+        config=config,
+        force_full_sync=False,
+        since=since,
+        cursor='{"repo_index": 0, "phase": "commits", "page": 2}',
+        resume_token=None,
+        now=now,
+    )
+    persisted = {**config, "_ingestion_checkpoint": checkpoint}
+
+    restored = ingestion_service._load_ingestion_checkpoint(
+        source="github",
+        config=persisted,
+        force_full_sync=False,
+        now=now,
+        ttl_seconds=3600,
+    )
+
+    assert restored == (
+        since,
+        '{"repo_index": 0, "phase": "commits", "page": 2}',
+        None,
+    )
+    changed_config = {**persisted, "repos": [{"repo": "acme/different"}]}
+    assert (
+        ingestion_service._load_ingestion_checkpoint(
+            source="github",
+            config=changed_config,
+            force_full_sync=False,
+            now=now,
+            ttl_seconds=3600,
+        )
+        is None
+    )
+
+
+def test_ingestion_checkpoint_rejects_expired_or_wrong_sync_mode() -> None:
+    now = datetime.now(timezone.utc)
+    config: dict[str, object] = {"channels": ["engineering"]}
+    checkpoint = ingestion_service._build_ingestion_checkpoint(
+        source="slack",
+        config=config,
+        force_full_sync=False,
+        since=now,
+        cursor="next-page",
+        resume_token=None,
+        now=now,
+    )
+    persisted = {**config, "_ingestion_checkpoint": checkpoint}
+
+    assert (
+        ingestion_service._load_ingestion_checkpoint(
+            source="slack",
+            config=persisted,
+            force_full_sync=True,
+            now=now,
+            ttl_seconds=3600,
+        )
+        is None
+    )
+    assert (
+        ingestion_service._load_ingestion_checkpoint(
+            source="slack",
+            config=persisted,
+            force_full_sync=False,
+            now=now.replace(year=now.year + 1),
+            ttl_seconds=3600,
+        )
+        is None
+    )
+
+
+class _TransientHttpConnector:
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+        self.calls = 0
+
+    async def fetch_batch(self, client, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            request = httpx.Request("GET", "https://connector.example/items")
+            response = httpx.Response(
+                self.status_code,
+                request=request,
+                headers={"Retry-After": "0"},
+            )
+            raise httpx.HTTPStatusError("provider response", request=request, response=response)
+        return FetchResult(items=[], has_more=False)
+
+
+@pytest.mark.asyncio
+async def test_fetch_retries_transient_http_status(monkeypatch) -> None:
+    connector = _TransientHttpConnector(503)
+
+    async def no_sleep(delay):
+        return None
+
+    monkeypatch.setattr(ingestion_service.asyncio, "sleep", no_sleep)
+    result = await ingestion_service._fetch_batch_with_retry(connector, object())
+
+    assert result.has_more is False
+    assert connector.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_fetch_does_not_retry_permanent_http_status(monkeypatch) -> None:
+    connector = _TransientHttpConnector(400)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await ingestion_service._fetch_batch_with_retry(connector, object())
+
+    assert connector.calls == 1
+
+
+def test_connector_contract_rejects_missing_next_cursor() -> None:
+    with pytest.raises(ingestion_service.IngestionSafetyLimitError, match="next_cursor"):
+        ingestion_service._validate_fetch_result(
+            FetchResult(items=[], has_more=True, next_cursor=None),
+            source="contract-test",
+            page_number=1,
+            seen_cursors=set(),
+        )
+
+
+def test_connector_contract_rejects_repeated_cursor() -> None:
+    with pytest.raises(ingestion_service.IngestionSafetyLimitError, match="repeated"):
+        ingestion_service._validate_fetch_result(
+            FetchResult(items=[], has_more=True, next_cursor="page-2"),
+            source="contract-test",
+            page_number=2,
+            seen_cursors={"page-2"},
+        )
+
+
+def test_connector_contract_rejects_unbounded_page_count() -> None:
+    maximum = ingestion_service.get_settings().ingestion_max_pages_per_attempt
+    with pytest.raises(ingestion_service.IngestionSafetyLimitError, match="max_pages"):
+        ingestion_service._validate_fetch_result(
+            FetchResult(items=[], has_more=False),
+            source="contract-test",
+            page_number=maximum + 1,
+            seen_cursors=set(),
+        )
 
 
 @pytest.mark.asyncio

@@ -46,6 +46,41 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+_DEFAULT_REPORT_PATH = _REPO_ROOT / "scripts" / "run_semantic_evaluation_report.json"
+_DEFAULT_EVAL_CONFIDENCE_REPORT = _REPO_ROOT / "scripts" / "eval_confidence_report_after.json"
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Run EKIP's live semantic benchmark (Tier 3: answer quality + "
+        "Investigation A/B + threshold calibration)."
+    )
+    parser.add_argument(
+        "--repository-derived",
+        action="store_true",
+        help="also run answer-quality cases against real retrieval over --org-slug's "
+        "ingested data (requires a live database with that data already ingested)",
+    )
+    parser.add_argument("--org-slug", default="test-org")
+    parser.add_argument("--limit", type=int, help="run at most N cases per category")
+    parser.add_argument("--report-path", type=Path, default=_DEFAULT_REPORT_PATH)
+    parser.add_argument(
+        "--eval-confidence-report",
+        type=Path,
+        default=_DEFAULT_EVAL_CONFIDENCE_REPORT,
+        help="path to a scripts/eval_confidence.py report to re-express as this "
+        "benchmark's confidence_threshold calibration entry (not re-run)",
+    )
+    return parser
+
+
+# The semantic stack imports ML/database modules and may initialize local
+# model infrastructure. CLI help must remain a cheap, dependency-independent
+# operation for operators and shell completion, so handle argparse's help
+# exit before importing that stack below.
+if __name__ == "__main__" and any(arg in {"-h", "--help"} for arg in sys.argv[1:]):
+    _build_parser().parse_args()
+
 from app.evaluation.semantic import (  # noqa: E402
     annotation_store,
     evaluator_validation,
@@ -74,9 +109,6 @@ from app.evaluation.semantic.schemas import (  # noqa: E402
     SemanticBenchmarkReport,
 )
 from app.shared.config.settings import get_settings  # noqa: E402
-
-_DEFAULT_REPORT_PATH = _REPO_ROOT / "scripts" / "run_semantic_evaluation_report.json"
-_DEFAULT_EVAL_CONFIDENCE_REPORT = _REPO_ROOT / "scripts" / "eval_confidence_report_after.json"
 
 
 class CredentialsUnavailableError(RuntimeError):
@@ -609,27 +641,7 @@ async def _fill_repository_derived_evidence(cases, org_slug: str):
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Run EKIP's live semantic benchmark (Tier 3: answer quality + "
-        "Investigation A/B + threshold calibration)."
-    )
-    parser.add_argument(
-        "--repository-derived",
-        action="store_true",
-        help="also run answer-quality cases against real retrieval over --org-slug's "
-        "ingested data (requires a live database with that data already ingested)",
-    )
-    parser.add_argument("--org-slug", default="test-org")
-    parser.add_argument("--limit", type=int, help="run at most N cases per category")
-    parser.add_argument("--report-path", type=Path, default=_DEFAULT_REPORT_PATH)
-    parser.add_argument(
-        "--eval-confidence-report",
-        type=Path,
-        default=_DEFAULT_EVAL_CONFIDENCE_REPORT,
-        help="path to a scripts/eval_confidence.py report to re-express as this "
-        "benchmark's confidence_threshold calibration entry (not re-run)",
-    )
-    args = parser.parse_args()
+    args = _build_parser().parse_args()
     return asyncio.run(_run(args))
 
 

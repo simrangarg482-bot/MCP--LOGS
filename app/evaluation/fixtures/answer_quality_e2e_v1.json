@@ -1,0 +1,57 @@
+{
+  "version": "answer-quality-e2e-v1",
+  "description": "Deterministic auth-service incident corpus with exact citation expectations.",
+  "documents": [
+    {
+      "id": "incident-123",
+      "chunk_id": "incident-123:chunk-0",
+      "source": "servicenow",
+      "title": "Incident 123: Auth service outage",
+      "url": "https://example.invalid/incident-123",
+      "content": "The authentication service failed after deployment 456. The database connection pool was exhausted because DB_POOL_SIZE was reduced from 100 to 10."
+    },
+    {
+      "id": "deploy-456",
+      "chunk_id": "deploy-456:chunk-0",
+      "source": "gitlab",
+      "title": "Deployment 456 changelog",
+      "url": "https://example.invalid/deploy-456",
+      "content": "Deployment 456 reduced DB_POOL_SIZE from 100 to 10 to save memory."
+    },
+    {
+      "id": "runbook-auth-001",
+      "chunk_id": "runbook-auth-001:chunk-0",
+      "source": "google_drive",
+      "title": "Auth outage runbook",
+      "url": "https://example.invalid/runbook-auth-001",
+      "content": "For authentication failures after a deployment, inspect DB_POOL_SIZE first, restore it to 100, and redeploy."
+    }
+  ],
+  "questions": [
+    {
+      "id": "root-cause",
+      "query": "Why did authentication fail after deployment 456?",
+      "expected_document_ids": ["incident-123", "deploy-456"],
+      "expected_citation_ids": ["incident-123:chunk-0", "deploy-456:chunk-0"],
+      "required_answer_terms": ["connection pool", "100", "10"],
+      "citation_required": true
+    },
+    {
+      "id": "remediation",
+      "query": "What does the runbook say to do?",
+      "expected_document_ids": ["runbook-auth-001"],
+      "expected_citation_ids": ["runbook-auth-001:chunk-0"],
+      "required_answer_terms": ["DB_POOL_SIZE", "100", "redeploy"],
+      "citation_required": true
+    },
+    {
+      "id": "negative-control",
+      "query": "How many weeks of parental leave are paid?",
+      "expected_document_ids": [],
+      "expected_citation_ids": [],
+      "required_answer_terms": [],
+      "citation_required": false,
+      "must_abstain": true
+    }
+  ]
+}

@@ -21,7 +21,7 @@ from __future__ import annotations
 import uuid
 
 from sqlalchemy import delete as sql_delete
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, literal, or_, select, union_all
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -156,6 +156,122 @@ class PgVectorStore:
             for row in rows
         ]
 
+    async def search_all(
+        self,
+        session: AsyncSession,
+        query_embedding: list[float],
+        filters: SearchFilters,
+        top_k: int,
+    ) -> list[ScoredChunk]:
+        """Dense-search all collections in one database round-trip."""
+        branches = []
+        for collection, model in _COLLECTION_MODELS.items():
+            distance = model.embedding.max_inner_product(query_embedding)
+            stmt = (
+                select(
+                    model.id.label("id"),
+                    model.document_id.label("document_id"),
+                    literal(collection).label("collection"),
+                    model.content.label("content"),
+                    model.source_offset_start.label("source_offset_start"),
+                    model.source_offset_end.label("source_offset_end"),
+                    distance.label("distance"),
+                    Document.title.label("title"),
+                    Document.source_url.label("source_url"),
+                )
+                .join(Document, Document.id == model.document_id)
+                .where(model.organization_id == filters.organization_id)
+                .where(Document.deleted_at.is_(None))
+                .where(
+                    or_(
+                        model.acl_permission_code.is_(None),
+                        model.acl_permission_code.in_(filters.permission_codes),
+                    )
+                )
+            )
+            if filters.project_ids is not None:
+                stmt = stmt.where(model.project_id.in_(filters.project_ids))
+            if filters.repository is not None:
+                stmt = stmt.where(_repository_filter_clause(collection, model, filters.repository))
+            branches.append(stmt)
+        combined = union_all(*branches).subquery()
+        rows = (
+            await session.execute(select(combined).order_by(combined.c.distance.asc()).limit(top_k))
+        ).all()
+        return [
+            ScoredChunk(
+                chunk_id=row.id,
+                document_id=row.document_id,
+                collection=row.collection,
+                content=row.content,
+                score=-row.distance,
+                source_offset_start=row.source_offset_start,
+                source_offset_end=row.source_offset_end,
+                title=row.title,
+                source_url=row.source_url,
+            )
+            for row in rows
+        ]
+
+    async def lexical_search_all(
+        self,
+        session: AsyncSession,
+        query_text: str,
+        filters: SearchFilters,
+        top_k: int,
+    ) -> list[ScoredChunk]:
+        """Lexically search all collections in one database round-trip."""
+        branches = []
+        for collection, model in _COLLECTION_MODELS.items():
+            tsquery = func.websearch_to_tsquery("english", query_text)
+            rank = func.ts_rank_cd(model.content_tsv, tsquery)
+            stmt = (
+                select(
+                    model.id.label("id"),
+                    model.document_id.label("document_id"),
+                    literal(collection).label("collection"),
+                    model.content.label("content"),
+                    model.source_offset_start.label("source_offset_start"),
+                    model.source_offset_end.label("source_offset_end"),
+                    rank.label("rank"),
+                    Document.title.label("title"),
+                    Document.source_url.label("source_url"),
+                )
+                .join(Document, Document.id == model.document_id)
+                .where(model.content_tsv.op("@@")(tsquery))
+                .where(model.organization_id == filters.organization_id)
+                .where(Document.deleted_at.is_(None))
+                .where(
+                    or_(
+                        model.acl_permission_code.is_(None),
+                        model.acl_permission_code.in_(filters.permission_codes),
+                    )
+                )
+            )
+            if filters.project_ids is not None:
+                stmt = stmt.where(model.project_id.in_(filters.project_ids))
+            if filters.repository is not None:
+                stmt = stmt.where(_repository_filter_clause(collection, model, filters.repository))
+            branches.append(stmt)
+        combined = union_all(*branches).subquery()
+        rows = (
+            await session.execute(select(combined).order_by(combined.c.rank.desc()).limit(top_k))
+        ).all()
+        return [
+            ScoredChunk(
+                chunk_id=row.id,
+                document_id=row.document_id,
+                collection=row.collection,
+                content=row.content,
+                score=row.rank,
+                source_offset_start=row.source_offset_start,
+                source_offset_end=row.source_offset_end,
+                title=row.title,
+                source_url=row.source_url,
+            )
+            for row in rows
+        ]
+
     async def lexical_search(
         self,
         session: AsyncSession,
@@ -282,8 +398,9 @@ class PgVectorStore:
             )
 
         model = _COLLECTION_MODELS[collection]
+        values_batch: list[dict] = []
         for chunk, embedding in zip(chunks, embeddings, strict=True):
-            values = dict(
+            values: dict = dict(
                 organization_id=chunk.organization_id,
                 project_id=chunk.project_id,
                 document_id=chunk.document_id,
@@ -294,25 +411,31 @@ class PgVectorStore:
                 source_offset_end=chunk.source_offset_end,
                 acl_permission_code=chunk.acl_permission_code,
             )
-            update_columns = [
-                "organization_id",
-                "project_id",
-                "content",
-                "embedding",
-                "source_offset_start",
-                "source_offset_end",
-                "acl_permission_code",
-            ]
             if collection in _REPO_SCOPED_COLLECTIONS:
                 values["repo_full_name"] = chunk.repo_full_name
-                update_columns.append("repo_full_name")
+            values_batch.append(values)
 
-            stmt = pg_insert(model).values(**values)
-            stmt = stmt.on_conflict_do_update(
-                index_elements=["document_id", "chunk_index"],
-                set_={column: getattr(stmt.excluded, column) for column in update_columns},
-            )
-            await session.execute(stmt)
+        update_columns = [
+            "organization_id",
+            "project_id",
+            "content",
+            "embedding",
+            "source_offset_start",
+            "source_offset_end",
+            "acl_permission_code",
+        ]
+        if collection in _REPO_SCOPED_COLLECTIONS:
+            update_columns.append("repo_full_name")
+
+        # One multi-values statement per document/collection rather than one
+        # database round-trip per chunk. Sentence-transformers already embeds
+        # the same list as a batch; persistence now preserves that batching.
+        stmt = pg_insert(model).values(values_batch)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["document_id", "chunk_index"],
+            set_={column: getattr(stmt.excluded, column) for column in update_columns},
+        )
+        await session.execute(stmt)
         await session.flush()
 
     async def delete(

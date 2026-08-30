@@ -385,6 +385,75 @@ class Settings(BaseSettings):
             "ceiling; see `app.shared.rate_limiter`'s module docstring."
         ),
     )
+    ingestion_job_timeout_seconds: int = Field(
+        default=3600,
+        ge=300,
+        le=86400,
+        description=(
+            "Hard ARQ safety ceiling for one ingestion attempt. Progress is "
+            "checkpointed page-by-page, so reaching this ceiling no longer "
+            "forces the next attempt to restart the remote traversal."
+        ),
+    )
+    ingestion_worker_max_jobs: int = Field(
+        default=2,
+        ge=1,
+        le=32,
+        description=(
+            "Maximum ingestion jobs executed concurrently by one worker "
+            "process. The default is deliberately below ARQ's default of 10: "
+            "embedding is CPU- and memory-intensive, and oversubscription "
+            "turns healthy work into cascading timeouts."
+        ),
+    )
+    ingestion_checkpoint_ttl_seconds: int = Field(
+        default=86400,
+        ge=300,
+        le=604800,
+        description=(
+            "Maximum age of a durable connector pagination checkpoint. Old "
+            "or configuration-mismatched checkpoints are ignored safely."
+        ),
+    )
+    ingestion_max_pages_per_attempt: int = Field(
+        default=10_000,
+        ge=1,
+        le=1_000_000,
+        description="Fails a connector that paginates without a reasonable bound.",
+    )
+    ingestion_max_items_per_page: int = Field(
+        default=2_000,
+        ge=1,
+        le=100_000,
+        description="Maximum source items accepted from one connector page.",
+    )
+    ingestion_max_document_bytes: int = Field(
+        default=10_000_000,
+        ge=1_024,
+        le=100_000_000,
+        description="Maximum UTF-8 size of one normalized source document.",
+    )
+    ingestion_max_chunks_per_document: int = Field(
+        default=1_000,
+        ge=1,
+        le=100_000,
+        description="Maximum chunks one source document may generate.",
+    )
+    embedding_worker_threads: int = Field(
+        default=1,
+        ge=1,
+        le=8,
+        description=(
+            "Dedicated sentence-transformer executor size. This isolates "
+            "embedding from the event loop's general-purpose thread pool."
+        ),
+    )
+    embedding_batch_size: int = Field(
+        default=32,
+        ge=1,
+        le=512,
+        description="Sentence-transformer encode batch size.",
+    )
 
     # --- Secret management (PROJECT_PLAN.md section 12.5, Milestone 10;
     # Azure Key Vault provider added Phase 3) --------------------------------
