@@ -49,6 +49,18 @@ class _FakeSession:
         return None
 
 
+class _RecordingSession(_FakeSession):
+    def __init__(self) -> None:
+        self.commits = 0
+        self.rollbacks = 0
+
+    async def commit(self) -> None:
+        self.commits += 1
+
+    async def rollback(self) -> None:
+        self.rollbacks += 1
+
+
 class _FakeConnectorConfigRow:
     def __init__(self, *, organization_id, source, credential_ref, status="active") -> None:
         self.id = uuid.uuid4()
@@ -100,6 +112,81 @@ class _RecordingConnector:
 
     async def close(self, client) -> None:
         self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_process_item_retries_raw_database_timeout_and_restores_tenant_context(
+    monkeypatch,
+) -> None:
+    """asyncpg exposes command expiry as builtin TimeoutError, not DBAPIError."""
+    organization_id = uuid.uuid4()
+    project_id = uuid.uuid4()
+    session = _RecordingSession()
+    calls = 0
+    tenant_context_calls: list[uuid.UUID] = []
+
+    async def fake_process_one_item(session, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise TimeoutError("database statement timed out")
+        return ingestion_service._ItemProcessingResult(1, 2)
+
+    async def fake_set_tenant_context(session, org_id) -> None:
+        tenant_context_calls.append(org_id)
+
+    monkeypatch.setattr(ingestion_service, "_process_one_item", fake_process_one_item)
+    monkeypatch.setattr(ingestion_service, "set_tenant_context", fake_set_tenant_context)
+    monkeypatch.setattr(
+        ingestion_service,
+        "full_jitter_backoff_seconds",
+        lambda attempt, *, cap: 0.0,
+    )
+
+    result = await ingestion_service._process_one_item_with_retry(
+        session,
+        organization_id=organization_id,
+        connector=object(),
+        raw_item=object(),
+        resolved_config=object(),
+        project_id=project_id,
+    )
+
+    assert result == ingestion_service._ItemProcessingResult(1, 2)
+    assert calls == 2
+    assert session.rollbacks == 1
+    assert session.commits == 1
+    # Once after timeout rollback and once after the successful commit.
+    assert tenant_context_calls == [organization_id, organization_id]
+
+
+@pytest.mark.asyncio
+async def test_unchanged_item_defers_commit_until_page_checkpoint(monkeypatch) -> None:
+    organization_id = uuid.uuid4()
+    session = _RecordingSession()
+    tenant_context_calls: list[uuid.UUID] = []
+
+    async def fake_process_one_item(session, **kwargs):
+        return ingestion_service._ItemProcessingResult(0, 0)
+
+    async def fake_set_tenant_context(session, org_id) -> None:
+        tenant_context_calls.append(org_id)
+
+    monkeypatch.setattr(ingestion_service, "_process_one_item", fake_process_one_item)
+    monkeypatch.setattr(ingestion_service, "set_tenant_context", fake_set_tenant_context)
+
+    result = await ingestion_service._process_one_item_with_retry(
+        session,
+        organization_id=organization_id,
+        connector=object(),
+        raw_item=object(),
+        resolved_config=object(),
+        project_id=uuid.uuid4(),
+    )
+
+    assert result == ingestion_service._ItemProcessingResult(0, 0)
+    assert session.commits == 0
+    assert tenant_context_calls == []
 
 
 @pytest.mark.asyncio

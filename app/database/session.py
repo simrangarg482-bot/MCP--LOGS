@@ -47,10 +47,19 @@ _TENANT_GUC_NAME = "app.current_organization_id"
 # asyncpg.connect(), so an unrecognized one raises a bare
 # `TypeError: connect() got an unexpected keyword argument '...'` rather than
 # a clear connection error. Neon's default copy-paste connection string
-# includes both of these by default. SSL is still enforced -- via
-# `connect_args` in `_build_engine`, using the parameter name asyncpg
-# actually accepts, not via a query string it doesn't understand.
-_UNSUPPORTED_ASYNCPG_QUERY_PARAMS = {"sslmode", "channel_binding"}
+# includes `sslmode`/`channel_binding` by default; `.env.example` has long
+# used the `ssl=` spelling. TLS itself is still applied -- via `connect_args`
+# in `_build_engine`, using the `ssl` keyword asyncpg actually accepts, with
+# its value derived from these same parameters by `_ssl_connect_arg` below.
+_UNSUPPORTED_ASYNCPG_QUERY_PARAMS = {"sslmode", "channel_binding", "ssl"}
+
+# `sslmode`/`ssl` values that select a plaintext connection. Everything else
+# (including an omitted parameter) keeps TLS on: every managed provider this
+# project has targeted requires it, so the secure default must survive a
+# missing parameter. Railway's private network is the one place TLS is turned
+# off on purpose -- traffic never leaves the project's internal network and
+# the stock Postgres image serves no certificate -- via `?sslmode=disable`.
+_SSL_DISABLED_VALUES = {"disable", "disabled", "false", "0", "off", "no"}
 
 
 def _normalize_database_url(raw_url: str) -> str:
@@ -68,6 +77,23 @@ def _normalize_database_url(raw_url: str) -> str:
         if key.lower() not in _UNSUPPORTED_ASYNCPG_QUERY_PARAMS
     ]
     return urlunsplit(parsed._replace(query=urlencode(kept_params)))
+
+
+def _ssl_connect_arg(raw_url: str) -> bool:
+    """Decide the `ssl` keyword `asyncpg.connect()` receives, from the URL's
+    `sslmode` (preferred) or `ssl` query parameter.
+
+    Returns `True` (TLS on) unless the parameter is explicitly one of
+    `_SSL_DISABLED_VALUES` -- so an unset parameter stays secure, a managed
+    provider's `?sslmode=require` keeps working unchanged, and only a
+    deliberate `?sslmode=disable` (Railway private networking) turns TLS off.
+    """
+    params = {
+        key.lower(): value
+        for key, value in parse_qsl(urlsplit(raw_url).query, keep_blank_values=True)
+    }
+    requested = params.get("sslmode") or params.get("ssl") or ""
+    return requested.strip().lower() not in _SSL_DISABLED_VALUES
 
 
 class Base(DeclarativeBase):
@@ -110,17 +136,23 @@ def _build_engine() -> AsyncEngine:
     settings = get_settings()
     return create_async_engine(
         _normalize_database_url(str(settings.database_url)),
-        echo=settings.environment == "development",
+        # SQL echo is intentionally independent from ENVIRONMENT. A full
+        # ingestion emits several statements per document; synchronously
+        # printing all of them can become a measurable local bottleneck.
+        echo=settings.database_echo,
         pool_pre_ping=True,
         pool_recycle=_POOL_RECYCLE_SECONDS,
-        # Neon requires SSL; asyncpg wants it as a connect-time keyword, not
-        # a URL query parameter (see _normalize_database_url above).
-        # NOTE: unconditional today because Neon is the only target this
-        # project connects to so far (DATABASE_DESIGN.md). Once local
-        # Postgres (docker/docker-compose.yml, not yet created) is wired up
-        # for development, this will need to become conditional -- a local,
-        # non-SSL Postgres would fail to connect with `ssl=True` forced on.
-        connect_args={"ssl": True, "command_timeout": _COMMAND_TIMEOUT_SECONDS},
+        # asyncpg wants TLS as a connect-time keyword, not a URL query
+        # parameter (see `_normalize_database_url` above). The value is
+        # derived from the URL's own `sslmode`/`ssl` parameter by
+        # `_ssl_connect_arg`: `True` for Neon and every other managed
+        # provider (the default when unspecified), `False` only for a
+        # deliberate `?sslmode=disable` such as Railway private networking,
+        # where a non-SSL Postgres would fail outright with `ssl=True` forced.
+        connect_args={
+            "ssl": _ssl_connect_arg(str(settings.database_url)),
+            "command_timeout": _COMMAND_TIMEOUT_SECONDS,
+        },
     )
 
 

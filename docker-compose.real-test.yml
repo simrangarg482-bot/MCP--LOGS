@@ -1,0 +1,19 @@
+# Extra process used by the real E2E test profile. The base compose file
+# already starts the API, ingestion worker, frontend, Postgres and Redis;
+# production also runs this second worker for knowledge-gap and proactive
+# pattern schedules, so the real-test profile includes it as well.
+services:
+  agents-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file: .env.docker
+    command: ["arq", "app.agents.workers.main.WorkerSettings"]
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully

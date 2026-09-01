@@ -311,9 +311,17 @@ async def get_ingestion_job_stats(
     succeeded_case = case((IngestionJob.status == "succeeded", 1), else_=0)
     failed_case = case((IngestionJob.status == "failed", 1), else_=0)
     dead_lettered_case = case((IngestionJob.status == "dead_lettered", 1), else_=0)
+    # Average only *successful* runs. A failed/interrupted job's `completed_at`
+    # is stamped by `repository.insert_ingestion_job`'s stale-predecessor
+    # recovery at the moment a replacement attempt starts -- which can be days
+    # after its `started_at` -- so `completed_at - started_at` for those rows
+    # is wall-clock-since-abandoned, not work time, and dragged the reported
+    # average into the tens of thousands of seconds.
     duration_seconds_case = case(
         (
-            IngestionJob.completed_at.is_not(None) & IngestionJob.started_at.is_not(None),
+            (IngestionJob.status == "succeeded")
+            & IngestionJob.completed_at.is_not(None)
+            & IngestionJob.started_at.is_not(None),
             func.extract("epoch", IngestionJob.completed_at - IngestionJob.started_at),
         ),
         else_=None,

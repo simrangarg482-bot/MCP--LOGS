@@ -379,7 +379,7 @@ A full local deployment needs **6 things running simultaneously**: Postgres, Red
 |---|---|---|---|
 | 1 | REST API | `python scripts/run_api_server.py` | Everything in §6 |
 | 2 | MCP server | `python scripts/run_mcp_server.py` | Everything in §7 |
-| 3 | Ingestion worker | `arq app.ingestion.workers.main.WorkerSettings` | Connector syncs (§8) |
+| 3 | Ingestion worker | `python scripts/run_ingestion_worker.py` | Connector syncs (§8) |
 | 4 | Agents worker | `arq app.agents.workers.main.WorkerSettings` | Daily Knowledge Gap scan |
 
 **⚠️ Port collision you WILL hit**: the REST API defaults to `0.0.0.0:8000` (hardcoded in `scripts/run_api_server.py`) and the MCP server also defaults to `127.0.0.1:8000` (the installed `mcp` package's own default). Running both unmodified will fail — whichever starts second can't bind. Fix by editing `scripts/run_mcp_server.py`'s last line to pass an explicit port:
@@ -645,7 +645,7 @@ Only for the technically curious — this repo gives you zero scaffolding for it
 
 **What should I configure?** Connect at least one connector so there's something to search: `POST /tenancy/connectors` with your GitHub PAT and the repos you care about (§6 Step 14).
 
-**What should I ingest?** Nothing you trigger manually today — ingestion only runs via the hourly cron (`scheduled_reconciliation`) or on connector registration triggering the worker's next pass. Start the ingestion worker (`arq app.ingestion.workers.main.WorkerSettings`) and either wait up to an hour or (for local testing) directly invoke `ingestion.service.run_ingestion_job` from a Python shell for your new `connector_config_id` if you don't want to wait.
+**What should I ingest?** Start the ingestion worker (`python scripts/run_ingestion_worker.py`), then trigger a connector sync from the frontend or API. Hourly reconciliation also catches missed syncs automatically.
 
 **How do I ask questions?** `POST /ask` (REST) or the `ask_question` MCP tool — identical underlying behavior either way, once you've ingested something real, expect actual citations instead of a low-confidence generic answer.
 

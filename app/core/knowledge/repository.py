@@ -98,8 +98,43 @@ async def get_metadata_value(
     return result.scalar_one_or_none()
 
 
+async def get_metadata_values(
+    session: AsyncSession,
+    document_ids: Sequence[uuid.UUID],
+    keys: Sequence[str],
+) -> dict[uuid.UUID, dict[str, str]]:
+    """Bulk-load selected metadata keys for a page of documents.
+
+    The review and knowledge-list endpoints previously called
+    ``get_metadata_value`` twice per document. A tenant with thousands of
+    connector documents therefore produced thousands of sequential remote
+    database round trips for one HTTP request. Keep the single-document
+    helper for detail views, but use this bounded query for collection
+    endpoints.
+    """
+    if not document_ids or not keys:
+        return {}
+    stmt = select(
+        DocumentMetadata.document_id,
+        DocumentMetadata.key,
+        DocumentMetadata.value,
+    ).where(
+        DocumentMetadata.document_id.in_(document_ids),
+        DocumentMetadata.key.in_(keys),
+    )
+    rows = (await session.execute(stmt)).all()
+    values: dict[uuid.UUID, dict[str, str]] = {}
+    for document_id, key, value in rows:
+        values.setdefault(document_id, {})[key] = value
+    return values
+
+
 async def list_proposed_documents(
-    session: AsyncSession, organization_id: uuid.UUID
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    *,
+    limit: int = 50,
+    offset: int = 0,
 ) -> Sequence[Document]:
     """Return every non-deleted, still-proposed document for
     `organization_id`, newest first (API_DESIGN.md: `GET /knowledge/proposed`).
@@ -112,6 +147,8 @@ async def list_proposed_documents(
             Document.deleted_at.is_(None),
         )
         .order_by(Document.created_at.desc())
+        .limit(limit)
+        .offset(offset)
     )
     result = await session.execute(stmt)
     return result.scalars().all()

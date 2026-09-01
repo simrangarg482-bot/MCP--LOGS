@@ -28,11 +28,13 @@ import { titleCase } from "@/utils/format";
  * change (matching `rejectDocument`'s own doc comment).
  */
 export function KnowledgeReviewPage() {
+  const pageSize = 50;
   const { user } = useAuth();
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [publishTarget, setPublishTarget] = useState<KnowledgeDocument | null>(null);
   const [rejectTarget, setRejectTarget] = useState<KnowledgeDocument | null>(null);
+  const [page, setPage] = useState(0);
 
   // UX only -- the backend re-checks `knowledge:review` on every mutation
   // regardless of what this renders (see `publish_document`/
@@ -40,15 +42,15 @@ export function KnowledgeReviewPage() {
   const canReview = Boolean(user?.permissions.includes("knowledge:review"));
 
   const documentsQuery = useQuery({
-    queryKey: ["knowledge", "proposed"],
-    queryFn: listProposedDocuments,
+    queryKey: ["knowledge", "proposed", page],
+    queryFn: () => listProposedDocuments(pageSize, page * pageSize),
     enabled: canReview,
   });
 
   const publishMutation = useMutation({
     mutationFn: (id: string) => publishDocument(id),
     onSuccess: (published) => {
-      queryClient.setQueryData<KnowledgeDocument[]>(["knowledge", "proposed"], (current) =>
+      queryClient.setQueryData<KnowledgeDocument[]>(["knowledge", "proposed", page], (current) =>
         (current ?? []).filter((doc) => doc.id !== published.id),
       );
       queryClient.invalidateQueries({ queryKey: ["knowledge"] });
@@ -68,7 +70,7 @@ export function KnowledgeReviewPage() {
   const rejectMutation = useMutation({
     mutationFn: (id: string) => rejectDocument(id),
     onSuccess: (rejected) => {
-      queryClient.setQueryData<KnowledgeDocument[]>(["knowledge", "proposed"], (current) =>
+      queryClient.setQueryData<KnowledgeDocument[]>(["knowledge", "proposed", page], (current) =>
         (current ?? []).filter((doc) => doc.id !== rejected.id),
       );
       toast({ variant: "success", title: "Document rejected", description: rejected.title ?? undefined });
@@ -173,6 +175,25 @@ export function KnowledgeReviewPage() {
               </CardContent>
             </Card>
           ))}
+          <div className="flex items-center justify-between border-t border-border pt-3">
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={page === 0}
+              onClick={() => setPage((current) => Math.max(0, current - 1))}
+            >
+              Previous
+            </Button>
+            <span className="text-xs text-ink-muted">Page {page + 1}</span>
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={documentsQuery.data.length < pageSize}
+              onClick={() => setPage((current) => current + 1)}
+            >
+              Next
+            </Button>
+          </div>
         </div>
       )}
 

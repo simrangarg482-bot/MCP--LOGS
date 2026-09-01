@@ -23,8 +23,9 @@ anywhere for this project yet -- see `docs/operations/observability.md`.
 Exporting is therefore configuration-gated: set `OTEL_EXPORTER_OTLP_ENDPOINT`
 once a real collector exists; until then, spans are created (so the
 instrumentation itself is exercised and won't silently rot unused) but
-never exported anywhere in production, and printed to the console in
-development for local visibility.
+never exported anywhere in production. Console export is independently
+opt-in because printing a complete JSON span per ingested document can
+materially slow a local full sync.
 """
 
 from __future__ import annotations
@@ -54,7 +55,7 @@ def _build_provider(service_name: str) -> TracerProvider:
         provider.add_span_processor(
             BatchSpanProcessor(OTLPSpanExporter(endpoint=settings.otel_exporter_otlp_endpoint))
         )
-    elif settings.environment == "development":
+    elif settings.otel_console_exporter_enabled:
         provider.add_span_processor(SimpleSpanProcessor(ConsoleSpanExporter()))
     return provider
 

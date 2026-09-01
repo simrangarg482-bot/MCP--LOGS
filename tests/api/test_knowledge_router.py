@@ -67,19 +67,28 @@ def test_list_proposed_returns_documents(client, monkeypatch) -> None:
     test_client, actor = client
     doc = _document(actor)
 
-    async def fake_list_proposed_documents(session, passed_actor, organization_id):
+    async def fake_list_proposed_documents(
+        session, passed_actor, organization_id, *, limit, offset
+    ):
         assert passed_actor is actor
+        assert limit == 25
+        assert offset == 50
         return [doc]
 
     monkeypatch.setattr(
         knowledge_router.knowledge_service, "list_proposed_documents", fake_list_proposed_documents
     )
 
-    response = test_client.get("/knowledge/proposed")
+    response = test_client.get("/knowledge/proposed?limit=25&offset=50")
 
     assert response.status_code == 200
     assert len(response.json()) == 1
     assert response.json()[0]["id"] == str(doc.id)
+
+
+def test_list_proposed_rejects_unbounded_page(client) -> None:
+    test_client, _actor = client
+    assert test_client.get("/knowledge/proposed?limit=101").status_code == 422
 
 
 def _gap_report(actor: Identity, **overrides: object) -> GapReport:
@@ -174,7 +183,9 @@ def test_get_document_route_does_not_shadow_proposed_or_gaps(client, monkeypatch
     """
     test_client, actor = client
 
-    async def fake_list_proposed_documents(session, passed_actor, organization_id):
+    async def fake_list_proposed_documents(
+        session, passed_actor, organization_id, *, limit, offset
+    ):
         return []
 
     async def fake_list_gap_reports(session, passed_actor):

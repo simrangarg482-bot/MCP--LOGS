@@ -1,0 +1,51 @@
+{
+  "version": "mercury-fixture-v1",
+  "description": "Canary cases for the disposable GitHub repository copied from tests/real_e2e/fixture_repo.",
+  "cases": [
+    {
+      "id": "service-owner",
+      "category": "clear-answer",
+      "question": "Which team owns the Mercury checkout service?",
+      "acceptable_outcomes": ["answer"],
+      "minimum_citations": 1,
+      "required_answer_terms": ["Payments Reliability"],
+      "required_citation_terms": ["Payments Reliability"]
+    },
+    {
+      "id": "checkout-first-step",
+      "category": "clear-answer",
+      "question": "What should be checked first when checkout returns HTTP 500?",
+      "acceptable_outcomes": ["answer"],
+      "minimum_citations": 1,
+      "required_answer_terms": ["payment adapter", "null"],
+      "required_citation_terms": ["payment adapter", "null"]
+    },
+    {
+      "id": "rollback-release",
+      "category": "clear-answer",
+      "question": "Which checkout release should be used for rollback after confirmed null-handling errors?",
+      "acceptable_outcomes": ["answer"],
+      "minimum_citations": 1,
+      "required_answer_terms": ["2026.08.16"],
+      "required_citation_terms": ["2026.08.16"]
+    },
+    {
+      "id": "conflicting-retry-policy",
+      "category": "conflicting-evidence",
+      "question": "What is the authoritative maximum number of payment attempts currently allowed?",
+      "acceptable_outcomes": ["investigation", "no_answer"],
+      "minimum_citations": 0,
+      "required_answer_terms": [],
+      "required_citation_terms": []
+    },
+    {
+      "id": "absent-hr-policy",
+      "category": "no-information",
+      "question": "How many weeks of paid parental leave does this company provide?",
+      "acceptable_outcomes": ["investigation", "no_answer"],
+      "minimum_citations": 0,
+      "required_answer_terms": [],
+      "required_citation_terms": []
+    }
+  ]
+}

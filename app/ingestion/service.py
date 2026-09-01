@@ -512,27 +512,41 @@ async def _execute_ingestion_job(
             detail={"connector_config_id": str(connector_config_id)},
         )
 
-    connector = _CONNECTOR_REGISTRY.get(config_row.source)
+    # Keep plain values for the remainder of this long-running job. A
+    # recovery rollback expires SQLAlchemy ORM instances; touching
+    # `config_row` afterwards can then trigger an implicit async reload from
+    # ordinary attribute access (`MissingGreenlet`) and mask the real error.
+    source = config_row.source
+    connector_config = dict(config_row.config)
+    connector_project_id = config_row.project_id
+    last_synced_at = config_row.last_synced_at
+
+    connector = _CONNECTOR_REGISTRY.get(source)
     if connector is None:
         raise ConflictError(
-            f"No connector implementation is registered for source '{config_row.source}'.",
+            f"No connector implementation is registered for source '{source}'.",
             error_code="ingestion.unsupported_source",
-            detail={"source": config_row.source},
+            detail={"source": source},
         )
 
-    actor = Identity.for_agent("ingestion_worker", config_row.organization_id)
+    actor = Identity.for_agent("ingestion_worker", organization_id)
+    # Lazily resolve an org-wide connector's destination once for the whole
+    # job. Doing this inside `_process_one_item` used to add one Neon round
+    # trip for every changed document; keeping it lazy also avoids a query
+    # for empty incremental syncs.
+    ingestion_project_id = connector_project_id
     plaintext_credential = await decrypt_secret(get_kms(), config_row.credential_ref)
     resolved_config = ResolvedConnectorConfig(
-        connector_config_id=config_row.id,
-        organization_id=config_row.organization_id,
-        project_id=config_row.project_id,
-        source=config_row.source,
+        connector_config_id=connector_config_id,
+        organization_id=organization_id,
+        project_id=connector_project_id,
+        source=source,
         credential_ref=plaintext_credential,
-        config=config_row.config,
+        config=connector_config,
     )
 
     job_row = await repository.insert_ingestion_job(
-        session, organization_id=config_row.organization_id, connector_config_id=connector_config_id
+        session, organization_id=organization_id, connector_config_id=connector_config_id
     )
     # Captured once, right here, while `job_row` is guaranteed freshly
     # loaded -- never re-read via `job_row.id` again below. `session.
@@ -564,7 +578,7 @@ async def _execute_ingestion_job(
     await session.commit()
     await set_tenant_context(session, organization_id)  # SET LOCAL does not survive COMMIT
 
-    since = None if force_full_sync else config_row.last_synced_at
+    since = None if force_full_sync else last_synced_at
     cursor: str | None = None
     documents_processed = 0
     pages_fetched = 0
@@ -578,11 +592,11 @@ async def _execute_ingestion_job(
     # docstring on why a connector re-decodes this same value on every call
     # rather than the caller updating it mid-sync.
     connector_supports_resume_token = getattr(connector, "supports_resume_token", False)
-    resume_token_in = config_row.config.get("_resume_token") if connector_supports_resume_token else None
+    resume_token_in = connector_config.get("_resume_token") if connector_supports_resume_token else None
     latest_resume_token: str | None = None
     checkpoint = _load_ingestion_checkpoint(
-        source=config_row.source,
-        config=config_row.config,
+        source=source,
+        config=connector_config,
         force_full_sync=force_full_sync,
         now=datetime.now(UTC),
         ttl_seconds=get_settings().ingestion_checkpoint_ttl_seconds,
@@ -611,14 +625,14 @@ async def _execute_ingestion_job(
                 f"connector:{connector_config_id}", connector.requests_per_second
             )
             await effective_rate_limiter.acquire(
-                f"org:{config_row.organization_id}",
+                f"org:{organization_id}",
                 get_settings().ingestion_org_max_requests_per_second,
             )
             fetch_kwargs: dict[str, Any] = {"since": since, "cursor": cursor}
             if connector_supports_resume_token:
                 fetch_kwargs["resume_token"] = resume_token_in
             with tracer.start_as_current_span("ingestion.fetch_page") as span:
-                span.set_attribute("ingestion.source", config_row.source)
+                span.set_attribute("ingestion.source", source)
                 span.set_attribute("ingestion.page_number", pages_fetched + 1)
                 fetch_result = await _fetch_batch_with_retry(
                     connector, client, **fetch_kwargs
@@ -627,15 +641,22 @@ async def _execute_ingestion_job(
             items_discovered += len(fetch_result.items)
             _validate_fetch_result(
                 fetch_result,
-                source=config_row.source,
+                source=source,
                 page_number=pages_fetched,
                 seen_cursors=seen_cursors,
             )
             if fetch_result.resume_token is not None:
                 latest_resume_token = fetch_result.resume_token
 
+            if fetch_result.items and ingestion_project_id is None:
+                default_project = await tenancy_service.get_default_project(
+                    session, actor, organization_id
+                )
+                ingestion_project_id = default_project.id
+
             stage = "process_item"
             for raw_item in fetch_result.items:
+                assert ingestion_project_id is not None
                 # Each item is its own savepoint, committed for real as soon
                 # as it persists -- NOT one savepoint spanning the entire
                 # sync. Previously a dropped connection partway through a
@@ -650,14 +671,14 @@ async def _execute_ingestion_job(
                 # as that document is done rather than only once the whole
                 # (potentially hour-long) sync finishes.
                 with tracer.start_as_current_span("ingestion.process_item") as span:
-                    span.set_attribute("ingestion.source", config_row.source)
+                    span.set_attribute("ingestion.source", source)
                     item_result = await _process_one_item_with_retry(
                         session,
                         organization_id=organization_id,
                         connector=connector,
                         raw_item=raw_item,
                         resolved_config=resolved_config,
-                        actor=actor,
+                        project_id=ingestion_project_id,
                     )
                     span.set_attribute(
                         "ingestion.document_changed",
@@ -683,8 +704,8 @@ async def _execute_ingestion_job(
             # ARQ may cancel this attempt at its hard ceiling, but the retry
             # resumes remote traversal here instead of page one.
             checkpoint_value = _build_ingestion_checkpoint(
-                source=config_row.source,
-                config=config_row.config,
+                source=source,
+                config=connector_config,
                 force_full_sync=force_full_sync,
                 since=since,
                 cursor=fetch_result.next_cursor,
@@ -703,7 +724,7 @@ async def _execute_ingestion_job(
             await tenancy_service.checkpoint_connector_sync(
                 session,
                 actor,
-                config_row.organization_id,
+                organization_id,
                 connector_config_id,
                 config_patch={_CHECKPOINT_CONFIG_KEY: checkpoint_value},
             )
@@ -729,7 +750,7 @@ async def _execute_ingestion_job(
         await tenancy_service.update_connector_sync_status(
             session,
             actor,
-            config_row.organization_id,
+            organization_id,
             connector_config_id,
             status="active",
             last_synced_at=completed_at,
@@ -813,7 +834,7 @@ async def _execute_ingestion_job(
             await tenancy_service.update_connector_sync_status(
                 session,
                 actor,
-                config_row.organization_id,
+                organization_id,
                 connector_config_id,
                 status="error",
                 config_patch=config_patch,
@@ -837,6 +858,20 @@ async def _execute_ingestion_job(
                 connector_config_id=str(connector_config_id),
                 exc_info=True,
             )
+            # The first write may have flushed the job-row UPDATE before a
+            # later statement failed. Release that transaction (and its row
+            # lock) before a fresh session attempts the same UPDATE;
+            # otherwise every fallback waits on our own lock until its
+            # 30-second command timeout expires.
+            try:
+                await session.rollback()
+            except Exception:
+                logger.warning(
+                    "ingestion_job_failure_session_rollback_failed",
+                    job_id=str(job_id),
+                    connector_config_id=str(connector_config_id),
+                    exc_info=True,
+                )
             # A single fallback attempt isn't always enough: observed in
             # practice, a network unstable enough to kill the original
             # session mid-item can still be down when the *first* fresh
@@ -866,7 +901,7 @@ async def _execute_ingestion_job(
                         await tenancy_service.update_connector_sync_status(
                             fallback_session,
                             actor,
-                            config_row.organization_id,
+                            organization_id,
                             connector_config_id,
                             status="error",
                             config_patch=config_patch,
@@ -963,7 +998,7 @@ async def _process_one_item_with_retry(
     connector: Connector,
     raw_item: object,
     resolved_config: ResolvedConnectorConfig,
-    actor: Identity,
+    project_id: uuid.UUID,
 ) -> _ItemProcessingResult:
     """Run `_process_one_item` in its own savepoint and commit it, retrying
     up to `_MAX_ITEM_CONNECTION_RETRIES` times if the connection drops
@@ -992,14 +1027,30 @@ async def _process_one_item_with_retry(
                     connector=connector,
                     raw_item=raw_item,
                     resolved_config=resolved_config,
-                    actor=actor,
+                    project_id=project_id,
                 )
+            if count.documents_processed == 0:
+                # This item only performed the content-hash SELECT. Keep
+                # the read transaction open until the page checkpoint
+                # rather than paying for COMMIT + a new SET LOCAL round
+                # trip for every unchanged document. This is especially
+                # important for incremental GitHub reconciliation, where
+                # most fetched paths are commonly unchanged. Changed items
+                # still commit immediately below, preserving the existing
+                # crash-safety guarantee for newly embedded content.
+                return count
             await session.commit()
             await set_tenant_context(session, organization_id)  # does not survive COMMIT
             return count
-        except DBAPIError as exc:
+        except (DBAPIError, TimeoutError) as exc:
             is_last_attempt = attempt == _MAX_ITEM_CONNECTION_RETRIES - 1
-            if not exc.connection_invalidated or is_last_attempt:
+            # asyncpg may expose its command timeout as the builtin
+            # `TimeoutError`, rather than wrapping it in a SQLAlchemy
+            # `DBAPIError`. Both that transient statement timeout and an
+            # explicitly invalidated connection are safe to retry; genuine
+            # SQL/constraint errors still fail immediately.
+            is_retryable = isinstance(exc, TimeoutError) or exc.connection_invalidated
+            if not is_retryable or is_last_attempt:
                 raise
             delay = full_jitter_backoff_seconds(attempt, cap=_ITEM_RETRY_BACKOFF_CAP_SECONDS)
             logger.warning(
@@ -1011,6 +1062,10 @@ async def _process_one_item_with_retry(
             )
             await session.rollback()
             await asyncio.sleep(delay)
+            # SET LOCAL is transaction-scoped and rollback clears it. A
+            # retry without restoring this context can either see no rows
+            # or violate RLS, depending on the policy being evaluated.
+            await set_tenant_context(session, organization_id)
     raise AssertionError("unreachable: loop above always returns or raises")
 
 
@@ -1020,7 +1075,7 @@ async def _process_one_item(
     connector: Connector,
     raw_item: object,
     resolved_config: ResolvedConnectorConfig,
-    actor: Identity,
+    project_id: uuid.UUID,
 ) -> _ItemProcessingResult:
     """Normalize, process, and persist one raw item.
 
@@ -1049,18 +1104,6 @@ async def _process_one_item(
     )
     if existing is not None and existing.content_hash == processed.content_hash:
         return _ItemProcessingResult(0, 0)  # unchanged -- idempotent no-op
-
-    if resolved_config.project_id is not None:
-        project_id = resolved_config.project_id
-    else:
-        # An org-wide connector_config has no project_id of its own; fall
-        # back to the organization's default project -- the same policy
-        # core.incidents.service.create_incident uses when IncidentCreate
-        # omits project_id.
-        default_project = await tenancy_service.get_default_project(
-            session, actor, resolved_config.organization_id
-        )
-        project_id = default_project.id
 
     next_version = (existing.version + 1) if existing is not None else 1
     document_row = await repository.insert_document(

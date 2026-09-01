@@ -80,7 +80,8 @@ services:
       context: .
       dockerfile: Dockerfile
     env_file: .env.docker
-    command: ["arq", "app.ingestion.workers.main.WorkerSettings"]
+    command: ["python", "scripts/run_ingestion_worker.py"]
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
@@ -95,8 +96,10 @@ services:
       dockerfile: Dockerfile
       args:
         VITE_API_BASE_URL: http://localhost:8000
+    # nginx now listens on $PORT (frontend/nginx.conf.template); the image
+    # defaults it to 8080 when the platform doesn't inject one.
     ports:
-      - "8080:80"
+      - "8080:8080"
     depends_on:
       backend:
         condition: service_healthy

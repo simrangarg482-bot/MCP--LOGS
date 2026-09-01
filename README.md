@@ -44,7 +44,7 @@ uv run uvicorn app.api.main:app --reload
 In separate terminals:
 
 ```bash
-uv run arq app.ingestion.workers.main.WorkerSettings   # background job worker
+uv run python scripts/run_ingestion_worker.py          # Redis-resilient ingestion worker
 cd frontend && npm install && npm run dev              # frontend dev server
 ```
 
@@ -82,6 +82,11 @@ for Redis, Key Vault) via the parameterized Bicep template in `infra/`. See
 templates and pipeline are ready, gated on the deploying identity having
 appropriate (least-privilege) Azure permissions.
 
+For a single-provider path with no external blockers, `docs/operations/
+deployment-railway.md` runs the whole stack (Postgres + pgvector, Redis,
+backend, both workers, MCP, frontend) on Railway via the committed
+`railway.*.json` config files and `.env.railway.example`.
+
 ## Documentation
 
 | Doc | Covers |
@@ -95,4 +100,5 @@ appropriate (least-privilege) Azure permissions.
 | `docs/operations/ci.md` | CI pipeline tiers, secret handling |
 | `docs/operations/deployment.md` | Deployment procedure, Azure status |
 | `docs/operations/deployment-cloudflare.md` | Alternative deployment: Cloudflare Pages + Render, no Docker |
+| `docs/operations/deployment-railway.md` | Alternative deployment: full stack on Railway |
 | `docs/operations/rollback.md` | Rollback/recovery procedures |

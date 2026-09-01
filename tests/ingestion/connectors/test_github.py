@@ -84,6 +84,9 @@ async def test_fetch_batch_full_sync_files_then_advances_to_commits_phase() -> N
         "tree": [
             {"type": "blob", "path": "README.md"},
             {"type": "blob", "path": "src/app.py"},
+            {"type": "blob", "path": ".venv_mac/lib/site-packages/httpx/api.py"},
+            {"type": "blob", "path": "web/node_modules/react/index.js"},
+            {"type": "blob", "path": "service/build/generated.py"},
             {"type": "tree", "path": "src"},  # directories are not files, must be skipped
         ]
     }
@@ -102,6 +105,16 @@ async def test_fetch_batch_full_sync_files_then_advances_to_commits_phase() -> N
     assert result.has_more is True
     next_state = json.loads(result.next_cursor)
     assert next_state == {"repo_index": 0, "phase": "commits", "page": 0}
+
+
+def test_skip_filter_keeps_similarly_named_source_files() -> None:
+    connector = GitHubConnector()
+
+    assert connector._is_skipped("backend/.venv_mac/lib/site-packages/pkg/api.py") is True
+    assert connector._is_skipped("frontend/node_modules/react/index.js") is True
+    assert connector._is_skipped("service/dist/app.js") is True
+    assert connector._is_skipped("src/environment.py") is False
+    assert connector._is_skipped("src/build_tools/compiler.py") is False
 
 
 @pytest.mark.asyncio

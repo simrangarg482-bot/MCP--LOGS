@@ -160,6 +160,27 @@ _SKIP_EXTENSIONS = {
     ".so", ".bin", ".lock",
 }
 
+# Dependency caches and generated build trees are both extremely large and
+# low-value for enterprise knowledge search. Repositories sometimes commit
+# them accidentally (the live 21-repository sync exposed a complete
+# `.venv_mac/.../site-packages` tree), turning one useful project into
+# thousands of third-party documents. Match path segments, not substrings,
+# so names such as `environment.py` remain eligible.
+_SKIP_PATH_SEGMENTS = {
+    "__pycache__",
+    ".cache",
+    ".mypy_cache",
+    ".next",
+    ".pytest_cache",
+    ".ruff_cache",
+    "build",
+    "coverage",
+    "dist",
+    "node_modules",
+    "site-packages",
+    "target",
+}
+
 
 @dataclass
 class _RepoConfig:
@@ -803,7 +824,17 @@ class GitHubConnector:
 
     @staticmethod
     def _is_skipped(path: str) -> bool:
-        return any(path.endswith(ext) for ext in _SKIP_EXTENSIONS)
+        normalized_path = path.replace("\\", "/").lower()
+        segments = normalized_path.split("/")
+        in_generated_tree = any(
+            segment in _SKIP_PATH_SEGMENTS
+            or segment == "venv"
+            or segment.startswith(".venv")
+            for segment in segments[:-1]
+        )
+        return in_generated_tree or any(
+            normalized_path.endswith(extension) for extension in _SKIP_EXTENSIONS
+        )
 
     @staticmethod
     def _parse_github_timestamp(value: str) -> datetime:

@@ -294,6 +294,9 @@ class IngestionJobStats(BaseModel):
     succeeded_count: int
     failed_count: int
     dead_lettered_count: int = 0
+    #: Mean wall-clock seconds of *successful* runs only (``None`` until one
+    #: succeeds). Failed/interrupted runs are excluded -- their ``completed_at``
+    #: is set by stale-job recovery, not when work actually stopped.
     avg_duration_seconds: float | None
     total_documents_processed: int
     total_pages_fetched: int = 0

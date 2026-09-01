@@ -24,9 +24,19 @@ frontend/e2e-report
 frontend/test-results
 frontend/playwright-report
 
-# Docs/scratch -- not needed at runtime
+# Docs/scratch -- not needed at runtime. README.md is the one exception:
+# pyproject.toml's `readme = "README.md"` makes the image build fail without it.
 *.md
+!README.md
 docs/
-scripts/
 tests/
 .github/
+
+# scripts/ is mostly local eval/live-test/onboarding tooling with no runtime
+# role. The three process entrypoints the image actually runs are the
+# exception (see Dockerfile's COPY) -- `scripts/*` excludes the directory's
+# contents, then the negations re-admit only those files.
+scripts/*
+!scripts/run_api_server.py
+!scripts/run_ingestion_worker.py
+!scripts/run_mcp_server.py

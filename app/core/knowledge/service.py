@@ -112,6 +112,39 @@ async def _to_schema(session: AsyncSession, row: DocumentRow) -> Document:
     )
 
 
+def _to_schema_from_metadata(row: DocumentRow, metadata: dict[str, str]) -> Document:
+    """Convert a collection row using metadata loaded in one bulk query."""
+    source_incident_id_raw = metadata.get(_SOURCE_INCIDENT_METADATA_KEY)
+    return Document(
+        id=row.id,
+        organization_id=row.organization_id,
+        project_id=row.project_id,
+        title=row.title,
+        status=row.status,
+        version=row.version,
+        content=metadata.get(_CONTENT_METADATA_KEY),
+        source=row.source,
+        source_url=row.source_url,
+        source_incident_id=uuid.UUID(source_incident_id_raw) if source_incident_id_raw else None,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+async def _to_schemas_bulk(
+    session: AsyncSession, rows: list[DocumentRow] | tuple[DocumentRow, ...]
+) -> list[Document]:
+    """Convert a bounded document page without a two-query-per-row loop."""
+    metadata_by_document = await repository.get_metadata_values(
+        session,
+        [row.id for row in rows],
+        [_CONTENT_METADATA_KEY, _SOURCE_INCIDENT_METADATA_KEY],
+    )
+    return [
+        _to_schema_from_metadata(row, metadata_by_document.get(row.id, {})) for row in rows
+    ]
+
+
 async def propose_document(
     session: AsyncSession,
     actor: Identity,
@@ -189,7 +222,12 @@ async def get_document(
 
 
 async def list_proposed_documents(
-    session: AsyncSession, actor: Identity, organization_id: uuid.UUID
+    session: AsyncSession,
+    actor: Identity,
+    organization_id: uuid.UUID,
+    *,
+    limit: int = 50,
+    offset: int = 0,
 ) -> list[Document]:
     """List every proposed document awaiting review (API_DESIGN.md:
     `GET /knowledge/proposed`).
@@ -197,8 +235,10 @@ async def list_proposed_documents(
     _ensure_same_organization(actor, organization_id)
     require_permission(actor, _REVIEW_PERMISSION)
 
-    rows = await repository.list_proposed_documents(session, organization_id)
-    return [await _to_schema(session, row) for row in rows]
+    rows = await repository.list_proposed_documents(
+        session, organization_id, limit=limit, offset=offset
+    )
+    return await _to_schemas_bulk(session, list(rows))
 
 
 async def list_published_documents(
@@ -220,7 +260,7 @@ async def list_published_documents(
     rows = await repository.list_published_documents(
         session, organization_id, source=source, updated_since=updated_since
     )
-    return [await _to_schema(session, row) for row in rows]
+    return await _to_schemas_bulk(session, list(rows))
 
 
 async def publish_document(

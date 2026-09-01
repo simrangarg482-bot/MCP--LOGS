@@ -35,12 +35,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.graph import GraphState
 from app.agents.retrieval.context_assembly import assemble_context
-from app.agents.retrieval.reranking import rerank
+from app.agents.retrieval.reranking import fused_order_fallback, rerank
 from app.agents.retrieval.rewriting import rewrite_query
 from app.agents.retry import call_with_retry
 from app.retrieval import service as retrieval_service
 from app.retrieval.schemas import SearchFilters
 from app.shared.config.logging import get_logger
+from app.shared.config.settings import get_settings
 
 logger = get_logger(__name__)
 
@@ -110,8 +111,15 @@ def make_retrieval_agent_node(
         # exact normalization applied to this value.
         top_fused_score = candidates[0].score if candidates else 0.0
 
-        reranked = await rerank(rewritten_query, candidates, top_k=_RERANKED_TOP_K)
-        assembled_chunks = assemble_context(reranked)
+        if get_settings().agent_reranking_enabled:
+            narrowed = await rerank(rewritten_query, candidates, top_k=_RERANKED_TOP_K)
+        else:
+            # Operator opted out (memory-constrained process): skip loading
+            # the second transformer entirely. The RRF-fused order is already
+            # a complete, ranked candidate set -- same fallback `rerank()`
+            # itself uses when the model cannot load.
+            narrowed = fused_order_fallback(candidates, top_k=_RERANKED_TOP_K)
+        assembled_chunks = assemble_context(narrowed)
 
         return {
             "retrieved_chunks": assembled_chunks,

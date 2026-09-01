@@ -25,7 +25,7 @@ import uuid
 from collections.abc import Sequence
 from typing import Any
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models.ingestion_models import Document, DocumentMetadata, IngestionJob
@@ -136,9 +136,31 @@ async def get_connector_config_for_source(
 async def insert_ingestion_job(
     session: AsyncSession, *, organization_id: uuid.UUID, connector_config_id: uuid.UUID
 ) -> IngestionJob:
-    """Create one ingestion job row (`status="queued"`) and return it with
-    server-side defaults populated.
+    """Recover an interrupted predecessor, then create a queued job row.
+
+    The connector-level distributed lock guarantees that production callers
+    reach this function one at a time. If the previous worker process died
+    after Redis or Postgres disappeared, its row can otherwise remain
+    ``running`` forever. A new, lock-owning attempt is authoritative evidence
+    that no predecessor is still healthy, so close those stale rows before
+    creating the replacement. This is deliberately in the same transaction
+    as the insert: observers never see the predecessor recovered without its
+    replacement attempt also existing.
     """
+    await session.execute(
+        update(IngestionJob)
+        .where(
+            IngestionJob.organization_id == organization_id,
+            IngestionJob.connector_config_id == connector_config_id,
+            IngestionJob.status == "running",
+        )
+        .values(
+            status="failed",
+            failed_stage=func.coalesce(IngestionJob.failed_stage, "worker_interrupted"),
+            last_error_type="WorkerInterrupted",
+            completed_at=func.now(),
+        )
+    )
     row = IngestionJob(
         organization_id=organization_id,
         connector_config_id=connector_config_id,
@@ -217,8 +239,10 @@ async def insert_document(
     version: int,
     acl_permission_code: str | None = None,
 ) -> Document:
-    """Insert one document row at `version` and return it with server-side
-    defaults populated. Always `status="proposed"` -- publishing is a
+    """Insert one document row at `version` and return it. PostgreSQL's
+    implicit ``RETURNING`` populates generated defaults during ``flush``;
+    a separate ``refresh`` would add an unnecessary database round trip for
+    every ingested document. Always `status="proposed"` -- publishing is a
     separate, not-yet-built review step (ARCHITECTURE.md section 5's
     human-review gate), matching `documents.status`'s documented lifecycle.
 
@@ -242,7 +266,6 @@ async def insert_document(
     )
     session.add(row)
     await session.flush()
-    await session.refresh(row)
     return row
 
 

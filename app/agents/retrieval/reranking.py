@@ -26,8 +26,50 @@ from functools import lru_cache
 from sentence_transformers import CrossEncoder
 
 from app.retrieval.schemas import ScoredChunk
+from app.shared.config.logging import get_logger
+
+logger = get_logger(__name__)
 
 _MODEL_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"  # ENGINEERING_DECISIONS.md #009
+
+# Failures that mean "this process cannot run the cross-encoder right now"
+# rather than "the query is bad": the weights download/mmap failed, the CPU
+# math library (OpenBLAS/MKL) could not allocate its scratch buffers under
+# memory pressure, or torch raised its own OOM. Reranking is precision
+# refinement over an already recall-complete candidate set (see the module
+# docstring and PROJECT_PLAN.md section 5.3), so none of these should take
+# down the whole answer/investigation -- `agents.retrieval.node` already
+# degrades the same way when hybrid search itself is exhausted.
+#
+# (A hard native crash during model load -- e.g. a Windows access violation
+# from safetensors mmap failing mid-materialization -- is below Python's
+# exception machinery and cannot be caught here; a process that cannot
+# afford the second model at all should set `agent_reranking_enabled=false`
+# so it is never loaded.)
+_RERANK_UNAVAILABLE_ERRORS = (OSError, RuntimeError, MemoryError, ImportError)
+
+# Score stamped on chunks returned without a real cross-encoder pass (the
+# `agent_reranking_enabled=false` path and the catchable-failure fallback
+# below). The Confidence node reads the top retrieved chunk's `score` as its
+# `rerank_score` signal and calibrates it as an MS-MARCO logit
+# (`agents.confidence._normalize_rerank_score`, centered at -8.0); leaving a
+# raw RRF fused score (~0.02) there would be read as a strongly positive
+# logit and *inflate* confidence. -8.0 is that calibration's documented
+# "borderline" value -> a neutral 0.5 rerank signal, neither rewarding nor
+# penalizing evidence that was never actually reranked.
+_UNRANKED_NEUTRAL_SCORE = -8.0
+
+
+def fused_order_fallback(chunks: list[ScoredChunk], *, top_k: int) -> list[ScoredChunk]:
+    """The first `top_k` candidates in their existing RRF-fused order, with a
+    neutral `score` so the Confidence node does not misread the RRF score as
+    a cross-encoder logit. Shared by the disabled path
+    (`agents.retrieval.node`) and `rerank`'s own failure fallback.
+    """
+    return [
+        chunk.model_copy(update={"score": _UNRANKED_NEUTRAL_SCORE})
+        for chunk in chunks[:top_k]
+    ]
 
 
 @lru_cache
@@ -54,9 +96,21 @@ async def rerank(query: str, chunks: list[ScoredChunk], *, top_k: int) -> list[S
     if not chunks:
         return []
 
-    model = _get_model()
-    pairs = [(query, chunk.content) for chunk in chunks]
-    raw_scores = await asyncio.to_thread(model.predict, pairs)
+    try:
+        model = _get_model()
+        pairs = [(query, chunk.content) for chunk in chunks]
+        raw_scores = await asyncio.to_thread(model.predict, pairs)
+    except _RERANK_UNAVAILABLE_ERRORS as exc:
+        # Fall back to the candidate set's existing (RRF-fused) order rather
+        # than failing the caller -- reranking only refines precision, the
+        # fused set is already recall-complete and ranked.
+        logger.warning(
+            "rerank_unavailable_falling_back_to_fused_order",
+            error=str(exc),
+            error_type=type(exc).__name__,
+            candidate_count=len(chunks),
+        )
+        return fused_order_fallback(chunks, top_k=top_k)
 
     reranked = sorted(
         (

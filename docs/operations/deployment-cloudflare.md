@@ -62,7 +62,7 @@ architecturally do not fit the Containers model. They run on Render instead
 |---|---|---|---|
 | Frontend | `frontend/` Vite build | Cloudflare Pages | No |
 | Backend API | `uvicorn app.api.main:app` (Dockerfile's default CMD) | Cloudflare Containers | Yes, at `wrangler deploy` build time only |
-| Ingestion worker | `arq app.ingestion.workers.main.WorkerSettings` | Render background worker | No |
+| Ingestion worker | `python scripts/run_ingestion_worker.py` | Render background worker | No |
 | Agents worker | `arq app.agents.workers.main.WorkerSettings` | Render background worker | No |
 
 The LangGraph agents (`app/agents/`) are not a separate deployable — they
@@ -107,7 +107,7 @@ Cloudflare dashboard → **Workers & Pages** → **Create** → **Pages** →
 | Env vars | `VITE_API_BASE_URL=<Worker URL from step 2>`, `VITE_USE_MOCK_DATA=false` |
 
 `frontend/public/_redirects` (`/* /index.html 200`) handles SPA routing —
-Pages' equivalent of `nginx.conf`'s `try_files` in the Docker build.
+Pages' equivalent of `nginx.conf.template`'s `try_files` in the Docker build.
 
 ## 2. Backend — Cloudflare Containers
 

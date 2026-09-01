@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 !.env.docker.example
+!.env.railway.example
 
 # --- Python ------------------------------------------------------------------
 __pycache__/
@@ -37,6 +38,7 @@ app/database/migrations/versions/__pycache__/
 # --- Logs / runtime artifacts -----------------------------------------------
 *.log
 logs/
+.real-e2e-results/
 
 # --- Evaluation run output ---------------------------------------------------
 # `scripts/run_evaluation.py`'s per-run report: regenerated on every run and

@@ -43,6 +43,25 @@ class _FakeSession:
         return _FakeScalarResult(self._return_value)
 
 
+class _FakeInsertSession:
+    def __init__(self) -> None:
+        self.executed: list[str] = []
+        self.added = None
+
+    async def execute(self, statement, params=None):
+        self.executed.append(str(statement))
+        return _FakeScalarResult(None)
+
+    def add(self, row) -> None:
+        self.added = row
+
+    async def flush(self) -> None:
+        return None
+
+    async def refresh(self, row) -> None:
+        return None
+
+
 @pytest.mark.asyncio
 async def test_resolve_connector_config_organization_id_calls_bypass_function() -> None:
     organization_id = uuid.uuid4()
@@ -90,3 +109,26 @@ async def test_list_active_connector_config_ids_calls_bypass_function() -> None:
     assert result == ids
     statement, _params = session.executed[0]
     assert "list_active_connector_config_ids" in statement
+
+
+@pytest.mark.asyncio
+async def test_insert_job_recovers_interrupted_predecessor_first() -> None:
+    organization_id = uuid.uuid4()
+    connector_config_id = uuid.uuid4()
+    session = _FakeInsertSession()
+
+    row = await repository.insert_ingestion_job(
+        session,
+        organization_id=organization_id,
+        connector_config_id=connector_config_id,
+    )
+
+    assert row is session.added
+    assert row.status == "queued"
+    assert row.organization_id == organization_id
+    assert row.connector_config_id == connector_config_id
+    assert len(session.executed) == 1
+    recovery_statement = session.executed[0]
+    assert "UPDATE ingestion_jobs" in recovery_statement
+    assert "ingestion_jobs.status" in recovery_statement
+    assert "ingestion_jobs.connector_config_id" in recovery_statement

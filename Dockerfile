@@ -36,8 +36,17 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
 # Now the real application code, then install the project itself.
+# README.md is required, not optional: pyproject.toml's `readme = "README.md"`
+# makes the project build (`uv sync` below installs `app/` itself) fail hard
+# with "readme file does not exist" without it.
+COPY README.md ./
 COPY app/ ./app/
 COPY alembic.ini ./
+# All three process entrypoints ship in this one image -- the API server, the
+# ingestion worker, and the MCP server -- selected per service by the start
+# command (docker-compose.yml's `worker`, the Railway config files). The rest
+# of scripts/ is local eval/live-test tooling and is excluded by .dockerignore.
+COPY scripts/run_api_server.py scripts/run_ingestion_worker.py scripts/run_mcp_server.py ./scripts/
 RUN uv sync --frozen --no-dev
 
 
@@ -74,11 +83,11 @@ EXPOSE 8000
 # event loop), not "is Postgres reachable" (which would make Docker restart
 # a perfectly healthy container during a transient DB blip).
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD ["python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status == 200 else 1)"]
+    CMD ["python", "-c", "import os,urllib.request,sys; port=os.environ.get('PORT','8000'); sys.exit(0 if urllib.request.urlopen(f'http://127.0.0.1:{port}/health', timeout=3).status == 200 else 1)"]
 
 ENTRYPOINT ["tini", "--"]
 
 # Overridden by docker-compose.yml's `worker` service to run the arq worker
-# instead (`arq app.ingestion.workers.main.WorkerSettings`) -- same image,
+# instead (`python scripts/run_ingestion_worker.py`) -- same image,
 # same installed dependencies, different process.
 CMD ["uvicorn", "app.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

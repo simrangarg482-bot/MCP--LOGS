@@ -58,15 +58,25 @@ class Settings(BaseSettings):
         description=(
             "OTLP collector endpoint (e.g. 'http://localhost:4317') spans "
             "are exported to. No real collector is deployed for this "
-            "project yet -- leave unset (the default) to still create spans "
-            "locally (console-printed in development, silently dropped "
-            "otherwise) without needing one."
+            "project yet -- leave unset (the default) to create spans "
+            "without exporting them."
+        ),
+    )
+    otel_console_exporter_enabled: bool = Field(
+        default=False,
+        description=(
+            "Print complete spans to stdout when no OTLP collector is configured. "
+            "Disabled by default because per-document ingestion spans are verbose."
         ),
     )
 
     # --- Database (DATABASE_DESIGN.md) ------------------------------------
     database_url: PostgresDsn = Field(
         description="Neon Postgres connection string, asyncpg driver."
+    )
+    database_echo: bool = Field(
+        default=False,
+        description="Emit every SQL statement. Enable only for focused database debugging.",
     )
 
     # --- Job queue (ENGINEERING_DECISIONS.md #002) ------------------------
@@ -386,11 +396,12 @@ class Settings(BaseSettings):
         ),
     )
     ingestion_job_timeout_seconds: int = Field(
-        default=3600,
+        default=7200,
         ge=300,
         le=86400,
         description=(
-            "Hard ARQ safety ceiling for one ingestion attempt. Progress is "
+            "Hard ARQ safety ceiling for one ingestion attempt. The two-hour "
+            "default accommodates measured first GitHub syncs while progress is "
             "checkpointed page-by-page, so reaching this ceiling no longer "
             "forces the next attempt to restart the remote traversal."
         ),
@@ -453,6 +464,19 @@ class Settings(BaseSettings):
         ge=1,
         le=512,
         description="Sentence-transformer encode batch size.",
+    )
+    agent_reranking_enabled: bool = Field(
+        default=True,
+        description=(
+            "Load the cross-encoder reranker (a second ~80MB transformer, on "
+            "top of the embedding model) in the Retrieval Agent. Reranking is "
+            "precision refinement over an already recall-complete candidate "
+            "set (PROJECT_PLAN.md section 5.3); disabling it falls back to the "
+            "RRF-fused order. Set to false for a memory-constrained process "
+            "(e.g. co-locating the API server, both workers and the MCP "
+            "server on one small host) where loading the second model tips "
+            "the process into an unrecoverable native allocation failure."
+        ),
     )
 
     # --- Secret management (PROJECT_PLAN.md section 12.5, Milestone 10;

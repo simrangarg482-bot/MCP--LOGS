@@ -3,7 +3,7 @@
 Owned by: ingestion/workers/. Run as its own OS process, separate from the
 API server (PROJECT_PLAN.md section 4.5, ENGINEERING_DECISIONS.md #002):
 
-    arq app.ingestion.workers.main.WorkerSettings
+    python scripts/run_ingestion_worker.py
 
 `redis_settings` comes from `app.shared.redis_settings.build_redis_settings`,
 shared with `app.agents.workers.main` and `app.api.main` -- one source of
@@ -69,7 +69,8 @@ class WorkerSettings:
     # then cancels the job mid-page rather than the connector or the app
     # failing outright.
     #
-    # Raised from 1800s (30 min) to 3600s (1 hour) after a real timeout
+    # Raised from 1800s (30 min), then 3600s (1 hour), after measured real
+    # full-sync timeouts
     # observed against an actual GitHub connector: `app.ingestion.
     # connectors.github`'s full sync (`since=None`, the only kind a first
     # sync ever is) runs FOUR phases per configured repo -- `"files"` (a

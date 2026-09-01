@@ -28,7 +28,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from app.agents import service as agents_service
 from app.api.deps import CurrentIdentity, DbSession
@@ -57,8 +57,15 @@ async def list_published_documents(
 
 
 @router.get("/proposed", response_model=list[Document])
-async def list_proposed_documents(actor: CurrentIdentity, session: DbSession) -> list[Document]:
-    return await knowledge_service.list_proposed_documents(session, actor, actor.organization_id)
+async def list_proposed_documents(
+    actor: CurrentIdentity,
+    session: DbSession,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> list[Document]:
+    return await knowledge_service.list_proposed_documents(
+        session, actor, actor.organization_id, limit=limit, offset=offset
+    )
 
 
 @router.get("/gaps", response_model=list[GapReport])

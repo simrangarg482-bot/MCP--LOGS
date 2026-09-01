@@ -55,7 +55,7 @@ envVarGroups:
       - key: CORS_ALLOWED_ORIGINS
         sync: false # e.g. https://ekip-frontend.pages.dev (unused by the workers themselves, kept here only because Settings() loads the whole env)
       - key: INGESTION_JOB_TIMEOUT_SECONDS
-        value: 3600
+        value: 7200
       - key: INGESTION_WORKER_MAX_JOBS
         value: 2
       - key: INGESTION_CHECKPOINT_TTL_SECONDS
@@ -81,7 +81,7 @@ services:
     runtime: python
     plan: starter
     buildCommand: pip install uv && uv sync --frozen --no-dev
-    startCommand: uv run arq app.ingestion.workers.main.WorkerSettings
+    startCommand: uv run python scripts/run_ingestion_worker.py
     envVarGroups:
       - ekip-shared
 

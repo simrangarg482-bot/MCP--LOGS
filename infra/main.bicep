@@ -496,7 +496,10 @@ resource frontendApp 'Microsoft.App/containerApps@2023-05-01' = {
     configuration: {
       ingress: {
         external: true
-        targetPort: 80
+        // The frontend image's nginx now listens on $PORT (default 8080,
+        // frontend/nginx.conf.template) so it fits any platform that injects
+        // one; Container Apps does not, so it gets the image default.
+        targetPort: 8080
       }
     }
     template: {

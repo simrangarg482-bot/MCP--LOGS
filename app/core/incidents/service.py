@@ -250,7 +250,11 @@ async def update_incident(
     new_status = fields.get("status")
     if new_status in ("resolved", "closed") and existing.resolved_at is None:
         fields["resolved_at"] = datetime.now(timezone.utc)
-    elif new_status in ("open", "investigating"):
+    elif new_status in ("open", "investigating") and existing.resolved_at is not None:
+        # Only *reopening* an already-resolved incident clears the stamp.
+        # Without the `is not None` guard this fired on every open/
+        # investigating patch, writing `resolved_at = NULL -> NULL` and
+        # listing a phantom `resolved_at` in the audit event's changed_fields.
         fields["resolved_at"] = None
 
     row = await repository.update_incident(session, incident_id, **fields)

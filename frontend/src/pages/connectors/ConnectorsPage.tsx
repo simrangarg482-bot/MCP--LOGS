@@ -46,7 +46,16 @@ export function ConnectorsPage() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "error">("all");
 
-  const connectorsQuery = useQuery({ queryKey: ["connectors"], queryFn: listConnectors });
+  const connectorsQuery = useQuery({
+    queryKey: ["connectors"],
+    queryFn: listConnectors,
+    // A connector remains `connecting` until its ingestion job commits the
+    // final page. Poll only during that transitional state so the badge
+    // becomes `active` without a manual refresh, while avoiding permanent
+    // background traffic once every connector is settled.
+    refetchInterval: (query) =>
+      query.state.data?.some((connector) => connector.status === "connecting") ? 5_000 : false,
+  });
   // `disconnect_connector` (backend) is a status change, not a dropped row
   // -- `ingestion_jobs.connector_config_id` is `ON DELETE RESTRICT`, so a
   // hard delete isn't possible for any connector that's ever synced. This
@@ -66,6 +75,7 @@ export function ConnectorsPage() {
     queryKey: ["ingestion-runs", viewing?.id],
     queryFn: () => listIngestionRuns(viewing!.id),
     enabled: Boolean(viewing),
+    refetchInterval: viewing ? 5_000 : false,
   });
 
   const syncMutation = useMutation({

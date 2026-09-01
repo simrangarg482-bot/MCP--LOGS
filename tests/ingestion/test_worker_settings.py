@@ -66,7 +66,7 @@ def test_every_worker_sets_an_explicit_job_timeout() -> None:
     """Phase 6.1/6.3 regression: the agents worker previously left this
     unset (arq's own 300s default applied silently), an undocumented
     asymmetry against the ingestion worker's deliberately-widened value
-    (3600s as of this writing -- see `app.ingestion.workers.main.
+    (7200s as of this writing -- see `app.ingestion.workers.main.
     WorkerSettings.job_timeout`'s own comment for the real-timeout evidence
     behind that specific number) for an analogous "could scale with
     organization volume" concern. Both must now set an explicit value --

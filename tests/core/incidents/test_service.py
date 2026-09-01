@@ -15,7 +15,13 @@ import pytest
 
 from app.core.exceptions import NotFoundError, PermissionDeniedError
 from app.core.incidents import service as incidents_service
-from app.core.incidents.schemas import Incident, IncidentFilter, Postmortem, TimelineEntry
+from app.core.incidents.schemas import (
+    Incident,
+    IncidentFilter,
+    IncidentUpdate,
+    Postmortem,
+    TimelineEntry,
+)
 from app.shared.schemas import ActorKind, Identity
 
 
@@ -530,3 +536,82 @@ async def test_get_timeline_cross_organization_denied(monkeypatch) -> None:
 
     with pytest.raises(PermissionDeniedError):
         await incidents_service.get_timeline(None, actor, organization_id, incident_row.id)
+
+
+# --- update_incident: resolved_at bookkeeping / audit changed_fields --------
+
+
+async def _run_update_incident(monkeypatch, *, existing_resolved_at, patch):
+    """Drive `update_incident` with the repository/audit calls mocked,
+    returning (repo_update_kwargs, audit_changed_fields).
+    """
+    organization_id = uuid.uuid4()
+    incident_id = uuid.uuid4()
+    project_id = uuid.uuid4()
+    actor = Identity(
+        kind=ActorKind.USER,
+        subject=str(uuid.uuid4()),
+        organization_id=organization_id,
+        user_id=uuid.uuid4(),
+        permissions=frozenset({"incident:write"}),
+    )
+    existing = _incident_row(
+        organization_id, id=incident_id, project_id=project_id, resolved_at=existing_resolved_at
+    )
+    captured: dict[str, object] = {}
+
+    async def fake_get_incident_by_id(session, inc_id):
+        return existing
+
+    async def fake_update_incident(session, inc_id, **fields):
+        captured["update_kwargs"] = fields
+        return _incident_row(
+            organization_id, id=incident_id, project_id=project_id, **fields
+        )
+
+    async def fake_record_audit_event(session, audit_actor, **kwargs):
+        captured["changed_fields"] = kwargs["metadata"]["changed_fields"]
+
+    monkeypatch.setattr(incidents_service.repository, "get_incident_by_id", fake_get_incident_by_id)
+    monkeypatch.setattr(incidents_service.repository, "update_incident", fake_update_incident)
+    monkeypatch.setattr(incidents_service, "record_audit_event", fake_record_audit_event)
+
+    await incidents_service.update_incident(
+        None, actor, organization_id, incident_id, IncidentUpdate(**patch)
+    )
+    return captured["update_kwargs"], captured["changed_fields"]
+
+
+@pytest.mark.asyncio
+async def test_update_incident_to_investigating_leaves_unset_resolved_at(monkeypatch) -> None:
+    """Regression: patching an open incident to `investigating` used to write
+    `resolved_at = NULL -> NULL` and list a phantom `resolved_at` in the
+    audit event's `changed_fields`.
+    """
+    update_kwargs, changed_fields = await _run_update_incident(
+        monkeypatch, existing_resolved_at=None, patch={"status": "investigating"}
+    )
+    assert "resolved_at" not in update_kwargs
+    assert "resolved_at" not in changed_fields
+    assert changed_fields == ["status"]
+
+
+@pytest.mark.asyncio
+async def test_update_incident_to_resolved_stamps_resolved_at(monkeypatch) -> None:
+    update_kwargs, changed_fields = await _run_update_incident(
+        monkeypatch, existing_resolved_at=None, patch={"status": "resolved"}
+    )
+    assert update_kwargs["resolved_at"] is not None
+    assert set(changed_fields) == {"status", "resolved_at"}
+
+
+@pytest.mark.asyncio
+async def test_update_incident_reopening_clears_resolved_at(monkeypatch) -> None:
+    resolved = datetime.now(timezone.utc)
+    update_kwargs, changed_fields = await _run_update_incident(
+        monkeypatch,
+        existing_resolved_at=resolved,
+        patch={"status": "open"},
+    )
+    assert update_kwargs["resolved_at"] is None
+    assert set(changed_fields) == {"status", "resolved_at"}

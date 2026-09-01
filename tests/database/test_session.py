@@ -12,6 +12,7 @@ import pytest
 
 from app.database import session as session_module
 from app.database.session import set_tenant_context
+from app.shared.config.settings import get_settings
 
 
 class _FakeResult:
@@ -81,7 +82,8 @@ def test_build_engine_sets_a_bounded_command_timeout(monkeypatch) -> None:
 
     def fake_create_async_engine(url, **kwargs):
         captured.update(kwargs)
-        return object()  # _build_engine only constructs and returns this; never calls anything on it
+        # _build_engine only constructs and returns this; never calls anything on it.
+        return object()
 
     monkeypatch.setattr(session_module, "create_async_engine", fake_create_async_engine)
 
@@ -90,3 +92,59 @@ def test_build_engine_sets_a_bounded_command_timeout(monkeypatch) -> None:
     assert captured["connect_args"]["command_timeout"] == 30.0
     assert captured["connect_args"]["ssl"] is True
     assert captured["pool_recycle"] == 1800
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        # Nothing specified -- stays secure by default (every managed
+        # provider this project targets requires TLS).
+        ("postgresql+asyncpg://u:p@h/db", True),
+        # `.env.example`'s historical spelling, and libpq's own.
+        ("postgresql+asyncpg://u:p@h/db?ssl=require", True),
+        ("postgresql+asyncpg://u:p@h/db?sslmode=require", True),
+        ("postgresql+asyncpg://u:p@h/db?sslmode=verify-full", True),
+        # Railway private networking: a deliberate opt-out.
+        ("postgresql+asyncpg://u:p@pg.railway.internal:5432/railway?sslmode=disable", False),
+        ("postgresql+asyncpg://u:p@h/db?ssl=disable", False),
+        ("postgresql+asyncpg://u:p@h/db?ssl=false", False),
+    ],
+)
+def test_ssl_connect_arg_follows_the_sslmode_parameter(url: str, expected: bool) -> None:
+    assert session_module._ssl_connect_arg(url) is expected
+
+
+def test_normalize_database_url_strips_every_tls_and_libpq_only_param() -> None:
+    normalized = session_module._normalize_database_url(
+        "postgresql+asyncpg://u:p@h/db"
+        "?sslmode=disable&ssl=true&channel_binding=require&application_name=ekip"
+    )
+    assert "sslmode" not in normalized
+    assert "ssl=" not in normalized
+    assert "channel_binding" not in normalized
+    # A genuine asyncpg-understood parameter is left untouched.
+    assert "application_name=ekip" in normalized
+
+
+def test_build_engine_disables_ssl_for_sslmode_disable(monkeypatch) -> None:
+    """Railway private networking: a non-SSL Postgres must not have
+    `ssl=True` forced on it (it would fail the handshake outright).
+    """
+    captured: dict[str, object] = {}
+
+    def fake_create_async_engine(url, **kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(session_module, "create_async_engine", fake_create_async_engine)
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql+asyncpg://u:p@pg.railway.internal:5432/railway?sslmode=disable",
+    )
+    get_settings.cache_clear()
+    try:
+        session_module._build_engine()
+    finally:
+        get_settings.cache_clear()
+
+    assert captured["connect_args"]["ssl"] is False

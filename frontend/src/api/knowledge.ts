@@ -66,11 +66,15 @@ export async function getKnowledgeDocument(id: string): Promise<KnowledgeDocumen
   return apiRequest<KnowledgeDocument>(`/knowledge/${id}`);
 }
 
-export async function listProposedDocuments(): Promise<KnowledgeDocument[]> {
+export async function listProposedDocuments(
+  limit = 50,
+  offset = 0,
+): Promise<KnowledgeDocument[]> {
   if (USE_MOCK_DATA) {
     return mockDelay(mockKnowledgeDocuments.filter((d) => d.status === "proposed"));
   }
-  return apiRequest<KnowledgeDocument[]>(`/knowledge/proposed`);
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  return apiRequest<KnowledgeDocument[]>(`/knowledge/proposed?${params.toString()}`);
 }
 
 /**
