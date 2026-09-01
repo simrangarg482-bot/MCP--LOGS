@@ -16,26 +16,36 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
+import httpx
 import pytest
 
 from app.ingestion.connectors.github import GitHubConnector, _GitHubClient, _RepoConfig
 
 
 class _FakeResponse:
-    def __init__(self, payload: Any) -> None:
+    def __init__(self, payload: Any, status_code: int = 200) -> None:
         self._payload = payload
+        self.status_code = status_code
+
+    @property
+    def text(self) -> str:
+        return json.dumps(self._payload) if not isinstance(self._payload, str) else self._payload
 
     def raise_for_status(self) -> None:
-        return None
+        if self.status_code >= 400:
+            raise httpx.HTTPStatusError(
+                f"{self.status_code}", request=httpx.Request("GET", "http://x"), response=self  # type: ignore[arg-type]
+            )
 
     def json(self) -> Any:
         return self._payload
 
 
 class _FakeHttpClient:
-    """`responses[url]` is either a fixed JSON payload or a callable taking
-    the request's `params` dict and returning a JSON payload (for endpoints
-    whose response depends on pagination/`since`).
+    """`responses[url]` is either a fixed JSON payload, a `_FakeResponse` (to
+    script a non-200 status), or a callable taking the request's `params`
+    dict and returning one of those (for endpoints whose response depends on
+    pagination/`since`).
     """
 
     def __init__(self, responses: dict[str, Any]) -> None:
@@ -46,8 +56,8 @@ class _FakeHttpClient:
         params = params or {}
         self.requests.append((url, params))
         value = self._responses[url]
-        payload = value(params) if callable(value) else value
-        return _FakeResponse(payload)
+        result = value(params) if callable(value) else value
+        return result if isinstance(result, _FakeResponse) else _FakeResponse(result)
 
 
 def _client(repo: str = "acme/widgets", ref: str = "main", **responses: Any) -> _GitHubClient:
@@ -115,6 +125,60 @@ def test_skip_filter_keeps_similarly_named_source_files() -> None:
     assert connector._is_skipped("service/dist/app.js") is True
     assert connector._is_skipped("src/environment.py") is False
     assert connector._is_skipped("src/build_tools/compiler.py") is False
+
+
+@pytest.mark.asyncio
+async def test_full_sync_skips_blobs_over_the_inline_size_limit() -> None:
+    """A >1 MB file cannot be fetched inline via the Contents API -- filter it
+    out at tree-list time so it never triggers the 403 that used to crash the
+    whole sync (observed against a real 51 MB repo on Railway).
+    """
+    connector = GitHubConnector()
+    tree_payload = {
+        "tree": [
+            {"type": "blob", "path": "README.md", "size": 42},
+            {"type": "blob", "path": "data/model.bin", "size": 5_000_000},
+            {"type": "blob", "path": "src/app.py", "size": 900_000},
+        ]
+    }
+    client = _client(
+        **{
+            "repos/acme/widgets/git/trees/main": tree_payload,
+            "repos/acme/widgets/contents/README.md": {"encoding": "base64", "content": _b64("hi")},
+            "repos/acme/widgets/contents/src/app.py": {"encoding": "base64", "content": _b64("x")},
+        },
+    )
+
+    result = await connector.fetch_batch(client, since=None, cursor=None)
+
+    assert {item["path"] for item in result.items} == {"README.md", "src/app.py"}
+    assert not any(url.endswith("model.bin") for url, _ in client.http.requests)
+
+
+@pytest.mark.asyncio
+async def test_fetch_file_content_skips_oversized_403_and_vanished_404() -> None:
+    connector = GitHubConnector()
+    repo = _RepoConfig(repo="acme/widgets", ref="main")
+
+    too_large = _FakeResponse(
+        {"message": "This API returns blobs up to 1 MB in size. The requested blob is too large"},
+        status_code=403,
+    )
+    gone = _FakeResponse({"message": "Not Found"}, status_code=404)
+    rate_limited = _FakeResponse({"message": "API rate limit exceeded"}, status_code=403)
+
+    http = _FakeHttpClient(
+        {
+            "repos/acme/widgets/contents/big.json": too_large,
+            "repos/acme/widgets/contents/deleted.py": gone,
+            "repos/acme/widgets/contents/blocked.py": rate_limited,
+        }
+    )
+
+    assert await connector._fetch_file_content(http, repo, "big.json") is None
+    assert await connector._fetch_file_content(http, repo, "deleted.py") is None
+    with pytest.raises(httpx.HTTPStatusError):
+        await connector._fetch_file_content(http, repo, "blocked.py")
 
 
 @pytest.mark.asyncio

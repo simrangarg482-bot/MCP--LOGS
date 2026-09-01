@@ -139,6 +139,16 @@ _GITHUB_API_BASE_URL = "https://api.github.com/"
 _GITHUB_API_VERSION = "2022-11-28"
 _TREE_PAGE_SIZE = 50  # files per page when walking a full tree
 _COMMITS_PAGE_SIZE = 50  # commits per page when walking history
+
+# GitHub's Contents API returns inline base64 content only for blobs up to
+# 1 MB and answers a larger request with `403` + a "too large" message (not
+# a rate-limit 403). Such files are almost always vendored bundles, lockfiles,
+# datasets or media -- low value for knowledge search and exactly the
+# "oversized -> skip" case `_fetch_file_content`'s own docstring promises.
+# Filtering at tree-list time (where every blob entry already carries its
+# `size`) avoids the wasted request entirely; `_fetch_file_content` still
+# handles the 403 defensively for the incremental path, which has no sizes.
+_MAX_INLINE_BLOB_BYTES = 1_000_000
 _PULLS_PAGE_SIZE = 30  # PRs per page -- smaller than commits: each PR costs
 # three follow-up calls (detail, files, reviews), so a smaller page keeps
 # one fetch_batch call more bounded time-wise.
@@ -150,6 +160,19 @@ _ISSUES_PAGE_SIZE = 30  # same reasoning as pulls (each issue may cost a
 # priority (a caller relying only on file sync sees no change in when its
 # data shows up); commits/pulls/issues are additive phases appended after.
 _PHASES: tuple[str, ...] = ("files", "commits", "pulls", "issues")
+
+
+def _is_blob_too_large(response: httpx.Response) -> bool:
+    """Whether a `403` from the Contents API is the "blob exceeds 1 MB" case
+    rather than a rate limit. GitHub reuses `403` for both; only the message
+    body distinguishes them.
+    """
+    try:
+        message = str(response.json().get("message", ""))
+    except Exception:
+        message = response.text
+    lowered = message.lower()
+    return "too large" in lowered or "up to 1 mb" in lowered
 
 # Mechanical fetch-time filter, not a business judgment about "importance"
 # (that stays in the processing pipeline, PROJECT_PLAN.md section 4.1) --
@@ -385,7 +408,9 @@ class GitHubConnector:
         all_paths = [
             entry["path"]
             for entry in payload.get("tree", [])
-            if entry.get("type") == "blob" and not self._is_skipped(entry["path"])
+            if entry.get("type") == "blob"
+            and not self._is_skipped(entry["path"])
+            and entry.get("size", 0) <= _MAX_INLINE_BLOB_BYTES
         ]
         start = page * _TREE_PAGE_SIZE
         end = start + _TREE_PAGE_SIZE
@@ -440,6 +465,16 @@ class GitHubConnector:
         response = await http.get(
             f"repos/{repo_config.repo}/contents/{path}", params={"ref": repo_config.ref}
         )
+        if response.status_code == 404:
+            # Listed in the recursive tree but gone now -- a commit deleting
+            # it landed between that listing and this fetch. A race, not an
+            # error: skip the file, don't fail the batch.
+            return None
+        if response.status_code == 403 and _is_blob_too_large(response):
+            # >1 MB: GitHub won't return it inline. This is the "oversized"
+            # branch of this function's contract, NOT a rate-limit 403 (which
+            # still raises below so the job backs off and retries).
+            return None
         response.raise_for_status()
         payload = response.json()
         if payload.get("encoding") != "base64" or not payload.get("content"):
