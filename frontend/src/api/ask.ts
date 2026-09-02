@@ -3,17 +3,30 @@ import { USE_MOCK_DATA } from "./config";
 import type { AskResponse, QuestionHistoryEntry, ScoredChunk } from "@/types/ask";
 
 const MOCK_RESPONSE: AskResponse = {
-  confidence: 0.82,
+  confidence: 0.86,
   routeTaken: "answer",
   answer:
-    "This is a mock answer -- set VITE_USE_MOCK_DATA=false to ask the real EKIP retrieval pipeline.",
+    "The payments service moved to the new promo-code engine in v2.14.0, which replaced the " +
+    "per-request discount lookup with a cached ruleset [1]. The rollout also introduced a config " +
+    "migration that back-fills discount rows on deploy [2]. Set VITE_USE_MOCK_DATA=false to query " +
+    "the real EKIP retrieval pipeline.",
   answerMode: "answered",
   citations: [
     {
       documentId: "00000000-0000-0000-0000-000000000001",
       chunkId: "00000000-0000-0000-0000-000000000002",
-      sourceUrl: "https://github.com/example/repo/blob/main/README.md",
-      excerpt: "Example grounding excerpt from a mock source document.",
+      sourceUrl: "https://github.com/acme/payments/blob/main/docs/promo-code-engine.md",
+      excerpt:
+        "v2.14.0 replaces the per-request discount lookup with a cached ruleset evaluated at " +
+        "checkout. The cache is warmed on deploy and invalidated on ruleset change.",
+    },
+    {
+      documentId: "00000000-0000-0000-0000-000000000003",
+      chunkId: "00000000-0000-0000-0000-000000000004",
+      sourceUrl: null,
+      excerpt:
+        "#deploys — promo-code migration runs as a post-deploy job; back-fills any discount rows " +
+        "missing from the previous schema.",
     },
   ],
   investigation: null,
