@@ -273,7 +273,7 @@ export function AskPage() {
                 </div>
               </div>
             ) : (
-              <div className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-4 pb-8 pt-6 sm:px-6">
+              <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 pb-8 pt-6 sm:px-6">
                 {turns.map((turn) => (
                   <ChatMessage
                     key={turn.id}
@@ -288,7 +288,7 @@ export function AskPage() {
 
           {/* Composer */}
           <div className="border-t border-border bg-surface px-3 py-3 sm:px-5">
-            <form onSubmit={handleSubmit} className="mx-auto w-full max-w-5xl">
+            <form onSubmit={handleSubmit} className="mx-auto w-full max-w-6xl">
               <div className="rounded-xl border border-border-strong bg-white shadow-subtle transition-colors focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20">
                 <textarea
                   ref={textareaRef}

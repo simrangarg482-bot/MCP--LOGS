@@ -76,7 +76,7 @@ export function AnswerText({
   }
 
   return (
-    <p className="whitespace-pre-wrap text-sm leading-6 text-ink [word-break:break-word]">
+    <p className="max-w-3xl whitespace-pre-wrap text-sm leading-6 text-ink [word-break:break-word]">
       {segments}
     </p>
   );

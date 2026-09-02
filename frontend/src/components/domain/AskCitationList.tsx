@@ -37,7 +37,7 @@ export function AskCitationList({
       <p className="mb-2 mt-0.5 text-xs text-ink-subtle">
         {citations.length} grounded {citations.length === 1 ? "excerpt" : "excerpts"} · click a number to inspect
       </p>
-      <ul className="flex flex-col gap-1.5">
+      <ul className="grid gap-1.5 lg:grid-cols-2">
         {citations.map((citation, index) => {
           const { label, host } = describeSource(citation.sourceUrl);
           const isActive = activeChunkId != null && activeChunkId === citation.chunkId;

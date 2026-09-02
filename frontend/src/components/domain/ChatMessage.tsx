@@ -60,7 +60,7 @@ export function ChatMessage({ turn, onRetry }: { turn: ChatTurn; onRetry?: () =>
     <div className="flex flex-col gap-3">
       {/* user turn */}
       <div className="flex items-start justify-end gap-2.5">
-        <div className="max-w-2xl whitespace-pre-wrap rounded-2xl rounded-tr-sm bg-accent px-4 py-3 text-sm leading-5 text-white shadow-sm [word-break:break-word]">
+        <div className="max-w-xl whitespace-pre-wrap rounded-2xl rounded-tr-sm bg-accent px-4 py-3 text-sm leading-5 text-white shadow-sm [word-break:break-word]">
           {turn.question}
         </div>
         <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-100 text-ink-muted">
@@ -73,7 +73,7 @@ export function ChatMessage({ turn, onRetry }: { turn: ChatTurn; onRetry?: () =>
         <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-accent-subtle text-accent ring-1 ring-inset ring-accent-border">
           <Sparkles className="h-3.5 w-3.5" />
         </div>
-        <div className="min-w-0 max-w-4xl flex-1 rounded-2xl rounded-tl-sm border border-border bg-surface shadow-subtle">
+        <div className="min-w-0 flex-1 rounded-2xl rounded-tl-sm border border-border bg-surface shadow-subtle">
           {turn.isPending && (
             <div className="flex items-center gap-2.5 px-4 py-4 text-sm text-ink-muted sm:px-5">
               <Loader2 className="h-3.5 w-3.5 animate-spin text-accent" />
