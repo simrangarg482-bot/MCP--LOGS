@@ -291,9 +291,9 @@ export function AskPage() {
               )}
             </div>
 
-            <div className="border-t border-border bg-white/95 px-3 py-3 backdrop-blur sm:px-5 sm:py-4">
+            <div className="border-t border-border bg-white px-3 py-3 sm:px-5">
               <form onSubmit={handleSubmit} className="mx-auto w-full max-w-4xl">
-                <div className="rounded-2xl border border-border-strong bg-white p-2 shadow-[0_8px_30px_-16px_rgba(15,23,42,0.35)] transition focus-within:border-accent focus-within:ring-4 focus-within:ring-accent/10">
+                <div className="rounded-2xl border border-border-strong bg-white shadow-subtle transition-colors focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20">
                   <textarea
                     ref={textareaRef}
                     value={query}
@@ -309,26 +309,20 @@ export function AskPage() {
                     }}
                     placeholder="Ask EKIP anything about your systems…"
                     aria-label="Question for EKIP"
-                    disabled={isSubmitting}
                     rows={1}
-                    className="max-h-36 min-h-[44px] w-full resize-none border-0 bg-transparent px-2.5 py-2.5 text-sm leading-5 text-ink outline-none placeholder:text-ink-subtle disabled:opacity-60"
+                    className="block max-h-36 min-h-[46px] w-full resize-none rounded-t-2xl border-0 bg-transparent px-3.5 py-3 text-sm leading-5 text-ink outline-none placeholder:text-ink-subtle focus:outline-none focus-visible:outline-none focus-visible:ring-0 focus-visible:ring-offset-0"
                   />
-                  <div className="flex items-center justify-between gap-3 px-1">
-                    <div className="flex min-w-0 items-center gap-2 text-[11px] text-ink-subtle">
-                      <span className="hidden items-center gap-1 sm:inline-flex">
-                        <Lightbulb className="h-3 w-3" />
-                        Include a service, incident, or timeframe for better results
-                      </span>
-                      {query.length > 0 && (
-                        <span className="tabular-nums sm:hidden">{query.length} characters</span>
-                      )}
-                    </div>
+                  <div className="flex items-center justify-between gap-3 border-t border-border px-2.5 py-2">
+                    <span className="hidden min-w-0 items-center gap-1.5 truncate text-[11px] text-ink-subtle sm:inline-flex">
+                      <Lightbulb className="h-3 w-3 shrink-0" />
+                      Name a service, incident, or timeframe for a sharper answer
+                    </span>
                     <Button
                       type="submit"
                       variant="primary"
                       isLoading={isSubmitting}
-                      disabled={!query.trim()}
-                      className="ml-auto rounded-xl px-4"
+                      disabled={!query.trim() || isSubmitting}
+                      className="ml-auto shrink-0 rounded-lg px-3.5"
                     >
                       {!isSubmitting && <ArrowUp className="h-4 w-4" />}
                       <span>{isSubmitting ? "Checking evidence" : "Ask EKIP"}</span>
@@ -336,8 +330,7 @@ export function AskPage() {
                   </div>
                 </div>
                 <p className="mt-2 text-center text-[11px] text-ink-subtle">
-                  Enter to send · Shift + Enter for a new line · Verify critical decisions against
-                  cited sources
+                  Enter to send · Shift + Enter for a new line
                 </p>
               </form>
             </div>
