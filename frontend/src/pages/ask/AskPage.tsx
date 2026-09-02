@@ -1,6 +1,22 @@
 import { useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowUp, Clock3, Database, MessageCircleQuestion, ShieldCheck, Sparkles } from "lucide-react";
+import {
+  ArrowUp,
+  BookOpenCheck,
+  Bot,
+  Clock3,
+  Database,
+  GitPullRequest,
+  History,
+  Lightbulb,
+  MessageCircleQuestion,
+  Plus,
+  Search,
+  ShieldCheck,
+  Sparkles,
+  TriangleAlert,
+  type LucideIcon,
+} from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Tabs, TabPanel } from "@/components/ui/Tabs";
 import { Button } from "@/components/ui/Button";
@@ -13,12 +29,45 @@ import type { ApiError } from "@/types/common";
 import type { ChatTurn } from "@/types/ask";
 import { formatDateTime } from "@/utils/date";
 import { formatPercent } from "@/utils/format";
+import { cn } from "@/utils/cn";
 
-const STARTER_QUESTIONS = [
-  "What changed recently in the payments service?",
-  "Have we seen this error before?",
-  "Summarize the latest critical incidents.",
-  "Which services have the most knowledge gaps?",
+interface StarterQuestion {
+  label: string;
+  description: string;
+  question: string;
+  icon: LucideIcon;
+  tone: string;
+}
+
+const STARTER_QUESTIONS: StarterQuestion[] = [
+  {
+    label: "Recent changes",
+    description: "Trace commits, deploys, and configuration changes",
+    question: "What changed recently in the payments service?",
+    icon: GitPullRequest,
+    tone: "bg-accent-subtle text-accent ring-accent-border",
+  },
+  {
+    label: "Similar incidents",
+    description: "Compare symptoms with previous investigations",
+    question: "Have we seen this checkout error before?",
+    icon: Search,
+    tone: "bg-info-subtle text-info ring-info-border",
+  },
+  {
+    label: "Incident briefing",
+    description: "Review impact, evidence, and resolution status",
+    question: "Summarize the latest critical incidents.",
+    icon: TriangleAlert,
+    tone: "bg-warning-subtle text-warning ring-warning-border",
+  },
+  {
+    label: "Knowledge coverage",
+    description: "Find missing or outdated operational guidance",
+    question: "Which services have the most knowledge gaps?",
+    icon: BookOpenCheck,
+    tone: "bg-success-subtle text-success ring-success-border",
+  },
 ];
 
 let turnCounter = 0;
@@ -37,6 +86,11 @@ export function AskPage() {
     enabled: tab === "history",
   });
 
+  function resizeComposer(element: HTMLTextAreaElement) {
+    element.style.height = "auto";
+    element.style.height = `${Math.min(element.scrollHeight, 144)}px`;
+  }
+
   async function submitQuestion(questionValue: string) {
     const question = questionValue.trim();
     if (!question || isSubmitting) return;
@@ -44,16 +98,34 @@ export function AskPage() {
     setTurns((previous) => [...previous, { id: turnId, question, isPending: true }]);
     setQuery("");
     setIsSubmitting(true);
+    if (textareaRef.current) textareaRef.current.style.height = "auto";
     requestAnimationFrame(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }));
     try {
       const response = await askQuestion(question);
-      setTurns((previous) => previous.map((turn) => turn.id === turnId ? { ...turn, isPending: false, response } : turn));
+      setTurns((previous) =>
+        previous.map((turn) =>
+          turn.id === turnId ? { ...turn, isPending: false, response } : turn,
+        ),
+      );
     } catch (error) {
       const apiError = error as ApiError;
-      setTurns((previous) => previous.map((turn) => turn.id === turnId ? { ...turn, isPending: false, error: apiError?.message ?? "Something went wrong." } : turn));
+      setTurns((previous) =>
+        previous.map((turn) =>
+          turn.id === turnId
+            ? {
+                ...turn,
+                isPending: false,
+                error: apiError?.message ?? "Something went wrong.",
+              }
+            : turn,
+        ),
+      );
     } finally {
       setIsSubmitting(false);
-      requestAnimationFrame(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }));
+      requestAnimationFrame(() => {
+        bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+        textareaRef.current?.focus();
+      });
     }
   }
 
@@ -62,89 +134,310 @@ export function AskPage() {
     void submitQuestion(query);
   }
 
+  function startNewConversation() {
+    setTurns([]);
+    setQuery("");
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  }
+
+  function reuseHistoryQuestion(question: string) {
+    setQuery(question);
+    setTab("chat");
+    requestAnimationFrame(() => {
+      if (textareaRef.current) {
+        resizeComposer(textareaRef.current);
+        textareaRef.current.focus();
+      }
+    });
+  }
+
   return (
-    <div className="flex min-h-[calc(100vh-7rem)] flex-col gap-4">
-      <PageHeader title="Ask EKIP" description="Get evidence-backed answers from your engineering knowledge, incidents, code, and conversations." />
-      <Tabs items={[{ key: "chat", label: "Ask" }, { key: "history", label: "History" }]} activeKey={tab} onChange={(key) => setTab(key as "chat" | "history")} idPrefix="ask" />
-
-      {tab === "chat" && (
-        <TabPanel idPrefix="ask" tabKey="chat" className="flex min-h-0 flex-1 flex-col focus:outline-none">
-          <div className="flex-1 overflow-y-auto pb-4 scrollbar-thin" aria-live="polite">
-            {turns.length === 0 ? (
-              <div className="mx-auto flex max-w-3xl flex-col items-center px-2 py-8 text-center sm:py-14">
-                <div className="mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-accent text-white shadow-lg shadow-blue-200">
-                  <Sparkles className="h-6 w-6" />
-                </div>
-                <h2 className="text-2xl font-semibold tracking-tight text-ink">What do you need to know?</h2>
-                <p className="mt-2 max-w-xl text-sm leading-6 text-ink-muted">Ask a question in plain language. EKIP searches connected sources, checks evidence, and shows exactly what supports the response.</p>
-                <div className="mt-7 grid w-full gap-2 sm:grid-cols-2">
-                  {STARTER_QUESTIONS.map((question) => (
-                    <button key={question} type="button" onClick={() => void submitQuestion(question)} className="group flex min-h-14 items-center justify-between gap-3 rounded-xl border border-border bg-white px-4 py-3 text-left text-sm text-ink shadow-subtle transition hover:-translate-y-0.5 hover:border-accent-border hover:shadow-panel">
-                      <span>{question}</span><ArrowUp className="h-4 w-4 shrink-0 rotate-45 text-ink-subtle group-hover:text-accent" />
-                    </button>
-                  ))}
-                </div>
-                <div className="mt-6 flex flex-wrap justify-center gap-x-5 gap-y-2 text-xs text-ink-subtle">
-                  <span className="inline-flex items-center gap-1.5"><Database className="h-3.5 w-3.5" />Connected knowledge</span>
-                  <span className="inline-flex items-center gap-1.5"><ShieldCheck className="h-3.5 w-3.5" />Citation grounded</span>
-                  <span className="inline-flex items-center gap-1.5"><MessageCircleQuestion className="h-3.5 w-3.5" />Confidence routed</span>
-                </div>
-              </div>
-            ) : (
-              <div className="mx-auto flex max-w-4xl flex-col gap-7 pb-3 pt-2">
-                {turns.map((turn) => <ChatMessage key={turn.id} turn={turn} onRetry={() => void submitQuestion(turn.question)} />)}
-                <div ref={bottomRef} />
-              </div>
-            )}
+    <div className="flex h-[calc(100dvh-6.5rem)] min-h-[620px] flex-col gap-4">
+      <PageHeader
+        title="Ask EKIP"
+        description="Investigate your engineering systems with answers grounded in connected evidence."
+        actions={
+          <div className="inline-flex items-center gap-2 rounded-full border border-success-border bg-success-subtle px-3 py-1.5 text-xs font-medium text-success">
+            <span className="relative flex h-2 w-2">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-40" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-success" />
+            </span>
+            Evidence-aware workspace
           </div>
+        }
+      />
 
-          <form onSubmit={handleSubmit} className="mx-auto w-full max-w-4xl pt-2">
-            <div className="rounded-2xl border border-border-strong bg-white p-2 shadow-panel focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/10">
-              <textarea
-                ref={textareaRef}
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submitQuestion(query); }
-                }}
-                placeholder="Ask EKIP anything about your systems…"
-                aria-label="Question for EKIP"
-                autoFocus
-                disabled={isSubmitting}
-                rows={2}
-                className="max-h-36 min-h-[52px] w-full resize-none border-0 bg-transparent px-2.5 py-2 text-sm leading-5 text-ink outline-none placeholder:text-ink-subtle disabled:opacity-60"
-              />
-              <div className="flex items-center justify-between gap-3 px-1">
-                <span className="hidden text-[11px] text-ink-subtle sm:block">Enter to send · Shift + Enter for a new line</span>
-                <Button type="submit" variant="primary" isLoading={isSubmitting} disabled={!query.trim()} className="ml-auto rounded-xl">
-                  {!isSubmitting && <ArrowUp className="h-4 w-4" />}<span className="sr-only sm:not-sr-only">Ask</span>
+      <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-border bg-white shadow-panel">
+        <div className="relative bg-white">
+          <Tabs
+            items={[
+              { key: "chat", label: "Ask" },
+              { key: "history", label: "History" },
+            ]}
+            activeKey={tab}
+            onChange={(key) => setTab(key as "chat" | "history")}
+            idPrefix="ask"
+          />
+          {tab === "chat" && turns.length > 0 && (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={startNewConversation}
+              className="absolute right-2 top-1.5 bg-white"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              New conversation
+            </Button>
+          )}
+        </div>
+
+        {tab === "chat" && (
+          <TabPanel
+            idPrefix="ask"
+            tabKey="chat"
+            className="relative flex min-h-0 flex-1 flex-col bg-[linear-gradient(180deg,#F8FAFC_0%,#FFFFFF_32%)] focus:outline-none"
+          >
+            <div className="min-h-0 flex-1 overflow-y-auto scrollbar-thin" aria-live="polite">
+              {turns.length === 0 ? (
+                <div className="relative isolate mx-auto flex min-h-full max-w-5xl flex-col items-center justify-center overflow-hidden px-4 py-10 text-center sm:px-8">
+                  <div className="pointer-events-none absolute inset-x-8 top-0 -z-10 h-72 rounded-full bg-[radial-gradient(circle_at_center,rgba(37,99,235,0.10),transparent_64%)] blur-2xl" />
+
+                  <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-accent-border bg-white/90 px-3 py-1 text-xs font-medium text-accent shadow-subtle backdrop-blur">
+                    <Sparkles className="h-3.5 w-3.5" />
+                    Your evidence-first engineering assistant
+                  </div>
+
+                  <div className="relative mb-5 flex h-16 w-16 items-center justify-center rounded-[22px] bg-gradient-to-br from-blue-500 to-blue-700 text-white shadow-[0_16px_35px_-14px_rgba(37,99,235,0.7)]">
+                    <Bot className="h-7 w-7" />
+                    <span className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full border-2 border-white bg-success">
+                      <span className="h-1.5 w-1.5 rounded-full bg-white" />
+                    </span>
+                  </div>
+
+                  <h2 className="text-2xl font-semibold tracking-[-0.03em] text-ink sm:text-3xl">
+                    Ask what happened. See why.
+                  </h2>
+                  <p className="mt-2 max-w-2xl text-sm leading-6 text-ink-muted">
+                    EKIP searches incidents, code, runbooks, and conversations, then connects every
+                    answer back to the evidence that supports it.
+                  </p>
+
+                  <div className="mt-7 grid w-full gap-3 sm:grid-cols-2">
+                    {STARTER_QUESTIONS.map((starter) => {
+                      const Icon = starter.icon;
+                      return (
+                        <button
+                          key={starter.question}
+                          type="button"
+                          onClick={() => void submitQuestion(starter.question)}
+                          className="group flex min-h-[92px] items-start gap-3 rounded-xl border border-border bg-white/90 p-3.5 text-left shadow-subtle transition duration-200 hover:-translate-y-0.5 hover:border-accent-border hover:shadow-panel focus-visible:border-accent"
+                        >
+                          <span
+                            className={cn(
+                              "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ring-1 ring-inset",
+                              starter.tone,
+                            )}
+                          >
+                            <Icon className="h-4 w-4" />
+                          </span>
+                          <span className="min-w-0 flex-1">
+                            <span className="flex items-center justify-between gap-2 text-sm font-medium text-ink">
+                              {starter.label}
+                              <ArrowUp className="h-3.5 w-3.5 shrink-0 rotate-45 text-ink-subtle transition group-hover:text-accent" />
+                            </span>
+                            <span className="mt-1 block text-xs leading-5 text-ink-muted">
+                              {starter.description}
+                            </span>
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <div className="mt-7 flex flex-wrap justify-center gap-x-5 gap-y-2 text-xs text-ink-subtle">
+                    <span className="inline-flex items-center gap-1.5">
+                      <Database className="h-3.5 w-3.5" />
+                      Searches connected knowledge
+                    </span>
+                    <span className="inline-flex items-center gap-1.5">
+                      <ShieldCheck className="h-3.5 w-3.5" />
+                      Cites supporting evidence
+                    </span>
+                    <span className="inline-flex items-center gap-1.5">
+                      <MessageCircleQuestion className="h-3.5 w-3.5" />
+                      Escalates uncertainty
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <div className="mx-auto flex max-w-4xl flex-col gap-8 px-4 pb-8 pt-7 sm:px-6">
+                  <div className="flex items-center gap-3 text-xs text-ink-subtle">
+                    <span className="h-px flex-1 bg-border" />
+                    <span className="inline-flex items-center gap-1.5">
+                      <Sparkles className="h-3.5 w-3.5 text-accent" />
+                      Evidence-grounded conversation
+                    </span>
+                    <span className="h-px flex-1 bg-border" />
+                  </div>
+                  {turns.map((turn) => (
+                    <ChatMessage
+                      key={turn.id}
+                      turn={turn}
+                      onRetry={() => void submitQuestion(turn.question)}
+                    />
+                  ))}
+                  <div ref={bottomRef} />
+                </div>
+              )}
+            </div>
+
+            <div className="border-t border-border bg-white/95 px-3 py-3 backdrop-blur sm:px-5 sm:py-4">
+              <form onSubmit={handleSubmit} className="mx-auto w-full max-w-4xl">
+                <div className="rounded-2xl border border-border-strong bg-white p-2 shadow-[0_8px_30px_-16px_rgba(15,23,42,0.35)] transition focus-within:border-accent focus-within:ring-4 focus-within:ring-accent/10">
+                  <textarea
+                    ref={textareaRef}
+                    value={query}
+                    onChange={(event) => {
+                      setQuery(event.target.value);
+                      resizeComposer(event.currentTarget);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && !event.shiftKey) {
+                        event.preventDefault();
+                        void submitQuestion(query);
+                      }
+                    }}
+                    placeholder="Ask EKIP anything about your systems…"
+                    aria-label="Question for EKIP"
+                    disabled={isSubmitting}
+                    rows={1}
+                    className="max-h-36 min-h-[44px] w-full resize-none border-0 bg-transparent px-2.5 py-2.5 text-sm leading-5 text-ink outline-none placeholder:text-ink-subtle disabled:opacity-60"
+                  />
+                  <div className="flex items-center justify-between gap-3 px-1">
+                    <div className="flex min-w-0 items-center gap-2 text-[11px] text-ink-subtle">
+                      <span className="hidden items-center gap-1 sm:inline-flex">
+                        <Lightbulb className="h-3 w-3" />
+                        Include a service, incident, or timeframe for better results
+                      </span>
+                      {query.length > 0 && (
+                        <span className="tabular-nums sm:hidden">{query.length} characters</span>
+                      )}
+                    </div>
+                    <Button
+                      type="submit"
+                      variant="primary"
+                      isLoading={isSubmitting}
+                      disabled={!query.trim()}
+                      className="ml-auto rounded-xl px-4"
+                    >
+                      {!isSubmitting && <ArrowUp className="h-4 w-4" />}
+                      <span>{isSubmitting ? "Checking evidence" : "Ask EKIP"}</span>
+                    </Button>
+                  </div>
+                </div>
+                <p className="mt-2 text-center text-[11px] text-ink-subtle">
+                  Enter to send · Shift + Enter for a new line · Verify critical decisions against
+                  cited sources
+                </p>
+              </form>
+            </div>
+          </TabPanel>
+        )}
+
+        {tab === "history" && (
+          <TabPanel
+            idPrefix="ask"
+            tabKey="history"
+            className="min-h-0 flex-1 overflow-y-auto bg-slate-50/60 focus:outline-none scrollbar-thin"
+          >
+            <div className="mx-auto max-w-4xl px-4 py-7 sm:px-6">
+              <div className="mb-5 flex items-start justify-between gap-4">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <History className="h-4 w-4 text-accent" />
+                    <h2 className="text-base font-semibold text-ink">Question history</h2>
+                  </div>
+                  <p className="mt-1 text-xs leading-5 text-ink-muted">
+                    Reuse a previous question or review how confidently EKIP handled it.
+                  </p>
+                </div>
+                <Button size="sm" variant="secondary" onClick={() => setTab("chat")}>
+                  <Plus className="h-3.5 w-3.5" />
+                  Ask a question
                 </Button>
               </div>
-            </div>
-            <p className="mt-2 text-center text-[11px] text-ink-subtle">Responses can be incomplete. Verify critical decisions against the cited sources.</p>
-          </form>
-        </TabPanel>
-      )}
 
-      {tab === "history" && (
-        <TabPanel idPrefix="ask" tabKey="history" className="flex-1 overflow-y-auto focus:outline-none scrollbar-thin">
-          {historyQuery.isLoading && <LoadingState label="Loading history…" />}
-          {historyQuery.isError && <ErrorState onRetry={() => historyQuery.refetch()} />}
-          {historyQuery.data?.length === 0 && <EmptyState icon={Clock3} title="No questions yet" description="Questions you ask EKIP will show up here." />}
-          {historyQuery.data && historyQuery.data.length > 0 && (
-            <ul className="mx-auto flex max-w-4xl flex-col gap-2">
-              {historyQuery.data.map((entry) => (
-                <li key={entry.id}>
-                  <button type="button" onClick={() => { const question = entry.inputSummary?.query; if (question) { setQuery(question); setTab("chat"); requestAnimationFrame(() => textareaRef.current?.focus()); } }} className="flex w-full flex-col gap-1.5 rounded-xl border border-border bg-white px-4 py-3 text-left shadow-subtle hover:border-accent-border hover:bg-accent-subtle/40">
-                    <div className="flex items-center justify-between gap-3"><p className="truncate text-sm font-medium text-ink">{entry.inputSummary?.query ?? "(no query recorded)"}</p><span className="shrink-0 text-xs text-ink-subtle">{formatDateTime(entry.startedAt)}</span></div>
-                    <div className="flex items-center gap-2 text-xs text-ink-muted"><span className="capitalize">{entry.status}</span>{entry.confidenceScore !== null && <><span className="text-ink-subtle">·</span><span>{formatPercent(entry.confidenceScore)} confidence</span></>}</div>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </TabPanel>
-      )}
+              {historyQuery.isLoading && <LoadingState label="Loading history…" />}
+              {historyQuery.isError && <ErrorState onRetry={() => historyQuery.refetch()} />}
+              {historyQuery.data?.length === 0 && (
+                <div className="rounded-2xl border border-dashed border-border-strong bg-white py-8">
+                  <EmptyState
+                    icon={Clock3}
+                    title="No questions yet"
+                    description="Questions you ask EKIP will show up here."
+                  />
+                </div>
+              )}
+              {historyQuery.data && historyQuery.data.length > 0 && (
+                <ul className="flex flex-col gap-2">
+                  {historyQuery.data.map((entry) => {
+                    const question = entry.inputSummary?.query;
+                    return (
+                      <li key={entry.id}>
+                        <button
+                          type="button"
+                          disabled={!question}
+                          onClick={() => question && reuseHistoryQuestion(question)}
+                          className="group flex w-full items-start gap-3 rounded-xl border border-border bg-white px-4 py-3.5 text-left shadow-subtle transition hover:border-accent-border hover:shadow-panel disabled:cursor-default"
+                        >
+                          <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-accent-subtle text-accent ring-1 ring-inset ring-accent-border">
+                            <MessageCircleQuestion className="h-4 w-4" />
+                          </span>
+                          <span className="min-w-0 flex-1">
+                            <span className="flex items-start justify-between gap-3">
+                              <span className="line-clamp-2 text-sm font-medium leading-5 text-ink">
+                                {question ?? "(no query recorded)"}
+                              </span>
+                              <span className="shrink-0 text-[11px] text-ink-subtle">
+                                {formatDateTime(entry.startedAt)}
+                              </span>
+                            </span>
+                            <span className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-ink-muted">
+                              <span
+                                className={cn(
+                                  "h-1.5 w-1.5 rounded-full",
+                                  entry.status === "succeeded"
+                                    ? "bg-success"
+                                    : entry.status === "failed"
+                                      ? "bg-critical"
+                                      : "bg-warning",
+                                )}
+                              />
+                              <span className="capitalize">{entry.status}</span>
+                              {entry.confidenceScore !== null && (
+                                <>
+                                  <span className="text-ink-subtle">·</span>
+                                  <span>{formatPercent(entry.confidenceScore)} confidence</span>
+                                </>
+                              )}
+                              {question && (
+                                <span className="ml-auto inline-flex items-center gap-1 font-medium text-accent opacity-0 transition group-hover:opacity-100 group-focus-visible:opacity-100">
+                                  Use again
+                                  <ArrowUp className="h-3 w-3 rotate-45" />
+                                </span>
+                              )}
+                            </span>
+                          </span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+          </TabPanel>
+        )}
+      </section>
     </div>
   );
 }
