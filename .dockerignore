@@ -33,10 +33,11 @@ tests/
 .github/
 
 # scripts/ is mostly local eval/live-test/onboarding tooling with no runtime
-# role. The three process entrypoints the image actually runs are the
-# exception (see Dockerfile's COPY) -- `scripts/*` excludes the directory's
-# contents, then the negations re-admit only those files.
+# role. The process entrypoints the image runs, plus the build-time model
+# bake, are the exception (see Dockerfile's COPY) -- `scripts/*` excludes the
+# directory's contents, then the negations re-admit only those files.
 scripts/*
 !scripts/run_api_server.py
 !scripts/run_ingestion_worker.py
 !scripts/run_mcp_server.py
+!scripts/bake_models.py

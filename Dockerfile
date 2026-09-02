@@ -49,6 +49,19 @@ COPY alembic.ini ./
 COPY scripts/run_api_server.py scripts/run_ingestion_worker.py scripts/run_mcp_server.py ./scripts/
 RUN uv sync --frozen --no-dev
 
+# Bake the sentence-transformers models into the image (ENGINEERING_DECISIONS.md
+# #006 embedding model + #009 reranker). Two reasons, both hit in production:
+#   1. The runtime user is non-root with `--no-create-home`, so it has no
+#      `$HOME` to write HuggingFace's default `~/.cache/huggingface` into --
+#      a first embedding call otherwise dies with
+#      `PermissionError: [Errno 13] ... '/home/ekip'`.
+#   2. An unauthenticated first-run download is HuggingFace-rate-limited and
+#      adds tens of seconds to every cold start.
+# `/opt/models` is baked read-only and pointed at by `HF_HOME` in `runtime`.
+ENV HF_HOME=/opt/models
+COPY scripts/bake_models.py ./scripts/
+RUN /app/.venv/bin/python scripts/bake_models.py
+
 
 FROM python:3.13-slim AS runtime
 
@@ -67,10 +80,20 @@ RUN groupadd --system --gid 1000 ekip \
 
 WORKDIR /app
 COPY --from=builder --chown=ekip:ekip /app /app
+# The models baked in the builder stage (see there). Owned by ekip and read
+# via HF_HOME below, so no `$HOME` and no network are needed at runtime.
+COPY --from=builder --chown=ekip:ekip /opt/models /opt/models
 
+# HF_HOME points the sentence-transformers / huggingface_hub cache at the
+# baked-in `/opt/models` (owned by ekip), so the non-root user never needs a
+# writable `$HOME` and the model weights load straight from the image with no
+# download. Not forced fully offline: a cheap metadata check may still run,
+# and recent huggingface_hub falls back to the cached file if it can't.
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    HF_HOME=/opt/models \
+    SENTENCE_TRANSFORMERS_HOME=/opt/models
 
 USER ekip
 
