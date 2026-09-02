@@ -22,9 +22,26 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+import openai
 from langchain_openai import ChatOpenAI
 
 from app.shared.config.settings import get_settings
+
+# Upstream-LLM failures that mean "the provider is unreachable / overloaded /
+# throttling us right now", not "this request is malformed" -- a caller
+# should treat these as retry-later (`core.exceptions.ServiceUnavailableError`,
+# 503), never as a broken request (500). `openai.APIConnectionError` already
+# covers `openai.APITimeoutError` (its subclass). Deliberately excluded:
+# `openai.AuthenticationError` (a bad/absent `OPENAI_API_KEY` is a real
+# deployment fault that must surface loudly) and `openai.BadRequestError`
+# (a malformed prompt is a code bug, not a transient condition).
+# langchain-openai re-raises these `openai` types unchanged -- it only wraps
+# context-overflow errors -- so catching them directly is sufficient.
+TRANSIENT_LLM_ERRORS: tuple[type[BaseException], ...] = (
+    openai.APIConnectionError,
+    openai.RateLimitError,
+    openai.InternalServerError,
+)
 
 # Phase 6.1: `ChatOpenAI`'s own `request_timeout` field defaults to `None`,
 # and -- unlike simply omitting the parameter -- langchain-openai forwards

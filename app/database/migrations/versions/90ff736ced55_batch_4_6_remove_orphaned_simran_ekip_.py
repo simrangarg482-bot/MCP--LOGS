@@ -8,6 +8,15 @@ DRAFT -- NOT YET APPLIED to the real Neon database as of authoring. See
 docs/operations/migration-recovery.md for the full Batch 4.5/4.6
 investigation this closes part of.
 
+`upgrade()` is idempotent (2026-09-02): every object it removes is guarded
+with an existence check, so it is a clean no-op on any database the
+`origin/simran-ekip` branch never touched -- a freshly created CI/local
+database included. Before that fix, its unconditional
+`ALTER TABLE eval_runs ...` / `op.drop_column('agent_executions', ...)`
+statements made `alembic upgrade head` impossible to run against a fresh
+database at all (`UndefinedTable`/`UndefinedColumn`), so the migration
+chain was not reproducible from scratch.
+
 Context: the real, shared Neon development database's `alembic_version` was
 found stamped to a revision (`b3d8f1a6c9e2`) that exists in no branch's
 migration history. Direct schema introspection showed the database actually
@@ -91,11 +100,41 @@ def _direct_using_clause() -> str:
     return f"organization_id = current_setting('{_GUC_NAME}', true)::uuid"
 
 
+# Columns that only ever existed on the `origin/simran-ekip` branch
+# (`d8a2f6c1b9e3`) -- absent from any database that branch never touched.
+_ORPHANED_AGENT_EXECUTION_COLUMNS = (
+    'total_tokens',
+    'completion_tokens',
+    'prompt_tokens',
+    'model_used',
+)
+
+
 def upgrade() -> None:
+    # This migration exists ONLY to undo drift the never-merged
+    # `origin/simran-ekip` branch left on one specific already-diverged
+    # database (see module docstring). On any database that branch never
+    # touched -- a freshly created one for CI or local dev included -- none
+    # of these objects exist, so every step here must be a safe no-op or
+    # `alembic upgrade head` cannot complete at all. `DROP ... IF EXISTS`
+    # covers the policies, indexes and tables; the RLS `ALTER`s and the
+    # `DROP COLUMN`s have no `IF EXISTS` form of their own and are guarded
+    # explicitly below (matching the `DO $$ ... IF ... $$` idempotency style
+    # `b8f3d6a1c4e7` already uses for its own re-runnable role provisioning).
     for table in _RLS_TABLES:
-        op.execute(f'DROP POLICY IF EXISTS {_POLICY_NAME} ON {table}')
-        op.execute(f'ALTER TABLE {table} NO FORCE ROW LEVEL SECURITY')
-        op.execute(f'ALTER TABLE {table} DISABLE ROW LEVEL SECURITY')
+        op.execute(
+            f"""
+            DO $$
+            BEGIN
+                IF to_regclass('public.{table}') IS NOT NULL THEN
+                    DROP POLICY IF EXISTS {_POLICY_NAME} ON {table};
+                    ALTER TABLE {table} NO FORCE ROW LEVEL SECURITY;
+                    ALTER TABLE {table} DISABLE ROW LEVEL SECURITY;
+                END IF;
+            END
+            $$;
+            """
+        )
 
     op.drop_index('ix_eval_case_results_org_id', table_name='eval_case_results', if_exists=True)
     op.drop_index('ix_eval_case_results_run_id', table_name='eval_case_results', if_exists=True)
@@ -104,10 +143,8 @@ def upgrade() -> None:
     op.drop_index('ix_eval_runs_org_started_at', table_name='eval_runs', if_exists=True)
     op.drop_table('eval_runs', if_exists=True)
 
-    op.drop_column('agent_executions', 'total_tokens')
-    op.drop_column('agent_executions', 'completion_tokens')
-    op.drop_column('agent_executions', 'prompt_tokens')
-    op.drop_column('agent_executions', 'model_used')
+    for column in _ORPHANED_AGENT_EXECUTION_COLUMNS:
+        op.execute(f'ALTER TABLE agent_executions DROP COLUMN IF EXISTS {column}')
 
 
 def downgrade() -> None:
@@ -117,6 +154,14 @@ def downgrade() -> None:
     merge revision (see this file's own module docstring: that revision's
     exact contents were never seen and are not reproduced here on principle,
     not merely by omission).
+
+    Not guarded with `IF NOT EXISTS` the way `upgrade()` now guards its
+    drops: `downgrade` is only ever reached after a successful `upgrade()`
+    in the same chain, at which point these objects are guaranteed absent.
+    Running it against a database still carrying the branch objects (only
+    possible by hand, off the alembic chain) will fail on the first
+    `add_column` -- deliberately, rather than silently converging a
+    hand-edited database to a state alembic never put it in.
     """
     op.add_column('agent_executions', sa.Column('model_used', sa.Text(), nullable=True))
     op.add_column('agent_executions', sa.Column('prompt_tokens', sa.Integer(), nullable=True))

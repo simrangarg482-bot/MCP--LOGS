@@ -26,6 +26,7 @@ from langchain_core.language_models import BaseChatModel
 from app.agents.postmortem.action_items import generate_action_items
 from app.agents.postmortem.root_cause import extract_root_cause
 from app.agents.postmortem.timeline import build_narrative, latest_investigation_hypotheses
+from app.agents.retry import call_with_retry
 from app.core.incidents.schemas import ActionItem, TimelineEntry
 
 
@@ -36,11 +37,33 @@ async def run_postmortem_pipeline(
     (`core.incidents.service.get_timeline`'s output), returning
     `(root_cause, action_items)` for the caller to assemble into a
     `Postmortem`.
+
+    Each LLM step runs through `agents.retry.call_with_retry` -- the same
+    2-retries-with-jittered-backoff treatment every other agent LLM call in
+    this codebase gets (`agents.answer.node`, `agents.investigation.node`,
+    `agents.retrieval.*`). This pipeline is not a LangGraph node, so there
+    is no `GraphState.retry_count` to thread; a throwaway dict per call is
+    the same shape `app.evaluation.semantic.runner` uses for the identical
+    off-graph case. On retry exhaustion the exception still propagates:
+    `agents.service.generate_postmortem` marks the run `failed` and re-raises
+    (a transient upstream failure becomes a 503 there, a genuine bug a 500)
+    rather than fabricating a degraded `Postmortem` -- see that module's
+    docstring for why postmortems, unlike `AskResponse`, must never be faked.
+    Retry only stops a single transient blip (a rate-limit, a 503) from
+    reaching that point.
     """
     narrative = build_narrative(timeline_entries)
     candidate_hypotheses = latest_investigation_hypotheses(timeline_entries)
 
-    root_cause = await extract_root_cause(llm, narrative, candidate_hypotheses)
-    action_items = await generate_action_items(llm, narrative, root_cause)
+    root_cause = await call_with_retry(
+        "postmortem.root_cause",
+        lambda: extract_root_cause(llm, narrative, candidate_hypotheses),
+        retry_count={},
+    )
+    action_items = await call_with_retry(
+        "postmortem.action_items",
+        lambda: generate_action_items(llm, narrative, root_cause),
+        retry_count={},
+    )
 
     return root_cause, action_items

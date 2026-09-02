@@ -73,15 +73,25 @@ through `core/` rather than reaching into `app.database` themselves.
 `generate_postmortem` does **not** go through `_run_graph_and_record` (it
 isn't graph-based at all -- AGENT_WORKFLOWS.md section 2.5's "linear
 pipeline, no routing logic," see `agents.postmortem.pipeline`'s module
-docstring) and, more importantly, does **not** follow this module's
-two-tier failure handling either: every failure there -- expected or
-unexpected -- is marked `failed` and re-raised, never converted into a
+docstring) and does **not** follow the "return a fabricated degraded
+result instead of raising" half of this module's failure handling: every
+failure there is marked `failed` and re-raised, never converted into a
 fabricated "degraded" `Postmortem`. `AskResponse` has an honest
 "something went wrong" shape (`answer` is just a string a human reads and
 discards); `Postmortem` does not -- every field is meant to be real,
 reviewable content that a human may click "approve" on. Fabricating one
 to satisfy "never raise" would risk a human approving a postmortem that
 silently says nothing useful, which is worse than the call simply raising.
+
+It *does* still classify what it re-raises, like the rest of this module:
+the pipeline's LLM steps run under `agents.retry.call_with_retry`, and a
+transient provider failure that outlasts those retries
+(`agents.llm.TRANSIENT_LLM_ERRORS`) is re-raised as `ServiceUnavailableError`
+(503, "retry later"), not left to become a generic 500. Everything else --
+a bad `incident_id`, a real bug -- propagates unchanged. Before this,
+`generate_postmortem` was the one agent entry point where an LLM outage
+surfaced to the caller as an unhandled crash rather than a typed,
+retryable error.
 """
 
 from __future__ import annotations
@@ -97,11 +107,11 @@ from app.agents import cost_budget, repository
 from app.agents.graph import GraphState, build_graph, build_investigation_graph
 from app.agents.knowledge_gap import repository as knowledge_gap_repository
 from app.agents.knowledge_gap.pipeline import detect_knowledge_gaps as _run_knowledge_gap_pipeline
-from app.agents.llm import get_llm
+from app.agents.llm import TRANSIENT_LLM_ERRORS, get_llm
 from app.agents.postmortem.pipeline import run_postmortem_pipeline
 from app.agents.schemas import AgentExecution, AgentExecutionStats
 from app.agents.telemetry import get_estimated_cost_usd, summarize_usage
-from app.core.exceptions import EKIPError, PermissionDeniedError
+from app.core.exceptions import EKIPError, PermissionDeniedError, ServiceUnavailableError
 from app.core.incidents import service as incidents_service
 from app.core.incidents.schemas import ActionItem
 from app.core.memory import service as memory_service
@@ -314,6 +324,29 @@ async def generate_postmortem(
 
         llm = get_llm().with_config(callbacks=[usage_handler])
         root_cause, action_items = await run_postmortem_pipeline(llm, timeline_entries)
+    except TRANSIENT_LLM_ERRORS as exc:
+        # A provider outage that survived `run_postmortem_pipeline`'s
+        # retries. Still "mark failed and re-raise" (this module never
+        # fabricates a degraded `Postmortem` -- see module docstring), but
+        # re-raised as a 503 "retry later", not the generic 500 a bare
+        # re-raise would produce: the request is not broken, the upstream is
+        # briefly unavailable. Mirrors the graph-based agents, whose nodes
+        # already treat an exhausted LLM retry as a degradation rather than
+        # a crash -- `generate_postmortem` was previously the one agent
+        # entry point where this surfaced as an unhandled 500.
+        await repository.update_agent_execution(
+            session,
+            execution.id,
+            status="failed",
+            error_detail=str(exc)[:2000],
+            completed_at=datetime.now(UTC),
+            **summarize_usage(usage_handler),
+        )
+        raise ServiceUnavailableError(
+            "The language model provider is temporarily unavailable; postmortem "
+            "generation could not complete. Retry shortly.",
+            error_code="agents.llm_unavailable",
+        ) from exc
     except Exception as exc:
         await repository.update_agent_execution(
             session,

@@ -1,13 +1,14 @@
 """Shared plumbing every MCP tool handler in `mcp/tools/` (and, eventually,
 `mcp/resources/`) runs through: resolve the caller's `Identity` from their
-bearer token, run the handler inside one request-scoped transaction, log the
-outcome to `mcp_requests`, and consistently map an `EKIPError` to a status
-code. Factored out here so no individual tool handler duplicates this
-bookkeeping -- ARCHITECTURE.md section 6 is explicit that "every tool
-handler's body is, without exception: validate input -> resolve Identity ->
-call core/agents -> translate result," and `run_mcp_tool` is what makes that
-literally true in code rather than a convention each handler has to
-remember to follow.
+bearer token, enforce a per-caller request-rate ceiling
+(`app.mcp.rate_limit`), run the handler inside one request-scoped
+transaction, log the outcome to `mcp_requests`, and consistently map an
+`EKIPError` to a status code. Factored out here so no individual tool
+handler duplicates this bookkeeping -- ARCHITECTURE.md section 6 is explicit
+that "every tool handler's body is, without exception: validate input ->
+resolve Identity -> call core/agents -> translate result," and
+`run_mcp_tool` is what makes that literally true in code rather than a
+convention each handler has to remember to follow.
 
 Not named in PROJECT_PLAN.md section 10's file tree (`servers/`, `tools/`,
 `resources/` only) -- a deliberate, flagged addition, the same kind
@@ -41,6 +42,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import EKIPError
 from app.core.observability import service as observability_service
 from app.mcp.auth import resolve_mcp_identity
+from app.mcp.rate_limit import enforce_rate_limit
 from app.mcp.servers import server as server_module
 from app.shared.config.logging import get_logger
 from app.shared.schemas import Identity
@@ -143,6 +145,14 @@ async def run_mcp_tool(
                 organization_id=str(identity.organization_id),
                 user_id=str(identity.user_id) if identity.user_id else None,
             )
+            # Per-caller, per-tool request-rate ceiling (`app.mcp.rate_limit`
+            # -- the MCP counterpart to `app.api.rate_limit`'s per-user
+            # throttling on `POST /ask` etc.). Checked after identity
+            # resolution (it keys on the caller) but before any real work:
+            # a throttled call should cost nothing beyond auth. Raises
+            # `RateLimitedError`, an `EKIPError` the `except EKIPError` below
+            # already logs as a 429 and re-raises.
+            await enforce_rate_limit(tool_name, identity)
             # Milestone 10 RLS backstop: every table `handler` might query
             # from here on is RLS-protected against `organization_id` --
             # this must run before `handler` does anything else on `session`.

@@ -21,8 +21,9 @@ from contextlib import asynccontextmanager
 
 import pytest
 
-from app.core.exceptions import NotFoundError
+from app.core.exceptions import NotFoundError, RateLimitedError
 from app.mcp import dispatch as dispatch_module
+from app.mcp import rate_limit as rate_limit_module
 from app.mcp.dispatch import McpServerNotReadyError, run_mcp_tool
 from app.mcp.servers import server as server_module
 from app.shared.schemas import Identity
@@ -216,6 +217,37 @@ async def test_unexpected_exception_propagates_and_logs_500(
         )
 
     assert fake_observability[0]["status_code"] == 500
+
+
+@pytest.mark.asyncio
+async def test_rate_limited_call_is_rejected_and_logged_429(
+    fake_identity, fake_observability, monkeypatch
+) -> None:
+    """`run_mcp_tool` enforces `app.mcp.rate_limit` after resolving identity
+    -- the gap the 2026-09-02 audit found (MCP tool calls had no ceiling at
+    all). A throttled call must surface as a 429 and never reach `handler`.
+    """
+    server_module.session_factory = _fake_session_factory
+    monkeypatch.setitem(rate_limit_module._PER_TOOL_RPM, "ask_question", 1.0)
+    handler_calls = 0
+
+    async def handler(session, identity):
+        nonlocal handler_calls
+        handler_calls += 1
+        return "ok"
+
+    first = await run_mcp_tool(
+        tool_name="ask_question", raw_token="a-valid-token", request_summary={}, handler=handler
+    )
+    assert first == "ok"
+
+    with pytest.raises(RateLimitedError):
+        await run_mcp_tool(
+            tool_name="ask_question", raw_token="a-valid-token", request_summary={}, handler=handler
+        )
+
+    assert handler_calls == 1  # the throttled call never reached the handler
+    assert fake_observability[-1]["status_code"] == 429
 
 
 @pytest.mark.asyncio
