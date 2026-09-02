@@ -303,6 +303,27 @@ async def resolve_document_organization_id(
 # --- Document metadata -------------------------------------------------------
 
 
+# `document_metadata` has a btree index on `(key, value)`. A btree tuple
+# cannot exceed ~2704 bytes (1/3 of an 8 KB page), so an oversized `value`
+# -- e.g. a GitHub commit that touched hundreds of files, joined into one
+# `changed_files` string -- makes the INSERT fail with
+# `ProgramLimitExceededError` and dead-letters the whole sync. Such values
+# are never usefully queried by exact match anyway; cap them well under the
+# limit (leaving headroom for the key and per-tuple overhead) and mark the
+# cut so a reader knows it is partial.
+_MAX_METADATA_VALUE_BYTES = 2000
+_METADATA_TRUNCATION_MARKER = "…[truncated]"
+
+
+def _fit_metadata_value(value: str) -> str:
+    encoded = value.encode("utf-8")
+    if len(encoded) <= _MAX_METADATA_VALUE_BYTES:
+        return value
+    marker_bytes = len(_METADATA_TRUNCATION_MARKER.encode("utf-8"))
+    kept = encoded[: _MAX_METADATA_VALUE_BYTES - marker_bytes].decode("utf-8", "ignore")
+    return kept + _METADATA_TRUNCATION_MARKER
+
+
 async def insert_document_metadata(
     session: AsyncSession, *, document_id: uuid.UUID, entries: list[DocumentMetadataEntry]
 ) -> None:
@@ -314,7 +335,11 @@ async def insert_document_metadata(
     stale to delete first.
     """
     for entry in entries:
-        session.add(DocumentMetadata(document_id=document_id, key=entry.key, value=entry.value))
+        session.add(
+            DocumentMetadata(
+                document_id=document_id, key=entry.key, value=_fit_metadata_value(entry.value)
+            )
+        )
     await session.flush()
 
 

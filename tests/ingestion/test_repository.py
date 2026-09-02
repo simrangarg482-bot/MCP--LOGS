@@ -132,3 +132,51 @@ async def test_insert_job_recovers_interrupted_predecessor_first() -> None:
     assert "UPDATE ingestion_jobs" in recovery_statement
     assert "ingestion_jobs.status" in recovery_statement
     assert "ingestion_jobs.connector_config_id" in recovery_statement
+
+
+# --- document_metadata value fits under the btree index limit ---------------
+
+
+class _CollectingSession:
+    def __init__(self) -> None:
+        self.rows: list[object] = []
+
+    def add(self, row) -> None:
+        self.rows.append(row)
+
+    async def flush(self) -> None:
+        return None
+
+
+def test_fit_metadata_value_passes_small_values_through() -> None:
+    assert repository._fit_metadata_value("a,b,c") == "a,b,c"
+    assert repository._fit_metadata_value("x" * 2000) == "x" * 2000
+
+
+def test_fit_metadata_value_caps_oversized_values_under_the_btree_limit() -> None:
+    huge = ",".join(f"path/to/file_{i}.py" for i in range(2000))  # ~40 KB
+
+    fitted = repository._fit_metadata_value(huge)
+
+    assert len(fitted.encode("utf-8")) <= repository._MAX_METADATA_VALUE_BYTES
+    assert fitted.endswith(repository._METADATA_TRUNCATION_MARKER)
+    assert fitted.startswith("path/to/file_0.py,")
+
+
+@pytest.mark.asyncio
+async def test_insert_document_metadata_fits_every_value() -> None:
+    from app.ingestion.schemas import DocumentMetadataEntry
+
+    session = _CollectingSession()
+    await repository.insert_document_metadata(
+        session,
+        document_id=uuid.uuid4(),
+        entries=[
+            DocumentMetadataEntry(key="repo", value="acme/widgets"),
+            DocumentMetadataEntry(key="changed_files", value="f.py," * 5000),
+        ],
+    )
+
+    assert [r.key for r in session.rows] == ["repo", "changed_files"]
+    assert session.rows[0].value == "acme/widgets"
+    assert len(session.rows[1].value.encode("utf-8")) <= repository._MAX_METADATA_VALUE_BYTES
