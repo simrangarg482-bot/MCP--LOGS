@@ -19,19 +19,29 @@ requires.
 
 **Signal sourcing, since not every signal is computed here:**
 - `top_similarity` -- seeded into `state.confidence_signals` by the
-  Retrieval Agent (`agents.retrieval.node`), *before* reranking overwrites
-  each chunk's `.score`. It is the top candidate's *fused* RRF score
-  (dense + lexical, across every collection), not a literal cosine/inner-
-  product similarity -- `retrieval.service.search()` only returns the fused
-  result, never each method's raw per-candidate score. Normalized to 0-1
-  here via min-max against the theoretical maximum fused score a candidate
-  could reach (see `_normalize_top_similarity`).
+  Retrieval Agent (`agents.retrieval.node`) via
+  `retrieval.service.search_with_signals`, *before* reranking overwrites
+  each chunk's `.score`. It is the top *dense* hit's cosine similarity
+  (inner product of L2-normalized vectors), a real semantic-match
+  magnitude -- **not** the fused RRF score it used to be. That earlier
+  choice pinned this signal at a near-constant ~0.5 for virtually every
+  query (the top fused chunk is rarely rank-1 in both the dense and lexical
+  list, and is mechanically exactly 0.5 whenever the lexical list is
+  empty), so it discriminated nothing and merely added a constant offset to
+  every confidence score (EKIP audit 2026-09-02, finding 2). Normalized to
+  0-1 here between an empirical floor and ceiling (see
+  `_normalize_top_similarity`).
 - `rerank_score` -- computed here from `state.retrieved_chunks[0].score`
   (the cross-encoder score `agents.retrieval.reranking` already wrote onto
   each chunk). Cross-encoder scores are unbounded logits, squashed through
   a sigmoid to land on the same 0-1 scale as the other signals.
 - `source_count` -- computed here: number of *distinct documents* (not
-  chunks) in `state.retrieved_chunks`, normalized by `_SOURCE_COUNT_CAP`.
+  chunks) in `state.retrieved_chunks`, mapped through a diminishing-returns
+  curve (see `_distinct_source_count_signal`) so a single authoritative
+  document already scores well. The earlier linear `n / 5` mapping scored a
+  fully-correct single-document answer at 0.2, structurally penalising the
+  common case where one runbook/README/postmortem is the complete and
+  correct source (EKIP audit 2026-09-02, finding 1).
 - `historical_similarity` -- for incident-triage calls only, per
   AGENT_WORKFLOWS.md. A real, flagged gap, not a silent omission: computing
   it means searching an "incidents" retrieval collection, and
@@ -69,27 +79,29 @@ _SIGNAL_WEIGHTS: dict[str, float] = {
     "historical_similarity": 0.10,
 }
 
-# Distinct-document count beyond which additional sources stop adding
-# confidence (AGENT_WORKFLOWS.md section 2.2: "five chunks from one stale
-# doc is weaker evidence than one chunk each from five sources" -- this
-# signal rewards distinctness, not an unbounded raw count).
-_SOURCE_COUNT_CAP = 5
+# `_distinct_source_count_signal`'s per-source multiplier: with one distinct
+# document the signal is `1 - _SOURCE_COUNT_DECAY` (0.70), with two it is
+# `1 - _SOURCE_COUNT_DECAY**2` (0.91), and so on -- see AGENT_WORKFLOWS.md
+# section 2.2 ("five chunks from one stale doc is weaker evidence than one
+# chunk each from five sources"): additional *distinct* sources still add
+# confidence, but with diminishing marginal value, and a single solid source
+# is no longer treated as near-zero evidence.
+_SOURCE_COUNT_DECAY = 0.30
 
-# Must match `app.retrieval.ranking.fusion._DEFAULT_K` -- duplicated rather
-# than imported, same "cross-module constant, documented not shared"
-# precedent as `retrieval.embedding.EMBEDDING_DIMENSION` duplicating
-# `retrieval_models._EMBEDDING_DIMENSION` (that one for a leaf-module import
-# restriction; this one to avoid reaching into another module's private
-# constant for a single derived value).
-_RRF_K = 60
-# `retrieval.service.search()` runs both `search()` (dense) and
-# `lexical_search()` (lexical) for each of the 3 collections -- 6 ranked
-# lists feed reciprocal rank fusion in total, but any single chunk lives in
-# exactly one collection's `<collection>_chunks` table, so it can only ever
-# appear in *its own* collection's 2 lists (dense + lexical), never all 6.
-# The theoretical ceiling for one candidate's fused score is therefore both
-# of those 2 lists ranking it #1: `2 * (1 / (k + 1))`.
-_MAX_POSSIBLE_FUSED_SCORE = 2 / (_RRF_K + 1)
+# `_normalize_top_similarity`'s min-max endpoints for all-MiniLM-L6-v2
+# query/document cosine similarity. `_DENSE_SIMILARITY_FLOOR` is the same
+# "genuine topical match" cut-off `app.shared.config.settings.
+# memory_relevance_threshold` already uses for this exact embedding model;
+# `_DENSE_SIMILARITY_CEILING` is a deliberately conservative "strong match"
+# value. Both are provisional placeholders in the same sense
+# `_normalize_rerank_score`'s were before the 2026-08-30 live trace
+# calibrated them -- re-run `scripts/eval_confidence.py` against live data
+# and tighten these (and re-tune `Settings.confidence_threshold`, whose
+# whole score distribution this change shifts) before trusting the routing
+# numbers. See that script and the `confidence_threshold` comment in
+# `app/shared/config/settings.py`.
+_DENSE_SIMILARITY_FLOOR = 0.35
+_DENSE_SIMILARITY_CEILING = 0.65
 
 
 def evaluate_confidence(state: GraphState) -> dict[str, Any]:
@@ -119,7 +131,8 @@ def evaluate_confidence(state: GraphState) -> dict[str, Any]:
     # `state.confidence_signals` -- nothing does yet, see module docstring.
 
     confidence_score = _weighted_score(signals)
-    # `confidence_threshold`'s default is evaluated, not guessed -- see
+    # `confidence_threshold`'s default (0.5, provisional since the
+    # 2026-09-02 signal changes) has a documented basis -- see
     # `scripts/eval_confidence.py` and the evidence comment on this field in
     # `app/shared/config/settings.py` before changing it.
     threshold = get_settings().confidence_threshold
@@ -150,15 +163,21 @@ def confidence_evaluation_node(state: GraphState) -> dict[str, Any]:
     return evaluate_confidence(state)
 
 
-def _normalize_top_similarity(raw_fused_score: float) -> float:
-    """Min-max normalize a fused RRF score to 0-1 against the theoretical
-    maximum a candidate could reach (see `_MAX_POSSIBLE_FUSED_SCORE`).
-    Clamped, not just divided: a chunk cannot exceed the theoretical
-    ceiling in practice, but clamping guards against drift if the fusion
-    inputs (list count, `k`) ever change without this constant being
-    updated in lockstep.
+def _normalize_top_similarity(raw_dense_similarity: float) -> float:
+    """Min-max normalize the top dense hit's cosine similarity to 0-1
+    between `_DENSE_SIMILARITY_FLOOR` and `_DENSE_SIMILARITY_CEILING`,
+    clamped at both ends.
+
+    Fed a real semantic-match magnitude by `agents.retrieval.node` (via
+    `retrieval.service.search_with_signals`) -- the inner product of the
+    L2-normalized query and best-matching chunk vectors. It was previously
+    fed the top candidate's *fused RRF score* and divided by a theoretical
+    2-list-agreement ceiling, which made it a near-constant ~0.5 for
+    essentially every query and so contributed nothing but a fixed offset
+    to the weighted score (EKIP audit 2026-09-02, finding 2).
     """
-    return max(0.0, min(1.0, raw_fused_score / _MAX_POSSIBLE_FUSED_SCORE))
+    span = _DENSE_SIMILARITY_CEILING - _DENSE_SIMILARITY_FLOOR
+    return max(0.0, min(1.0, (raw_dense_similarity - _DENSE_SIMILARITY_FLOOR) / span))
 
 
 def _normalize_rerank_score(raw_score: float) -> float:
@@ -181,11 +200,24 @@ def _normalize_rerank_score(raw_score: float) -> float:
 
 def _distinct_source_count_signal(chunks: list[ScoredChunk]) -> float:
     """Number of *distinct documents* represented in `chunks` (not chunk
-    count -- AGENT_WORKFLOWS.md section 2.2's own distinction), normalized
-    to 0-1 by `_SOURCE_COUNT_CAP`.
+    count -- AGENT_WORKFLOWS.md section 2.2's own distinction), mapped to
+    0-1 through a diminishing-returns curve: 0 sources -> 0.0, 1 -> 0.70,
+    2 -> 0.91, 3 -> 0.973, 4 -> 0.992.
+
+    A single authoritative document (one runbook, one README, one
+    postmortem) is often the complete and correct source for a question,
+    not weak evidence -- the earlier linear `distinct_count / 5` mapping
+    scored that common case at 0.2 and dragged otherwise-answerable
+    single-source questions below the routing threshold (EKIP audit
+    2026-09-02, finding 1). Additional distinct sources still raise the
+    signal (corroboration across independent documents is genuinely
+    stronger evidence), just with diminishing marginal value rather than
+    being the precondition for any confidence at all.
     """
-    distinct_documents = {chunk.document_id for chunk in chunks}
-    return min(len(distinct_documents) / _SOURCE_COUNT_CAP, 1.0)
+    distinct_document_count = len({chunk.document_id for chunk in chunks})
+    if distinct_document_count == 0:
+        return 0.0
+    return 1.0 - _SOURCE_COUNT_DECAY**distinct_document_count
 
 
 def _weighted_score(signals: dict[str, float]) -> float:

@@ -124,3 +124,30 @@ class ScoredChunk(BaseModel):
     title: str | None = None
     source_url: str | None = None
     metadata: dict[str, str] = Field(default_factory=dict)
+
+
+class HybridSearchResult(BaseModel):
+    """`retrieval.service.search_with_signals()`'s return value: the fused
+    ranked chunks (identical to what `search()` returns) *plus* the
+    pre-fusion retrieval-quality signals that a `list[ScoredChunk]` cannot
+    carry.
+
+    `search()` returns only the reciprocal-rank-fused list, whose per-chunk
+    `score` is a rank-based RRF value with almost no dynamic range -- fine
+    for ordering, useless as a "how good is the best match" magnitude. The
+    Retrieval Agent needs that magnitude to seed
+    `GraphState.confidence_signals["top_similarity"]` (`app.agents.
+    confidence`), so this shape exposes it without changing `search()`'s
+    contract or adding a query.
+
+    `top_dense_similarity` is the cosine similarity (inner product of the
+    L2-normalized query and chunk vectors -- see `PgVectorStore.search`'s
+    docstring) of the single best *dense* hit, taken before RRF fusion
+    flattens it. `None` when dense search returned nothing at all (an empty
+    corpus, or every candidate filtered out by tenancy/ACL).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    chunks: list[ScoredChunk]
+    top_dense_similarity: float | None = None

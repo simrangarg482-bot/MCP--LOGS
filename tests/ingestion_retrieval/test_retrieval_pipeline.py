@@ -53,7 +53,7 @@ RUN
 
 COMMON FAILURES
     - `route_taken == "investigation"` instead of `"answer"`: confidence
-      scored below `settings.confidence_threshold` (default 0.6) -- means
+      scored below `settings.confidence_threshold` (default 0.5) -- means
       retrieval didn't find strong matches for that question, most often
       because too little/no relevant data has been ingested yet.
     - `answer == "NO_ANSWER"` equivalent / grounding empties the answer:

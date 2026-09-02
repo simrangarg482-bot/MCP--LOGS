@@ -81,9 +81,9 @@ def make_retrieval_agent_node(
         )
 
         try:
-            candidates = await call_with_retry(
+            hybrid_result = await call_with_retry(
                 "retrieval_agent.hybrid_search",
-                lambda: retrieval_service.search(
+                lambda: retrieval_service.search_with_signals(
                     session, rewritten_query, filters, _CANDIDATE_POOL_SIZE
                 ),
                 retry_count=state.retry_count,
@@ -95,21 +95,25 @@ def make_retrieval_agent_node(
                 query=rewritten_query,
                 error=str(exc),
             )
-            candidates = []
+            hybrid_result = None
 
-        # Captured before `rerank()` overwrites each chunk's `.score` with
-        # its cross-encoder score (reranking.py) -- the Confidence
-        # Evaluation node (task #19) needs both signals separately
-        # (AGENT_WORKFLOWS.md section 2.2 lists "top_similarity" and
-        # "rerank_score" as two distinct signals, not the same value read
-        # twice). This is the top candidate's *fused* retrieval score (RRF
-        # over dense + lexical, across every collection -- `retrieval.
-        # service.search()`'s return value), not a literal cosine/inner-
-        # product similarity: `retrieval.service.search()` only exposes the
-        # fused result, not each method's raw per-candidate score
-        # separately. `agents.confidence`'s module docstring documents the
-        # exact normalization applied to this value.
-        top_fused_score = candidates[0].score if candidates else 0.0
+        candidates = hybrid_result.chunks if hybrid_result is not None else []
+
+        # `top_similarity` for the Confidence Evaluation node (task #19): the
+        # top *dense* hit's cosine similarity -- a real semantic-match
+        # magnitude (inner product of L2-normalized vectors), captured
+        # before `rerank()` overwrites each chunk's `.score`. It is a
+        # distinct signal from "rerank_score" (AGENT_WORKFLOWS.md section
+        # 2.2). `search_with_signals` returns `None` for it when dense
+        # search found nothing at all; 0.0 here is then read as "no match",
+        # the same as an empty candidate set. `agents.confidence` documents
+        # the normalization applied. Seeding the raw *fused RRF score* here
+        # instead (the old behavior) pinned this signal at a near-constant
+        # ~0.5 for essentially every query -- EKIP audit 2026-09-02,
+        # finding 2.
+        top_dense_similarity = 0.0
+        if hybrid_result is not None and hybrid_result.top_dense_similarity is not None:
+            top_dense_similarity = hybrid_result.top_dense_similarity
 
         if get_settings().agent_reranking_enabled:
             narrowed = await rerank(rewritten_query, candidates, top_k=_RERANKED_TOP_K)
@@ -125,7 +129,7 @@ def make_retrieval_agent_node(
             "retrieved_chunks": assembled_chunks,
             "rewritten_query": rewritten_query,
             "retry_count": state.retry_count,
-            "confidence_signals": {"top_similarity": top_fused_score},
+            "confidence_signals": {"top_similarity": top_dense_similarity},
         }
 
     return node

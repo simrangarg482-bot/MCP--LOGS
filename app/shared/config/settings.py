@@ -106,33 +106,48 @@ class Settings(BaseSettings):
     )
 
     # --- Agent behavior (AGENT_WORKFLOWS.md 2.2) ---------------------------
-    # `default=0.6` kept, not changed, per a real `scripts/eval_confidence.py`
-    # run against `test-org`'s live corpus (2026-08-13, 36 questions: 14
-    # clear-answer / 12 ambiguous / 10 no-information; full report in
-    # scripts/eval_confidence_report.json). Findings:
-    #   - Sweeping 0.40-0.80 found 0.40 scores marginally higher on F1 (0.700
-    #     vs 0.6's 0.667) -- a 0.033 margin on 36 questions, i.e. well within
-    #     one question flipping category by chance. Not treated as evidence
-    #     for a change; the harness itself flags margins this small.
-    #   - More importantly: clear-answer confidence (0.422-1.000) and
-    #     ambiguous confidence (0.572-1.000) ranges overlap substantially --
-    #     an "ambiguous" question (topically relevant chunk retrieved, but
-    #     missing the specific fact asked) scores nearly as high as a
-    #     genuinely answerable one, because `top_similarity`/`rerank_score`
-    #     (app/agents/confidence.py) measure topical relevance, not whether
-    #     the specific fact is present. No threshold in this sweep -- or any
-    #     other -- can cleanly separate them; that is a signal-quality gap in
-    #     the confidence formula itself, not a threshold-tuning one.
-    #   - no-information confidence clustered tightly at ~0.389, well
-    #     separated from both other categories -- the gate reliably catches
-    #     fully-out-of-domain questions regardless of where the threshold
-    #     sits in this range.
-    # Re-run scripts/eval_confidence.py against a larger/refreshed dataset
-    # (and/or after improving the confidence signals themselves) before
-    # revisiting this default -- update this comment with that run's date
-    # and findings if it ever changes.
+    # `default=0.5` as of 2026-09-02 (was 0.6). PROVISIONAL -- a projection,
+    # not a fresh sweep. Background:
+    #
+    # The 2026-08-13 `scripts/eval_confidence.py` run against `test-org`'s
+    # live corpus (36 questions: 14 clear-answer / 12 ambiguous / 10
+    # no-information; scripts/eval_confidence_report.json) measured the OLD
+    # confidence signals. It found:
+    #   - Sweeping 0.40-0.80, 0.40 scored marginally higher on F1 (0.700 vs
+    #     0.6's 0.667) -- a 0.033 margin on 36 questions, within one question
+    #     flipping category by chance, so not acted on at the time.
+    #   - 2 of 14 clear-answer questions misrouted to investigation at 0.6
+    #     (confidence 0.422 and 0.454) -- both single-source questions.
+    #   - clear-answer (0.422-1.000) and ambiguous (0.572-1.000) confidence
+    #     ranges overlapped: `top_similarity`/`rerank_score` measured topical
+    #     relevance, not whether the specific fact asked was present. No
+    #     threshold separates those two -- a signal-quality gap, not a
+    #     threshold-tuning one.
+    #   - no-information clustered tightly at ~0.389, well clear of the gate.
+    #
+    # `app/agents/confidence.py` was then changed (EKIP audit findings 1
+    # and 2): `source_count` no longer scores a single-source answer at 0.2
+    # (diminishing-returns curve, 1 source -> 0.70), and `top_similarity` is
+    # now the top dense cosine similarity, not a near-constant ~0.5 fused-RRF
+    # artifact. Working the weighted formula through with those signals and
+    # the 2026-08-13 per-category behavior projects: no-information ~0.17
+    # (far below any sane gate), the two former misroutes back above ~0.55,
+    # clear-answer strong ~0.85, ambiguous still ~0.80 and still overlapping
+    # clear-answer (that signal-quality gap is unchanged). 0.5 sits below
+    # the weakest projected genuine clear-answer and well above
+    # no-information; going lower mostly just raises the
+    # confidently-wrong-answer (false-positive) rate without rescuing more
+    # clear-answer questions. Exact per-question values depend on
+    # cross-encoder logits this projection had to estimate -- hence
+    # provisional.
+    #
+    # CONFIRM THIS: re-run
+    # `scripts/eval_confidence.py --compare-to scripts/eval_confidence_report.json`
+    # against live `test-org` data, check its per-category regression output,
+    # set this from that sweep, and replace this comment with the run's date
+    # and findings. scripts/eval_confidence_report.json is stale until then.
     confidence_threshold: float = Field(
-        default=0.6,
+        default=0.5,
         ge=0.0,
         le=1.0,
     )
@@ -181,9 +196,10 @@ class Settings(BaseSettings):
         le=1.0,
         description=(
             "Minimum cosine relevance (1 - cosine_distance) for a recalled "
-            "memory to be injected. A placeholder, honestly labelled: unlike "
-            "confidence_threshold, this has NOT been empirically calibrated, "
-            "because doing so needs a real memory corpus that does not exist "
+            "memory to be injected. A placeholder, honestly labelled: like "
+            "confidence_threshold's current default, this has NOT been "
+            "directly swept against real data, because doing so needs a real "
+            "memory corpus that does not exist "
             "yet. 0.35 is set low enough to admit genuine topical matches "
             "and high enough to exclude the unrelated -- verified only "
             "against the deterministic fixtures in tests/core/memory/, not "

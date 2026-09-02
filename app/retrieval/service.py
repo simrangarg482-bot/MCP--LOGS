@@ -60,7 +60,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.retrieval import embedding
 from app.retrieval.pgvector.store import PgVectorStore
 from app.retrieval.ranking.fusion import reciprocal_rank_fusion
-from app.retrieval.schemas import CollectionName, ScoredChunk, SearchFilters, UpsertChunk
+from app.retrieval.schemas import (
+    CollectionName,
+    HybridSearchResult,
+    ScoredChunk,
+    SearchFilters,
+    UpsertChunk,
+)
 
 # Every collection this milestone supports (`app.database.models.
 # retrieval_models`'s module docstring: no "incidents" collection yet).
@@ -119,6 +125,39 @@ async def search(
         )
 
     return reciprocal_rank_fusion(result_lists, top_k=top_k)
+
+
+async def search_with_signals(
+    session: AsyncSession,
+    query: str,
+    filters: SearchFilters,
+    top_k: int,
+) -> HybridSearchResult:
+    """`search()` over every collection (no metadata join), but also
+    returning the pre-fusion retrieval-quality signals `app.agents.
+    confidence` reads -- see `HybridSearchResult`'s docstring for why this
+    exists as a separate entry point rather than a richer `search()` return.
+
+    Same query cost as `search()`'s all-collections fast path: it runs the
+    identical `search_all` (dense) + `lexical_search_all` (lexical) passes
+    and the same `reciprocal_rank_fusion`, and simply keeps the top dense
+    score that fusion would otherwise discard. Only the Retrieval Agent
+    (`app.agents.retrieval.node`) calls this; every other caller
+    (ingestion, the Investigation Agent's collection-scoped steps) still
+    uses `search()`.
+    """
+    query_embedding = await embedding.embed_query(query)
+    dense = await _store.search_all(session, query_embedding, filters, top_k)
+    lexical = await _store.lexical_search_all(session, query, filters, top_k)
+    fused = reciprocal_rank_fusion([dense, lexical], top_k=top_k)
+    return HybridSearchResult(
+        chunks=fused,
+        # `dense` is ordered by similarity descending (`search_all` ends with
+        # `ORDER BY distance ASC` over the negated inner product), so [0] is
+        # the single best dense hit. Its `score` is already negated back to a
+        # normal cosine similarity by `PgVectorStore`.
+        top_dense_similarity=dense[0].score if dense else None,
+    )
 
 
 async def upsert(session: AsyncSession, chunks: list[UpsertChunk]) -> None:
