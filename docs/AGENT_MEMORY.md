@@ -1,4 +1,4 @@
-# EKIP — Persistent Agent Memory
+# EKIP — Persistent Agent 
 
 Implementation: `app/core/memory/`. Table: `agent_memories` (migration
 `f1a2b3c4d5e6`). API: `/memories`. Config: `memory_recall_limit`,
