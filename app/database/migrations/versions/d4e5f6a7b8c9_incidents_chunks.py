@@ -1,8 +1,17 @@
 """incidents_chunks: the missing "incidents" retrieval collection
 
 Revision ID: d4e5f6a7b8c9
-Revises: b1c2d3e4f5a6
+Revises: c2d3e4f5a6b7
 Create Date: 2026-09-05 00:00:00.000000
+
+Rechained onto `c2d3e4f5a6b7` (ingestion progress/dead-letter columns), not
+`b1c2d3e4f5a6` -- `b1c2d3e4f5a6` was the single head at the time this
+migration was first written, but `c2d3e4f5a6b7` was added on top of it
+before this one was deployed, producing two heads off the same parent
+("Multiple head revisions are present for given argument 'head'"). This
+migration's own logic has no dependency on which one it follows -- it only
+touches the new `incidents_chunks` table -- so rechaining is a pure
+metadata fix, not a behavior change.
 
 Closes EKIP audit finding 6: `retrieval.schemas.CollectionName` had no
 `"incidents"` entry and nothing produced embeddable chunks for one (see
@@ -31,7 +40,7 @@ import pgvector
 
 # revision identifiers, used by Alembic.
 revision: str = 'd4e5f6a7b8c9'
-down_revision: str | None = 'b1c2d3e4f5a6'
+down_revision: str | None = 'c2d3e4f5a6b7'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
