@@ -15,6 +15,7 @@ import {
   GitBranch,
   Notebook,
   Siren,
+  AlertTriangle,
 } from "lucide-react";
 import type { Connector } from "@/types/connector";
 import { Card, CardContent } from "@/components/ui/Card";
@@ -38,6 +39,12 @@ const SOURCE_ICON: Record<Connector["source"], LucideIcon> = {
   servicenow: Database,
   pagerduty: Siren,
   monitoring: Activity,
+  // Audit finding 6's internal, credential-less connector (mirrors
+  // `runbooks` -- never selectable from `ConnectConnectorModal`'s "Connect
+  // a source" picker, only ever registered via the API, same as
+  // `runbooks`) -- see `app.core.tenancy.schemas.ConnectorSource` and
+  // `app.ingestion.connectors.incidents.IncidentsConnector`.
+  incidents: AlertTriangle,
 };
 
 function configSummary(connector: Connector): string | null {
