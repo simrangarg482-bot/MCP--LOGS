@@ -15,7 +15,8 @@ export type ConnectorSource =
   | "notion"
   | "servicenow"
   | "pagerduty"
-  | "monitoring";
+  | "monitoring"
+  | "incidents";
 
 /** Mirrors `app.core.tenancy.schemas.ConnectorStatus`. */
 export type ConnectorStatus = "connecting" | "active" | "error" | "disconnected";

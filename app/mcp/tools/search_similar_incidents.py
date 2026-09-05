@@ -5,8 +5,12 @@ Wraps `agents.search_similar_incidents`, not `retrieval.search` directly --
 touches database or retrieval directly" contract forbids that *direct*
 import, not just transitive chains), so the thin `SearchFilters`-resolution
 wrapper lives in `agents/service.py` instead (see that function's own
-docstring for why, and for the flagged gap versus API_DESIGN.md's literal
-`collection="incidents"` wording -- no such collection exists).
+docstring). That wrapped function now really does search a first-class
+`collection="incidents"` (audit finding 6 -- `retrieval.schemas.
+CollectionName` and `app.ingestion.connectors.incidents.IncidentsConnector`),
+matching API_DESIGN.md's literal wording; it previously searched whatever
+the all-collections default happened to fuse together, since no such
+collection existed yet.
 """
 
 from __future__ import annotations
