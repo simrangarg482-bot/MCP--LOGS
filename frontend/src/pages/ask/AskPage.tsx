@@ -20,9 +20,16 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { LoadingState } from "@/components/ui/LoadingState";
 import { ErrorState } from "@/components/ui/ErrorState";
 import { ChatMessage } from "@/components/domain/ChatMessage";
-import { askQuestion, getQuestionHistory } from "@/api/ask";
+import {
+  askQuestion,
+  getQuestionHistory,
+  searchRecentChanges,
+  searchSimilarIncidents,
+} from "@/api/ask";
+import { listIncidents } from "@/api/incidents";
+import { listGapReports } from "@/api/knowledge";
 import type { ApiError } from "@/types/common";
-import type { ChatTurn } from "@/types/ask";
+import type { ChatTurn, QuickActionKind } from "@/types/ask";
 import { formatDateTime } from "@/utils/date";
 import { formatPercent } from "@/utils/format";
 import { cn } from "@/utils/cn";
@@ -33,6 +40,13 @@ interface StarterQuestion {
   question: string;
   icon: LucideIcon;
   tone: string;
+  /**
+   * Which capability this quick action should invoke -- see
+   * `QuickActionKind`'s docstring (types/ask.ts). Each of the four starter
+   * buttons below routes to its own specialized, already-existing endpoint
+   * instead of the generic confidence-routed `/ask` flow.
+   */
+  action: QuickActionKind;
 }
 
 const STARTER_QUESTIONS: StarterQuestion[] = [
@@ -42,6 +56,7 @@ const STARTER_QUESTIONS: StarterQuestion[] = [
     question: "What changed recently in the payments service?",
     icon: GitPullRequest,
     tone: "bg-accent-subtle text-accent ring-accent-border",
+    action: "recent_changes",
   },
   {
     label: "Similar incidents",
@@ -49,6 +64,7 @@ const STARTER_QUESTIONS: StarterQuestion[] = [
     question: "Have we seen this checkout error before?",
     icon: Search,
     tone: "bg-info-subtle text-info ring-info-border",
+    action: "similar_incidents",
   },
   {
     label: "Incident briefing",
@@ -56,6 +72,7 @@ const STARTER_QUESTIONS: StarterQuestion[] = [
     question: "Summarize the latest critical incidents.",
     icon: TriangleAlert,
     tone: "bg-warning-subtle text-warning ring-warning-border",
+    action: "incident_briefing",
   },
   {
     label: "Knowledge coverage",
@@ -63,6 +80,7 @@ const STARTER_QUESTIONS: StarterQuestion[] = [
     question: "Which services have the most knowledge gaps?",
     icon: BookOpenCheck,
     tone: "bg-success-subtle text-success ring-success-border",
+    action: "knowledge_coverage",
   },
 ];
 
@@ -93,7 +111,7 @@ export function AskPage() {
     const question = questionValue.trim();
     if (!question || isSubmitting) return;
     const turnId = `turn-${++turnCounter}`;
-    setTurns((previous) => [...previous, { id: turnId, question, isPending: true }]);
+    setTurns((previous) => [...previous, { id: turnId, question, action: "ask", isPending: true }]);
     setQuery("");
     setIsSubmitting(true);
     if (textareaRef.current) textareaRef.current.style.height = "auto";
@@ -124,6 +142,77 @@ export function AskPage() {
         bottomRef.current?.scrollIntoView({ behavior: "smooth" });
         textareaRef.current?.focus();
       });
+    }
+  }
+
+  /**
+   * Runs one of the four Ask EKIP quick-action buttons. Each `action` maps
+   * to its own specialized, already-existing endpoint (recent-changes /
+   * similar-incidents search, the critical-incidents list, or the
+   * Knowledge Gap Agent's report list) rather than being funneled through
+   * the generic confidence-routed `askQuestion`/`POST /ask` flow those
+   * endpoints were never meant to substitute for -- see the docstring on
+   * `QuickActionKind` (types/ask.ts) for why.
+   */
+  async function runStarterAction(question: string, action: QuickActionKind) {
+    if (isSubmitting) return;
+    const turnId = `turn-${++turnCounter}`;
+    setTurns((previous) => [...previous, { id: turnId, question, action, isPending: true }]);
+    setIsSubmitting(true);
+    requestAnimationFrame(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }));
+
+    function resolve(update: Partial<ChatTurn>) {
+      setTurns((previous) =>
+        previous.map((turn) => (turn.id === turnId ? { ...turn, isPending: false, ...update } : turn)),
+      );
+    }
+
+    try {
+      switch (action) {
+        case "recent_changes": {
+          const searchResults = await searchRecentChanges(question, { collection: "code" });
+          resolve({ searchResults });
+          break;
+        }
+        case "similar_incidents": {
+          const searchResults = await searchSimilarIncidents(question);
+          resolve({ searchResults });
+          break;
+        }
+        case "incident_briefing": {
+          const incidentResults = await listIncidents({ severity: "critical" });
+          resolve({ incidentResults });
+          break;
+        }
+        case "knowledge_coverage": {
+          const gapResults = await listGapReports();
+          resolve({ gapResults });
+          break;
+        }
+        case "ask": {
+          const response = await askQuestion(question);
+          resolve({ response });
+          break;
+        }
+      }
+    } catch (error) {
+      const apiError = error as ApiError;
+      resolve({ error: apiError?.message ?? "Something went wrong." });
+    } finally {
+      setIsSubmitting(false);
+      requestAnimationFrame(() => {
+        bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+        textareaRef.current?.focus();
+      });
+    }
+  }
+
+  /** Retries a turn using whichever capability originally produced it. */
+  function retryTurn(turn: ChatTurn) {
+    if (turn.action === "ask") {
+      void submitQuestion(turn.question);
+    } else {
+      void runStarterAction(turn.question, turn.action);
     }
   }
 
@@ -232,7 +321,7 @@ export function AskPage() {
                       <button
                         key={starter.question}
                         type="button"
-                        onClick={() => void submitQuestion(starter.question)}
+                        onClick={() => void runStarterAction(starter.question, starter.action)}
                         className="group flex items-start gap-3 rounded-lg border border-border bg-surface p-3 text-left transition-colors hover:border-accent-border hover:bg-accent-subtle/40 focus-visible:border-accent"
                       >
                         <span
@@ -278,7 +367,7 @@ export function AskPage() {
                   <ChatMessage
                     key={turn.id}
                     turn={turn}
-                    onRetry={() => void submitQuestion(turn.question)}
+                    onRetry={() => retryTurn(turn)}
                   />
                 ))}
                 <div ref={bottomRef} />

@@ -1,4 +1,6 @@
 import type { ISODateString, UUID } from "./common";
+import type { Incident } from "./incident";
+import type { GapReport } from "./knowledge";
 
 export interface Citation {
   documentId: UUID;
@@ -86,11 +88,39 @@ export interface ScoredChunk {
   metadata: Record<string, string>;
 }
 
-/** One turn in the Ask EKIP chat UI -- a question plus, once resolved, its answer. */
+/**
+ * Which capability produced a chat turn. `"ask"` is the generic,
+ * confidence-routed `POST /ask` flow (free-text composer input, and
+ * history reuse). The other four are the Ask EKIP quick-action buttons,
+ * each of which calls its own specialized, already-existing endpoint
+ * instead of being funneled through `/ask` -- see the starter buttons'
+ * definitions in `pages/ask/AskPage.tsx`.
+ */
+export type QuickActionKind =
+  | "ask"
+  | "recent_changes"
+  | "similar_incidents"
+  | "incident_briefing"
+  | "knowledge_coverage";
+
+/**
+ * One turn in the Ask EKIP chat UI -- a question plus, once resolved, its
+ * result. Exactly one of `response` / `searchResults` / `incidentResults`
+ * / `gapResults` is populated once a turn resolves successfully, chosen by
+ * `action`: `"ask"` populates `response` (the existing confidence-routed
+ * `AskResponse` shape); the quick-action kinds each populate the field
+ * matching their own endpoint's real return type, rather than being
+ * force-fit into `AskResponse`'s answer/investigation shape, which doesn't
+ * apply to a raw search or a listing.
+ */
 export interface ChatTurn {
   id: string;
   question: string;
+  action: QuickActionKind;
   isPending: boolean;
   response?: AskResponse;
+  searchResults?: ScoredChunk[];
+  incidentResults?: Incident[];
+  gapResults?: GapReport[];
   error?: string;
 }

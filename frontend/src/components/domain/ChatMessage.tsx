@@ -3,21 +3,185 @@ import {
   AlertTriangle,
   Check,
   Copy,
+  ExternalLink,
   Loader2,
   RefreshCw,
   Search,
   Sparkles,
   User as UserIcon,
 } from "lucide-react";
-import type { ChatTurn } from "@/types/ask";
-import type { Citation } from "@/types/ask";
+import type { ChatTurn, Citation, ScoredChunk } from "@/types/ask";
+import type { Incident } from "@/types/incident";
+import type { GapReport } from "@/types/knowledge";
 import { AnswerText } from "./AnswerText";
 import { AskCitationList } from "./AskCitationList";
 import { EvidencePreviewModal } from "./EvidencePreviewModal";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
+import { SeverityBadge } from "@/components/data/SeverityBadge";
+import { StatusBadge } from "@/components/data/StatusBadge";
+import { formatDateTime, formatRelativeTime } from "@/utils/date";
 import { formatPercent } from "@/utils/format";
 import { cn } from "@/utils/cn";
+
+const RESULT_SECTION_LABEL: Record<"recent_changes" | "similar_incidents", string> = {
+  recent_changes: "Recent changes found",
+  similar_incidents: "Similar past incidents",
+};
+
+const NO_RESULTS_MESSAGE: Record<"recent_changes" | "similar_incidents", string> = {
+  recent_changes: "No matching recent changes were found in connected sources.",
+  similar_incidents: "No similar past incidents were found in connected sources.",
+};
+
+/**
+ * Renders the raw `ScoredChunk[]` returned by `/search/recent-changes` or
+ * `/search/similar-incidents` -- a ranked list of evidence, not an
+ * LLM-synthesized answer, so it is shown directly rather than forced
+ * through the answer/citation UI built for `AskResponse`.
+ */
+function SearchResultsSection({
+  kind,
+  results,
+}: {
+  kind: "recent_changes" | "similar_incidents";
+  results: ScoredChunk[];
+}) {
+  return (
+    <div className="flex flex-col gap-3 px-4 py-4 sm:px-5">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs font-medium uppercase tracking-wide text-ink-subtle">
+          {RESULT_SECTION_LABEL[kind]}
+        </p>
+        <span className="text-xs text-ink-subtle">
+          {results.length} {results.length === 1 ? "result" : "results"}
+        </span>
+      </div>
+      {results.length === 0 ? (
+        <p className="rounded-lg border border-border bg-slate-50 px-3.5 py-3 text-sm text-ink-muted">
+          {NO_RESULTS_MESSAGE[kind]}
+        </p>
+      ) : (
+        <ul className="flex flex-col gap-1.5">
+          {results.map((chunk) => (
+            <li
+              key={chunk.chunkId}
+              className="rounded-md border border-border bg-white px-3 py-2.5 text-sm text-ink"
+            >
+              <div className="mb-1 flex flex-wrap items-center gap-1.5">
+                <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-ink-muted">
+                  {chunk.collection}
+                </span>
+                {chunk.title && <span className="truncate font-medium text-ink">{chunk.title}</span>}
+              </div>
+              <p className="line-clamp-3 leading-5 text-ink-muted">{chunk.content}</p>
+              {chunk.sourceUrl && (
+                <a
+                  href={chunk.sourceUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-1.5 inline-flex items-center gap-1 text-xs font-medium text-accent hover:underline"
+                >
+                  View source
+                  <ExternalLink className="h-3 w-3" />
+                </a>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Renders the critical incidents returned by `GET /incidents` for the
+ * "Incident briefing" quick action -- real incident records, not
+ * retrieved/grounded text, so `SeverityBadge`/`StatusBadge` (already used
+ * on the Incidents pages) are reused directly rather than re-derived.
+ */
+function IncidentBriefingSection({ incidents }: { incidents: Incident[] }) {
+  return (
+    <div className="flex flex-col gap-3 px-4 py-4 sm:px-5">
+      <p className="text-xs font-medium uppercase tracking-wide text-ink-subtle">
+        Critical incidents
+      </p>
+      {incidents.length === 0 ? (
+        <p className="rounded-lg border border-border bg-slate-50 px-3.5 py-3 text-sm text-ink-muted">
+          No critical incidents are currently open.
+        </p>
+      ) : (
+        <ul className="flex flex-col gap-1.5">
+          {incidents.map((incident) => (
+            <li
+              key={incident.id}
+              className="rounded-md border border-border bg-white px-3 py-2.5 text-sm text-ink"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <span className="font-medium text-ink">{incident.title}</span>
+                <span className="flex shrink-0 items-center gap-1.5">
+                  <SeverityBadge severity={incident.severity} />
+                  <StatusBadge status={incident.status} />
+                </span>
+              </div>
+              <p className="mt-1 line-clamp-2 leading-5 text-ink-muted">{incident.description}</p>
+              <p className="mt-1.5 text-xs text-ink-subtle">
+                {incident.ownerTeam && <>Owned by {incident.ownerTeam} · </>}
+                Updated {formatDateTime(incident.updatedAt)}
+              </p>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Renders the `GapReport[]` returned by `GET /knowledge/gaps` for the
+ * "Knowledge coverage" quick action -- the Knowledge Gap Agent's own
+ * output, mirroring how `KnowledgeGapsPage` already presents it.
+ */
+function KnowledgeCoverageSection({ gaps }: { gaps: GapReport[] }) {
+  return (
+    <div className="flex flex-col gap-3 px-4 py-4 sm:px-5">
+      <p className="text-xs font-medium uppercase tracking-wide text-ink-subtle">
+        Knowledge gaps
+      </p>
+      {gaps.length === 0 ? (
+        <p className="rounded-lg border border-border bg-slate-50 px-3.5 py-3 text-sm text-ink-muted">
+          No open knowledge gaps have been flagged yet.
+        </p>
+      ) : (
+        <ul className="flex flex-col gap-1.5">
+          {gaps.map((gap) => (
+            <li
+              key={gap.id}
+              className="rounded-md border border-border bg-white px-3 py-2.5 text-sm text-ink"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <span className="font-medium text-ink">{gap.suggestedTopic}</span>
+                <Badge tone={gap.status === "open" ? "warning" : "neutral"}>
+                  {gap.status === "open" ? "Open" : "Dismissed"}
+                </Badge>
+              </div>
+              <p className="mt-1 text-xs text-ink-muted">
+                {gap.suggestedAction === "new_runbook"
+                  ? "Suggests a new runbook"
+                  : "Suggests updating an existing document"}
+              </p>
+              <p className="mt-1.5 text-xs text-ink-subtle">
+                From {gap.supportingExecutionIds.length} low-confidence question
+                {gap.supportingExecutionIds.length === 1 ? "" : "s"} · Flagged{" "}
+                {formatRelativeTime(gap.createdAt)}
+              </p>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
 
 function ConfidenceMeter({ value }: { value: number }) {
   const pct = Math.round(value * 100);
@@ -249,6 +413,21 @@ export function ChatMessage({ turn, onRetry }: { turn: ChatTurn; onRetry?: () =>
                 />
               </div>
             </div>
+          )}
+
+          {!turn.isPending &&
+            !turn.error &&
+            turn.searchResults &&
+            (turn.action === "recent_changes" || turn.action === "similar_incidents") && (
+              <SearchResultsSection kind={turn.action} results={turn.searchResults} />
+            )}
+
+          {!turn.isPending && !turn.error && turn.incidentResults && (
+            <IncidentBriefingSection incidents={turn.incidentResults} />
+          )}
+
+          {!turn.isPending && !turn.error && turn.gapResults && (
+            <KnowledgeCoverageSection gaps={turn.gapResults} />
           )}
         </div>
       </div>
