@@ -125,17 +125,31 @@ _COMMAND_TIMEOUT_SECONDS = 30.0
 _POOL_RECYCLE_SECONDS = 1800
 
 
-def _build_engine() -> AsyncEngine:
-    """Create the async engine from settings.
+def _build_engine(database_url: str | None = None) -> AsyncEngine:
+    """Create an async engine from settings, or from `database_url` when
+    given explicitly.
 
     A function rather than a module-level constant so tests can call it
     again after monkeypatching `Settings.database_url` (via
     `get_settings.cache_clear()`), consistent with the pattern already
     established in settings.py.
+
+    `database_url` (optional): overrides `settings.database_url` for this
+    call only -- added for `app.database.migrations.base.run_migrations_
+    online`, which needs an engine built from `Settings.migration_
+    database_url` (the admin/migration role) instead of the shared runtime
+    engine below (built from `Settings.database_url`, the least-privileged
+    `ekip_app` role). Before this parameter existed, `run_migrations_online`
+    always reused the module-level `engine` object regardless of
+    `migration_database_url` -- that setting only ever affected Alembic's
+    `--sql` (offline) mode, never a real `alembic upgrade head`, silently
+    defeating the migration/runtime role split for every deployment
+    topology, not only Railway.
     """
     settings = get_settings()
+    url = database_url if database_url is not None else str(settings.database_url)
     return create_async_engine(
-        _normalize_database_url(str(settings.database_url)),
+        _normalize_database_url(url),
         # SQL echo is intentionally independent from ENVIRONMENT. A full
         # ingestion emits several statements per document; synchronously
         # printing all of them can become a measurable local bottleneck.
@@ -150,7 +164,7 @@ def _build_engine() -> AsyncEngine:
         # deliberate `?sslmode=disable` such as Railway private networking,
         # where a non-SSL Postgres would fail outright with `ssl=True` forced.
         connect_args={
-            "ssl": _ssl_connect_arg(str(settings.database_url)),
+            "ssl": _ssl_connect_arg(url),
             "command_timeout": _COMMAND_TIMEOUT_SECONDS,
         },
     )

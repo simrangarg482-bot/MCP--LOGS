@@ -41,17 +41,29 @@ jobs:
           --health-cmd "redis-cli ping"
           --health-interval 5s --health-timeout 5s --health-retries 10
     env:
-      DATABASE_URL: postgresql+asyncpg://ekip:ekip_ci_only@127.0.0.1:5432/ekip_e2e
+      # RUNTIME connection -- what the backend/worker/Playwright suite
+      # below actually queries through, for the entire job. This is the
+      # ekip_app role (NOSUPERUSER/NOBYPASSRLS, provisioned by migration
+      # b8f3d6a1c4e7), not this disposable Postgres's own superuser --
+      # running the whole existing E2E suite against it is this project's
+      # first live proof that the application works correctly under the
+      # same least-privileged role recommendation #2
+      # (EKIP_TENANT_ISOLATION_SECURITY_REVIEW.md) requires in production,
+      # not only that the role can be provisioned.
+      DATABASE_URL: postgresql+asyncpg://ekip_app:ci-only-placeholder-ekip-app-password-not-a-real-secret@127.0.0.1:5432/ekip_e2e
+      # ADMIN connection, used ONLY by the "Run migrations" step below (see
+      # app/database/migrations/base.py's migration_database_url). ekip_app
+      # is deliberately never granted CREATE ROLE/ALTER TABLE/GRANT, so
+      # alembic cannot run as DATABASE_URL above.
+      MIGRATION_DATABASE_URL: postgresql+asyncpg://ekip:ekip_ci_only@127.0.0.1:5432/ekip_e2e
       REDIS_URL: redis://127.0.0.1:6379/0
       JWT_SECRET_KEY: ci-only-placeholder-jwt-secret-not-a-real-secret
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       CONNECTOR_SECRET_MASTER_KEY: 00112233445566778899aabbccddeeff00112233445566778899aabbccddee
       CORS_ALLOWED_ORIGINS: http://localhost:5180,http://127.0.0.1:5180
-      # Read by migration b8f3d6a1c4e7 (provisions the ekip_app role) --
-      # `alembic upgrade head` below connects as `ekip`, this disposable
-      # Postgres's own superuser, the CI-local equivalent of the migration/
-      # admin credential (see docs/operations/deployment.md's "Migration
-      # database vs runtime database").
+      # Read by migration b8f3d6a1c4e7 (provisions the ekip_app role) when
+      # `alembic upgrade head` runs against MIGRATION_DATABASE_URL above --
+      # must match the password embedded in DATABASE_URL above.
       EKIP_APP_ROLE_PASSWORD: ci-only-placeholder-ekip-app-password-not-a-real-secret
       ENVIRONMENT: test
       # Optional: a real GitHub PAT + comma-separated repo list, used only by
@@ -84,6 +96,9 @@ jobs:
 
       - name: Run migrations
         run: uv run alembic upgrade head
+
+      - name: Verify RLS tenant isolation under the ekip_app runtime role
+        run: uv run python scripts/verify_rls_isolation.py
 
       - name: Seed deterministic E2E test data
         run: uv run python scripts/e2e_seed.py
@@ -219,3 +234,58 @@ jobs:
           name: semantic-benchmark-report
           path: run_semantic_evaluation_report.json
           retention-days: 90
+
+
+  status-summary:
+    name: E2E/eval status summary
+    runs-on: ubuntu-latest
+    # `if: always()` -- this job must post a clear result even when every
+    # job above it was skipped outright (OPENAI_API_KEY unset), which is
+    # the exact scenario this job exists to make unambiguous. A skipped
+    # GitHub Actions job already reads as neutral/gray, not green, but
+    # that distinction is easy to miss in a PR's checks list at a glance --
+    # this turns "skipped" into an explicit, named sentence so a missing
+    # secret can never be mistaken for "AI E2E passed." Tenant-isolation
+    # coverage is NOT part of what this job reports on: that lives entirely
+    # in the separate, unconditional `rls-security.yml` workflow, which has
+    # no OpenAI dependency at all and therefore nothing to summarize here.
+    needs: [browser-e2e, ai-evaluation, semantic-benchmark]
+    if: always()
+    steps:
+      - name: Summarize what did and didn't run
+        run: |
+          echo "## E2E / AI evaluation status" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          report_job () {
+            local label="$1" result="$2" secret_reason="$3"
+            case "$result" in
+              success)
+                echo "- **$label: PASS** :white_check_mark:" >> "$GITHUB_STEP_SUMMARY"
+                ;;
+              skipped)
+                echo "- **$label: NOT RUN** :warning: -- $secret_reason" >> "$GITHUB_STEP_SUMMARY"
+                ;;
+              *)
+                echo "- **$label: FAIL** :x:" >> "$GITHUB_STEP_SUMMARY"
+                ;;
+            esac
+          }
+
+          report_job "AI E2E (Playwright, real backend/DB/Redis/LLM)" "${{ needs.browser-e2e.result }}" "OPENAI_API_KEY missing"
+          report_job "AI evaluation regression (confidence-gated routing)" "${{ needs.ai-evaluation.result }}" "EVAL_DATABASE_URL and/or OPENAI_API_KEY missing"
+          report_job "Semantic benchmark (answer quality + investigation A/B)" "${{ needs.semantic-benchmark.result }}" "EVAL_DATABASE_URL and/or OPENAI_API_KEY missing"
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Tenant-isolation / RLS coverage is reported separately by the **RLS Security Gate** workflow, which has no OpenAI dependency and runs on every PR regardless of what this workflow shows." >> "$GITHUB_STEP_SUMMARY"
+
+          # Fail this summary job itself only if something genuinely
+          # errored (never merely skipped) -- a skip is reported above as
+          # its own explicit, non-green status; it must not also make an
+          # unrelated summary step read as a build failure.
+          for result in "${{ needs.browser-e2e.result }}" "${{ needs.ai-evaluation.result }}" "${{ needs.semantic-benchmark.result }}"; do
+            if [ "$result" = "failure" ]; then
+              echo "At least one E2E/eval job genuinely failed (not merely skipped) -- see above." >&2
+              exit 1
+            fi
+          done

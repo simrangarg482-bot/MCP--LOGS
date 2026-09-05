@@ -72,11 +72,42 @@ class Settings(BaseSettings):
 
     # --- Database (DATABASE_DESIGN.md) ------------------------------------
     database_url: PostgresDsn = Field(
-        description="Neon Postgres connection string, asyncpg driver."
+        description=(
+            "Application runtime connection, asyncpg driver. Must be the "
+            "least-privileged `ekip_app` role (NOSUPERUSER/NOBYPASSRLS -- "
+            "see migration b8f3d6a1c4e7 and "
+            "EKIP_TENANT_ISOLATION_SECURITY_REVIEW.md recommendation #2), "
+            "never an admin/superuser role: this is the connection every "
+            "RLS policy from c7d4e8f19a2b is enforced against, and a role "
+            "with BYPASSRLS (e.g. Neon's neondb_owner, Railway's default "
+            "Postgres user) makes every one of those policies a silent "
+            "no-op."
+        )
     )
     database_echo: bool = Field(
         default=False,
         description="Emit every SQL statement. Enable only for focused database debugging.",
+    )
+    migration_database_url: PostgresDsn | None = Field(
+        default=None,
+        description=(
+            "Admin/superuser connection used ONLY by Alembic "
+            "(app/database/migrations/base.py), for topologies where the "
+            "migration step and the running application share one process's "
+            "environment (e.g. Railway's `preDeployCommand`, which runs in "
+            "the same service -- and therefore the same env vars -- as the "
+            "app itself). Falls back to `database_url` when unset, which is "
+            "correct and unchanged for docker-compose (its `migrate` "
+            "service already overrides DATABASE_URL to a separate admin "
+            "credential at the container level) and infra/main.bicep (whose "
+            "`migrateJob` already uses a distinct admin credential the same "
+            "way) -- see docs/operations/deployment.md's 'Migration database "
+            "vs runtime database'. `ekip_app` itself is deliberately never "
+            "granted the CREATE ROLE / ALTER TABLE / GRANT privileges "
+            "migrations need, so alembic upgrade head cannot run as "
+            "`database_url`'s role in a topology where that role has been "
+            "correctly narrowed to `ekip_app`."
+        ),
     )
 
     # --- Job queue (ENGINEERING_DECISIONS.md #002) ------------------------

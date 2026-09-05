@@ -1,6 +1,7 @@
 # CI pipeline
 
-Three GitHub Actions workflows, split by cost/speed tier (Phase 3 Batch 4):
+Four GitHub Actions workflows, split by cost/speed tier (Phase 3 Batch 4,
+plus the dedicated RLS security gate added afterward — see below):
 
 ## `.github/workflows/ci.yml` — every PR and every push to `main`
 
@@ -70,6 +71,58 @@ sliding) visible at all. The report contains only fixture-corpus content and
 computed metrics: no credentials, no customer data, nothing from any real
 database.
 
+## `.github/workflows/rls-security.yml` — every PR and every push to `main`
+
+A dedicated, **mandatory** tenant-isolation security gate, independent of
+both `ci.yml` (fully mocked — cannot validate real Postgres RLS at all) and
+`e2e-and-eval.yml`'s OpenAI-gated tiers (which *skip*, not fail, when
+`OPENAI_API_KEY` is unset — meaning tenant-isolation coverage must never
+live only there, or a missing OpenAI key would leave the entire repository's
+RLS story unverified while CI still shows green). This workflow needs no
+external AI API, no embeddings, no LangGraph, and no production
+credentials — only a disposable, CI-local `pgvector/pgvector:pg16` service
+container, real Alembic migrations, and the real `ekip_app` runtime role
+(`EKIP_TENANT_ISOLATION_SECURITY_REVIEW.md` recommendation #2).
+
+Single job, **`rls-security-gate`**:
+
+1. Starts the disposable Postgres + pgvector service container (its own,
+   separate from `main-extra.yml`'s and `e2e-and-eval.yml`'s — never shared
+   state between jobs or workflows).
+2. `alembic upgrade head`, connected via `MIGRATION_DATABASE_URL` (the
+   disposable container's own admin role, hardcoded CI-only, never a real
+   secret) — runs every migration including `b8f3d6a1c4e7` (which
+   provisions `ekip_app` itself) and `c7d4e8f19a2b`/`d2e5f8a3c1b6` (RLS
+   policies + bypass functions).
+3. `python scripts/verify_rls_isolation.py`, connected via `DATABASE_URL`
+   (the same container's `ekip_app` role) — the actual security check: role
+   identity, `rolbypassrls = false`, not superuser, required DML grants,
+   RLS enabled *and* forced on every policy-bearing table, then the real
+   cross-tenant proof (two organizations, one incident each, a query with
+   **no** `organization_id` filter at all in either direction, plus a
+   no-tenant-context fail-closed check). See that script's own docstring
+   for the full contract, and its "KNOWN, OUT-OF-SCOPE FINDING" section for
+   a real bug it works around rather than silently fixes
+   (`tenancy_service.create_organization` — see the final report for this
+   change).
+4. Writes an explicit `RLS Security Gate: PASS`/`FAIL` line to the job
+   summary (`if: always()`), so a failure is never confused with "didn't
+   run."
+
+Every `OPENAI_API_KEY`/`REDIS_URL`/`JWT_SECRET_KEY`/
+`CONNECTOR_SECRET_MASTER_KEY` value in this workflow is a hardcoded,
+CI-only placeholder, deliberately **not** sourced from `secrets.*` — this
+job must behave identically whether or not `OPENAI_API_KEY` is configured
+anywhere in the repository, and it never touches a real credential.
+
+**This job should be configured as a required branch-protection status
+check** (GitHub Settings → Branches → Branch protection rules → main →
+"Require status checks to pass" → add `RLS Security Gate`). This repository
+has no branch-protection config file and no way for a workflow file to
+configure that setting itself — it needs a one-time manual change by a repo
+admin with GitHub Settings access; this document is that instruction, not a
+claim that it has already been done.
+
 ## `.github/workflows/main-extra.yml` — push to `main` only
 
 - **migration-validation**: a real, disposable `pgvector/pgvector:pg16`
@@ -92,13 +145,18 @@ The two genuinely expensive tiers, each **independently gated** so this
 workflow is safe to merge before its secrets exist (it skips, not fails):
 
 - **browser-e2e** (`if: secrets.OPENAI_API_KEY != ''`): real Postgres +
-  Redis service containers, real migrations, `scripts/e2e_seed.py`, a real
-  backend/worker/frontend, then the full Playwright suite. Optionally
-  exercises the real GitHub connector if `EKIP_TEST_GITHUB_TOKEN`/
-  `EKIP_TEST_GITHUB_REPOS` secrets are also set (skips that one sub-test
-  cleanly otherwise — see `critical-workflow.spec.ts`'s own `test.skip`).
-  On failure, uploads the Playwright HTML report + traces/screenshots as a
-  build artifact (14-day retention) — never uploaded on success.
+  Redis service containers, real migrations (via `MIGRATION_DATABASE_URL`,
+  the admin role), `scripts/verify_rls_isolation.py` (same tenant-isolation
+  check `rls-security.yml` runs, as a belt-and-suspenders check against
+  this workflow's own database — the mandatory, OpenAI-independent copy of
+  this check lives in `rls-security.yml`, not here), `scripts/e2e_seed.py`,
+  a real backend/worker/frontend connected via `DATABASE_URL` (`ekip_app`),
+  then the full Playwright suite. Optionally exercises the real GitHub
+  connector if `EKIP_TEST_GITHUB_TOKEN`/`EKIP_TEST_GITHUB_REPOS` secrets are
+  also set (skips that one sub-test cleanly otherwise — see
+  `critical-workflow.spec.ts`'s own `test.skip`). On failure, uploads the
+  Playwright HTML report + traces/screenshots as a build artifact (14-day
+  retention) — never uploaded on success.
 - **ai-evaluation** (`if: secrets.EVAL_DATABASE_URL != '' && secrets.OPENAI_API_KEY != ''`):
   runs `scripts/eval_confidence.py` against a **real, persistent, pre-seeded**
   evaluation database (deliberately *not* the disposable per-run CI
@@ -108,6 +166,16 @@ workflow is safe to merge before its secrets exist (it skips, not fails):
   regressed metric** — this batch changed `_compare_reports`/`main()` to
   actually propagate a non-zero exit code on regression; previously it only
   printed a warning.
+
+- **status-summary** (`needs: [browser-e2e, ai-evaluation, semantic-benchmark]`,
+  `if: always()`): writes an explicit `PASS`/`NOT RUN`/`FAIL` line per job to
+  the job summary, so "OpenAI key missing, tier skipped" is never visually
+  indistinguishable from "tier ran and passed." Only fails itself if a
+  needed job's result is literally `failure` — a `skipped` result (missing
+  secret) is reported as `NOT RUN`, not treated as a failure of this
+  summary job itself. Tenant-isolation coverage that must always run lives
+  in the separate `rls-security.yml` workflow, not here — this job's
+  summary says so explicitly.
 
 ## Secret tiers
 
@@ -125,10 +193,26 @@ separate, dedicated evaluation environment.
 
 ## Known limitations
 
-None of these three workflow files have been executed by GitHub Actions
-itself yet (no `.github/workflows/` existed before this batch, and this
-environment has no way to trigger a real Actions run) — each was written
-against this repo's actual, verified commands (the exact `pytest`/`npm run`
-invocations used successfully throughout this project) and had its YAML
-syntax validated locally, but the first real run in GitHub's own runners
-will be the first true end-to-end confirmation.
+None of these four workflow files have been executed by GitHub Actions
+itself yet (this environment has no way to trigger a real Actions run) —
+each was written against this repo's actual, verified commands. Unlike the
+original three, `rls-security.yml`'s actual execution path (service
+container → `alembic upgrade head` via the admin role → `scripts/
+verify_rls_isolation.py` via `ekip_app` → cross-tenant checks) was proven
+end-to-end against a real, disposable, from-scratch Postgres + pgvector
+instance in this environment (not GitHub-hosted, but genuinely executed —
+not just YAML-parsed): a clean run passes every check, connecting as the
+admin role for migrations and as `ekip_app` bypasses BYPASSRLS/superuser
+checks and fails immediately as designed, and disabling RLS on a table
+mid-run is independently caught by both the schema-level check and the
+actual cross-tenant read. Building this proof also caught a real bug in the
+migration/runtime role split shipped earlier the same day —
+`run_migrations_online` was silently ignoring `migration_database_url` and
+always running every migration as the runtime `ekip_app` role instead of
+the admin role, in every topology, since the setting was introduced (see
+`EKIP_TENANT_ISOLATION_SECURITY_REVIEW.md` recommendation #2's "CRITICAL
+CORRECTION" note) — now fixed in `app/database/session.py` and
+`app/database/migrations/base.py`. GitHub's own runners will still be the
+first confirmation of the *hosted* environment specifically (network
+egress, `pgvector/pgvector:pg16` image pull, `astral-sh/setup-uv`
+compatibility), but the migration/RLS logic itself is no longer unproven.

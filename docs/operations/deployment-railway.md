@@ -123,33 +123,61 @@ Group** (Project → Settings → Shared Variables) referenced by `backend`,
 
 | Where | Variables |
 |---|---|
-| Shared (backend, ingestion, agents, mcp) | `ENVIRONMENT`, `LOG_LEVEL`, `KMS_PROVIDER`, `DATABASE_URL`, `EKIP_APP_ROLE_PASSWORD`, `REDIS_URL`, `OPENAI_API_KEY`, `JWT_SECRET_KEY`, `CONNECTOR_SECRET_MASTER_KEY`, `CORS_ALLOWED_ORIGINS` |
+| Shared (backend, ingestion, agents, mcp) | `ENVIRONMENT`, `LOG_LEVEL`, `KMS_PROVIDER`, `DATABASE_URL`, `EKIP_APP_PASSWORD`, `REDIS_URL`, `OPENAI_API_KEY`, `JWT_SECRET_KEY`, `CONNECTOR_SECRET_MASTER_KEY`, `CORS_ALLOWED_ORIGINS` |
+| `backend` only | `MIGRATION_DATABASE_URL`, `EKIP_APP_ROLE_PASSWORD` |
 | `mcp` only | `MCP_PUBLIC_BASE_URL` |
 | `frontend` only | `VITE_API_BASE_URL` |
 
-`DATABASE_URL` is built by hand (not `${{Postgres.DATABASE_URL}}`) so it uses
-the `+asyncpg` driver and `?sslmode=disable`:
+Two distinct database credentials, never interchangeable (same split
+`docs/operations/deployment.md`'s "Migration database vs runtime database"
+already documents for the Azure path):
 
-```
-postgresql+asyncpg://${{Postgres.PGUSER}}:${{Postgres.PGPASSWORD}}@${{Postgres.PGHOST}}:${{Postgres.PGPORT}}/${{Postgres.PGDATABASE}}?sslmode=disable
-```
+- **`DATABASE_URL`** (shared) — the **runtime** connection every
+  application process queries through, permanently. Built by hand, using
+  the `ekip_app` role (`NOSUPERUSER`/`NOBYPASSRLS`, provisioned by migration
+  `b8f3d6a1c4e7`), not Railway's default Postgres user:
+  ```
+  postgresql+asyncpg://ekip_app:${{EKIP_APP_PASSWORD}}@${{Postgres.PGHOST}}:${{Postgres.PGPORT}}/${{Postgres.PGDATABASE}}?sslmode=disable
+  ```
+- **`MIGRATION_DATABASE_URL`** (backend only) — the **admin** connection
+  `alembic upgrade head` uses, read by `app/database/migrations/base.py`.
+  `railway.backend.json`'s `preDeployCommand` runs in the same service as
+  the app itself, so without this override it would inherit the shared
+  block's `DATABASE_URL` (`ekip_app`) — a role migrations cannot run as,
+  since it is deliberately never granted `CREATE ROLE`/`ALTER TABLE`/`GRANT`
+  (those are exactly the privileges the role is scoped to *not* have):
+  ```
+  postgresql+asyncpg://${{Postgres.PGUSER}}:${{Postgres.PGPASSWORD}}@${{Postgres.PGHOST}}:${{Postgres.PGPORT}}/${{Postgres.PGDATABASE}}?sslmode=disable
+  ```
 
-Generate the three secrets:
+If your Railway plan/dashboard doesn't resolve a same-group `${{EKIP_APP_PASSWORD}}`
+reference, just paste the same literal generated value into both
+`EKIP_APP_PASSWORD` (shared) and `EKIP_APP_ROLE_PASSWORD` (backend) instead —
+they must be equal either way, since the latter is what migration
+`b8f3d6a1c4e7` uses to create/converge the `ekip_app` role's password.
+
+Generate the secrets:
 
 ```bash
 python -c "import secrets; print(secrets.token_urlsafe(48))"   # JWT_SECRET_KEY
 python -c "import secrets; print(secrets.token_hex(32))"       # CONNECTOR_SECRET_MASTER_KEY
-python -c "import secrets; print(secrets.token_urlsafe(24))"   # EKIP_APP_ROLE_PASSWORD
+python -c "import secrets; print(secrets.token_urlsafe(24))"   # EKIP_APP_PASSWORD / EKIP_APP_ROLE_PASSWORD (same value, both places)
 ```
 
 ## 4. Deploy order
 
 1. **`backend` first.** Its pre-deploy command is `alembic upgrade head`
-   (`railway.backend.json`) — it creates the whole schema, the pgvector
-   objects, and the `ekip_app` role (which is why `EKIP_APP_ROLE_PASSWORD`
-   must be set: migration `b8f3d6a1c4e7` fails the deploy without it).
+   (`railway.backend.json`) — running against `MIGRATION_DATABASE_URL`
+   (Railway's Postgres superuser), it creates the whole schema, the
+   pgvector objects, and the `ekip_app` role (which is why
+   `EKIP_APP_ROLE_PASSWORD` must be set: migration `b8f3d6a1c4e7` fails the
+   deploy without it). The app itself then starts and serves traffic on
+   `DATABASE_URL` (`ekip_app`), never the superuser connection.
    Watch the deploy log for the migration output, then `GET /health` and
-   `GET /ready` on the backend domain.
+   `GET /ready` on the backend domain, and run
+   `python scripts/verify_rls_isolation.py` once (see "Verify" below) to
+   confirm RLS is actually enforced under this deployment before treating
+   it as production-ready.
 2. **`ingestion`, `agents`, `mcp`, `frontend`** — redeploy once the schema
    exists. Order among these four does not matter.
 
@@ -163,6 +191,23 @@ curl https://<backend-domain>/ready           # database: ok, redis: ok
 curl https://<mcp-domain>/.well-known/oauth-authorization-server   # 200 JSON
 ```
 
+Then, from a shell with the deployed `DATABASE_URL` (the `ekip_app` one, not
+the migration URL) in its environment — `railway run --service backend python
+scripts/verify_rls_isolation.py` or the local equivalent against the same
+Postgres — confirm RLS is actually enforced under the role this deployment
+connects as:
+
+```bash
+railway run --service backend python scripts/verify_rls_isolation.py
+```
+
+It creates two disposable organizations with one incident each, then proves
+a deliberately unscoped query (no `organization_id` filter at all) still
+never returns the other organization's row, and that the connected role's
+`pg_roles.rolbypassrls` is `false`. Exits non-zero with the specific failing
+check if either isn't true — treat a failure here as a hard blocker, not
+something to route around.
+
 Open the frontend domain, sign up, and ask a question against a
 connector-free workspace to confirm the confidence-gated "I don't know" path
 before connecting real sources. Check `ingestion` and `agents` logs for a
@@ -175,13 +220,6 @@ must equal `https://<mcp-domain>` exactly.
 
 ## Known limitations of this path
 
-- **RLS is a no-op.** Every service connects as Railway's Postgres
-  superuser, which carries `BYPASSRLS` — the same situation migration
-  `b8f3d6a1c4e7`'s docstring describes for Neon. The `ekip_app` role is
-  still provisioned but nothing connects as it. To close this, point the
-  application services' `DATABASE_URL` at `ekip_app` (same host, that role's
-  password) while keeping `backend`'s pre-deploy migration URL on the
-  superuser — a follow-up, not required to boot.
 - **`ENVIRONMENT=development`.** Required by
   `_reject_local_kms_in_production` while `KMS_PROVIDER=local`. Connector
   credentials are encrypted with a master key held in an env var, not a

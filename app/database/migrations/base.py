@@ -23,7 +23,7 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from app.database.session import Base, engine
+from app.database.session import Base, _build_engine, engine
 from app.shared.config.settings import get_settings
 
 # Import every model module here so its tables register on Base.metadata
@@ -52,15 +52,32 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # Overrides whatever sqlalchemy.url is in alembic.ini with the live setting,
-# so there's exactly one source of truth for the connection string
-# (Settings.database_url) instead of it being duplicated in two config files.
-# `str(...)` is required, not cosmetic: `database_url` is a pydantic
-# `PostgresDsn` object, and `configparser` (what `set_main_option` writes
-# into) raises `TypeError: option values must be strings` if handed
-# anything else -- this was only caught the first time this migration
-# environment was actually run, since nothing in this project's sandbox
-# could execute Python against a live Alembic config before now.
-config.set_main_option("sqlalchemy.url", str(get_settings().database_url))
+# so there's exactly one source of truth for the connection string instead
+# of it being duplicated in two config files. `str(...)` is required, not
+# cosmetic: `database_url`/`migration_database_url` are pydantic `PostgresDsn`
+# objects, and `configparser` (what `set_main_option` writes into) raises
+# `TypeError: option values must be strings` if handed anything else -- this
+# was only caught the first time this migration environment was actually run,
+# since nothing in this project's sandbox could execute Python against a live
+# Alembic config before now.
+#
+# NOTE this only feeds Alembic's OFFLINE mode (`run_migrations_offline`
+# below, `--sql` scripts with no live connection) -- Alembic's async
+# template's ONLINE mode (`run_migrations_online`) never reads
+# `config`'s `sqlalchemy.url` at all, it connects with whatever `AsyncEngine`
+# object it's handed directly. `run_migrations_online` below builds its own
+# engine from `migration_database_url` for that reason -- see the comment
+# there. (An earlier version of this file set this option believing it
+# governed the online path too; it never did, which silently meant every
+# real `alembic upgrade head` connected as the runtime `ekip_app` role
+# instead of the intended admin/migration role in every deployment
+# topology -- caught only once this migration environment was actually
+# exercised end-to-end against a live database, not just parsed.)
+_settings = get_settings()
+config.set_main_option(
+    "sqlalchemy.url",
+    str(_settings.migration_database_url or _settings.database_url),
+)
 
 target_metadata = Base.metadata
 
@@ -85,8 +102,22 @@ def do_run_migrations(connection) -> None:
 
 
 async def run_migrations_online() -> None:
-    """Run migrations against a live DB connection using the async engine."""
-    connectable: AsyncEngine = engine
+    """Run migrations against a live DB connection using the async engine.
+
+    Uses a dedicated engine built from `Settings.migration_database_url`
+    (the admin/migration role) when that setting is configured, instead of
+    reusing the shared `engine` object from `app.database.session` (built
+    from `Settings.database_url`, the least-privileged `ekip_app` runtime
+    role). Falling back to the shared `engine` when `migration_database_url`
+    is unset preserves this function's original behavior for docker-compose
+    and Bicep, which already give the migration step its own container/job
+    with a differently-valued `DATABASE_URL` and never set
+    `migration_database_url` at all.
+    """
+    if _settings.migration_database_url is not None:
+        connectable: AsyncEngine = _build_engine(str(_settings.migration_database_url))
+    else:
+        connectable = engine
 
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)
