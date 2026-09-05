@@ -118,6 +118,7 @@ from app.core.memory import service as memory_service
 from app.core.users.service import require_permission
 from app.database.models.agent_models import KnowledgeGapReport
 from app.retrieval import service as retrieval_service
+from app.retrieval.ranking.fusion import reciprocal_rank_fusion
 from app.retrieval.schemas import CollectionName, ScoredChunk, SearchFilters
 from app.shared.config.logging import get_logger
 from app.shared.config.settings import get_settings
@@ -143,6 +144,15 @@ _OBSERVABILITY_READ_PERMISSION = "observability:read"
 # function's docstring for why this is inherently a best-effort, not a hard
 # guarantee.
 _RECENCY_METADATA_KEYS = ("source_timestamp", "updated_at", "timestamp")
+
+# Collections `search_recent_changes` searches by default (`collection=None`)
+# -- see that function's docstring: GitHub commit/PR/issue history lands in
+# "documentation" (no file extension), while actual changed source files land
+# in "code" -- "recent changes" means both, not either alone. Excludes
+# "conversations" deliberately: chat mentions of a change are not the change
+# itself, and a caller that wants that too can still pass an explicit
+# `collection` for one collection at a time (unchanged, pre-existing behavior).
+_RECENT_CHANGES_COLLECTIONS: tuple[CollectionName, ...] = ("documentation", "code")
 
 
 async def answer_question(
@@ -400,7 +410,7 @@ async def search_recent_changes(
     *,
     since: datetime | None = None,
     top_k: int = 10,
-    collection: CollectionName = "documentation",
+    collection: CollectionName | None = None,
     repository: str | None = None,
 ) -> list[ScoredChunk]:
     """Search for recent code/documentation changes matching `query`
@@ -420,32 +430,53 @@ async def search_recent_changes(
     recent."
 
     `repository`, if given, restricts results to one GitHub repo (e.g.
-    `"owner/name"`) via `SearchFilters.repository` -- valid for `collection
-    == "documentation"` (the default here) or `"code"`; `PgVectorStore`
-    raises for `"conversations"`, which carries no `repo_full_name` to
-    filter on.
+    `"owner/name"`) via `SearchFilters.repository` -- valid for both
+    collections `collection=None` (the default) searches, `"documentation"`
+    and `"code"`; `PgVectorStore` raises for `"conversations"`, which
+    carries no `repo_full_name` to filter on (so an explicit
+    `collection="conversations"` call must not also pass `repository`).
 
-    `collection` defaults to `"documentation"`, not `"code"` (fixed; a
-    previous version of this function defaulted to `"code"`, which was
-    wrong for what "recent changes" actually means for a GitHub-backed
-    repo). `app.ingestion.processors.chunking.classify_content_type`
-    classifies by content *shape*, not by which connector produced it:
-    only a document with a real code file extension is chunked/stored as
-    `"code"`. GitHub commit messages, PR bodies, and issue bodies have no
-    file extension at all, so they land in `"documentation"`, the same as
-    READMEs and other docs. The literal `"code"` collection holds only
-    source files themselves -- searching it for "recent changes" returned
-    weak or empty results even when real commit/PR/issue history existed,
-    because that history was never stored there in the first place. A
-    caller that wants literal source-file diffs specifically (not commit/
-    PR/issue history) still needs an explicit `collection="code"` call --
-    this default only fixes which collection *most* real "recent changes"
-    content actually lives in.
+    `collection=None` (the default) searches `_RECENT_CHANGES_COLLECTIONS`
+    -- `"documentation"` *and* `"code"` -- and fuses the two ranked lists
+    with the same `reciprocal_rank_fusion` `retrieval.service.search` uses
+    internally to fuse dense+lexical results for one collection, applied
+    here across collections instead. Fixed from an earlier version that
+    searched exactly one collection: `app.ingestion.processors.chunking.
+    classify_content_type` classifies by content *shape*, not by which
+    connector produced it, so GitHub commit messages, PR bodies, and issue
+    bodies (no file extension) land in `"documentation"`, the same as
+    READMEs and other docs, while a repo's actual changed source files
+    (real file extensions) land in `"code"`. "Recent changes" means both --
+    a commit's own message/description *and* the file it touched -- so
+    searching only one of the two silently hid the other's evidence, e.g.
+    a real commit/PR/issue history match no better than an empty result
+    just because a matching source-file chunk didn't happen to rank inside
+    `top_k` in a single-collection search over just `"code"`, or vice
+    versa. `"conversations"` (chat) is deliberately excluded from this
+    default -- a Slack message mentioning a change is not the change
+    itself -- but is still reachable via an explicit `collection=
+    "conversations"` call, same as before.
+
+    An explicit `collection` (any one of the three) restricts the search to
+    exactly that collection, same single-collection behavior as before this
+    fix -- e.g. the Investigation Agent's evidence-gathering sub-stage
+    (PROJECT_PLAN.md section 6.4), which needs `"code"` and
+    `"conversations"` as two separate, source-labeled steps, keeps working
+    unchanged.
     """
     filters = SearchFilters(organization_id=actor.organization_id, repository=repository)
-    results = await retrieval_service.search(
-        session, query, filters, top_k, collection, include_metadata=True
-    )
+    if collection is None:
+        result_lists = [
+            await retrieval_service.search(
+                session, query, filters, top_k, collection_name, include_metadata=True
+            )
+            for collection_name in _RECENT_CHANGES_COLLECTIONS
+        ]
+        results = reciprocal_rank_fusion(result_lists, top_k=top_k)
+    else:
+        results = await retrieval_service.search(
+            session, query, filters, top_k, collection, include_metadata=True
+        )
     if since is None:
         return results
     return [chunk for chunk in results if _passes_recency_filter(chunk, since)]

@@ -78,26 +78,31 @@ async def test_search_similar_incidents_scopes_filters_to_actor_org(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_search_recent_changes_searches_documentation_collection_with_metadata(
+async def test_search_recent_changes_default_searches_both_documentation_and_code(
     monkeypatch,
 ) -> None:
-    """Regression test for a real bug: this used to default to `"code"`,
-    but GitHub commits, PR bodies, and issue bodies have no file extension,
-    so `app.ingestion.processors.chunking.classify_content_type` never
-    classifies them as `"code"` -- they land in `"documentation"`, same as
-    READMEs and other docs (see `test_search_recent_changes_default_
-    collection_matches_where_commit_and_issue_content_is_classified` below
-    for the direct proof tying this default to that classification). The
-    literal `"code"` collection holds only actual source files, so
-    searching it for "recent changes" returned weak/empty results even
-    when real commit/PR/issue history existed for a query.
+    """Regression test for a real bug: this used to search exactly one
+    collection by default (first `"code"`, then, in an earlier fix,
+    `"documentation"` alone). GitHub commits, PR bodies, and issue bodies
+    have no file extension, so `app.ingestion.processors.chunking.
+    classify_content_type` never classifies them as `"code"` -- they land
+    in `"documentation"`, same as READMEs and other docs (see
+    `test_search_recent_changes_default_collections_include_where_commit_
+    and_issue_content_is_classified` below for the direct proof tying this
+    to that classification) -- but a repo's actual changed source files
+    still land in `"code"`. Searching only one of the two silently hid the
+    other's evidence, so the default must search both and fuse the results,
+    not restrict to either alone.
     """
-    captured: dict[str, object] = {}
+    calls: list[dict[str, object]] = []
+    # Same chunk object/chunk_id returned for both collections, so a
+    # correct fusion collapses it back to one result (proving genuine RRF
+    # dedup by identity, not just "both calls happened").
+    shared_chunk = _chunk()
 
     async def fake_search(session, query, filters, top_k, collection=None, *, include_metadata=False):
-        captured["collection"] = collection
-        captured["include_metadata"] = include_metadata
-        return [_chunk()]
+        calls.append({"collection": collection, "include_metadata": include_metadata})
+        return [shared_chunk]
 
     monkeypatch.setattr(agents_service.retrieval_service, "search", fake_search)
 
@@ -105,12 +110,12 @@ async def test_search_recent_changes_searches_documentation_collection_with_meta
     result = await agents_service.search_recent_changes(None, "checkout", actor)
 
     assert len(result) == 1
-    assert captured["collection"] == "documentation"
-    assert captured["include_metadata"] is True
+    assert {call["collection"] for call in calls} == {"documentation", "code"}
+    assert all(call["include_metadata"] is True for call in calls)
 
 
 @pytest.mark.asyncio
-async def test_search_recent_changes_default_collection_matches_where_commit_and_issue_content_is_classified(
+async def test_search_recent_changes_default_collections_include_where_commit_and_issue_content_is_classified(
     monkeypatch,
 ) -> None:
     """The direct proof this fix is correct, not just consistent with
@@ -118,10 +123,10 @@ async def test_search_recent_changes_default_collection_matches_where_commit_and
     content the same way ingestion actually does
     (`classify_content_type` -> `_CONTENT_TYPE_TO_COLLECTION`, both
     untouched by this fix), then assert `search_recent_changes`'s own
-    default collection is the one that mapping actually produces for that
-    content -- rather than merely asserting a literal string, which would
-    pass even if both the default and the classification/mapping logic
-    drifted out of sync in the same wrong direction.
+    default collections *include* the one that mapping actually produces
+    for that content -- rather than merely asserting a literal string,
+    which would pass even if both the default and the classification/
+    mapping logic drifted out of sync in the same wrong direction.
     """
     from app.ingestion.processors.chunking import classify_content_type
     from app.ingestion.schemas import RawDocument
@@ -155,17 +160,17 @@ async def test_search_recent_changes_default_collection_matches_where_commit_and
         assert content_type == "document", (
             f"{raw_document.external_id} classified as {content_type!r}, not "
             "'document' -- this test's premise (commit/PR/issue content has "
-            "no code file extension) no longer holds, so the collection "
-            "default below needs re-deriving, not just re-asserting"
+            "no code file extension) no longer holds, so the collections "
+            "asserted below need re-deriving, not just re-asserting"
         )
         expected_collection = _CONTENT_TYPE_TO_COLLECTION[content_type]
 
-        captured: dict[str, object] = {}
+        calls: list[dict[str, object]] = []
 
         async def fake_search(
             session, query, filters, top_k, collection=None, *, include_metadata=False
         ):
-            captured["collection"] = collection
+            calls.append({"collection": collection})
             return []
 
         monkeypatch.setattr(agents_service.retrieval_service, "search", fake_search)
@@ -173,7 +178,65 @@ async def test_search_recent_changes_default_collection_matches_where_commit_and
         actor = Identity.for_agent("test_agent", uuid.uuid4())
         await agents_service.search_recent_changes(None, "checkout", actor)
 
-        assert captured["collection"] == expected_collection
+        searched_collections = {call["collection"] for call in calls}
+        assert expected_collection in searched_collections
+        # And "code" (the repo's actual changed source files) is searched
+        # alongside it -- this is the fix the previous single-collection
+        # default missed.
+        assert "code" in searched_collections
+
+
+@pytest.mark.asyncio
+async def test_search_recent_changes_default_fuses_results_from_both_collections(
+    monkeypatch,
+) -> None:
+    """The two collections are genuinely fused, not just both queried and
+    one discarded: a chunk found only in `"code"` and a different chunk
+    found only in `"documentation"` must both survive into the final
+    result.
+    """
+    documentation_chunk = _chunk(content="commit message content")
+    code_chunk = _chunk(content="def checkout(): ...")
+
+    async def fake_search(session, query, filters, top_k, collection=None, *, include_metadata=False):
+        if collection == "documentation":
+            return [documentation_chunk]
+        if collection == "code":
+            return [code_chunk]
+        raise AssertionError(f"unexpected collection {collection!r}")
+
+    monkeypatch.setattr(agents_service.retrieval_service, "search", fake_search)
+
+    actor = Identity.for_agent("test_agent", uuid.uuid4())
+    result = await agents_service.search_recent_changes(None, "checkout", actor)
+
+    assert {chunk.chunk_id for chunk in result} == {documentation_chunk.chunk_id, code_chunk.chunk_id}
+
+
+@pytest.mark.asyncio
+async def test_search_recent_changes_explicit_collection_still_restricts_to_one(
+    monkeypatch,
+) -> None:
+    """A caller that explicitly wants one collection only (e.g. the
+    Investigation Agent's collection-scoped evidence-gathering steps,
+    PROJECT_PLAN.md section 6.4) still gets exactly that -- the new
+    both-collections behavior is only the *default* (`collection=None`),
+    not something forced on every caller.
+    """
+    calls: list[dict[str, object]] = []
+
+    async def fake_search(session, query, filters, top_k, collection=None, *, include_metadata=False):
+        calls.append({"collection": collection})
+        return [_chunk()]
+
+    monkeypatch.setattr(agents_service.retrieval_service, "search", fake_search)
+
+    actor = Identity.for_agent("test_agent", uuid.uuid4())
+    result = await agents_service.search_recent_changes(None, "checkout", actor, collection="code")
+
+    assert len(result) == 1
+    assert len(calls) == 1
+    assert calls[0]["collection"] == "code"
 
 
 @pytest.mark.asyncio
@@ -189,7 +252,14 @@ async def test_search_recent_changes_filters_out_stale_chunks(monkeypatch) -> No
     monkeypatch.setattr(agents_service.retrieval_service, "search", fake_search)
 
     actor = Identity.for_agent("test_agent", uuid.uuid4())
-    result = await agents_service.search_recent_changes(None, "checkout", actor, since=since)
+    # Pinned to one explicit collection -- this test is about the
+    # recency filter, not collection selection (covered above), and
+    # pinning avoids this fake's identical chunk_ids being queried twice
+    # (once per default collection) and fused, which would just be
+    # exercising RRF's own dedup logic instead of `_passes_recency_filter`.
+    result = await agents_service.search_recent_changes(
+        None, "checkout", actor, since=since, collection="documentation"
+    )
 
     # `stale` is dropped; `no_timestamp` is kept (see docstring: "no
     # timestamp available" is not the same claim as "not recent").
@@ -206,7 +276,8 @@ async def test_search_recent_changes_returns_everything_without_since(monkeypatc
     monkeypatch.setattr(agents_service.retrieval_service, "search", fake_search)
 
     actor = Identity.for_agent("test_agent", uuid.uuid4())
-    result = await agents_service.search_recent_changes(None, "checkout", actor)
+    # Same pinning as the test above, for the same reason.
+    result = await agents_service.search_recent_changes(None, "checkout", actor, collection="documentation")
 
     assert result == chunks
 

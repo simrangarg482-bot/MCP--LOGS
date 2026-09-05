@@ -62,7 +62,17 @@ const STARTER_QUESTIONS: StarterQuestion[] = [
   {
     label: "Recent changes",
     description: "Trace commits, deploys, and configuration changes",
-    question: "What changed recently in the payments service?",
+    // Generic on purpose -- this button (and its `description` above) is
+    // not scoped to any one service, so the literal query sent to
+    // `POST /search/recent-changes` must not name one either. This used to
+    // read "What changed recently in the payments service?", carried over
+    // unchanged from an early empty-state placeholder ("Try something
+    // like...") that was never meant to be sent as a real query -- once
+    // this button was wired to the real recent-changes search endpoint,
+    // that placeholder text became the literal, always-identical search
+    // query for every click, regardless of what the user actually wanted
+    // to know about.
+    question: "What changed recently?",
     icon: GitPullRequest,
     tone: "bg-accent-subtle text-accent ring-accent-border",
     action: "recent_changes",
@@ -179,11 +189,14 @@ export function AskPage() {
     try {
       switch (action) {
         case "recent_changes": {
-          // GitHub commit/PR/issue content has no file extension, so
-          // ingestion classifies and stores it under "documentation", not
-          // "code" (literal source files only) -- see
-          // agents_service.search_recent_changes's own docstring.
-          const searchResults = await searchRecentChanges(question, { collection: "documentation" });
+          // No `collection` -- omitting it lets the backend's own default
+          // apply (`agents_service.search_recent_changes`'s docstring):
+          // search "documentation" (GitHub commit/PR/issue content has no
+          // file extension, so ingestion classifies and stores it there,
+          // not "code") *and* "code" (the actual changed source files)
+          // together, fused into one ranked list. Hardcoding either one
+          // here would silently hide the other's evidence.
+          const searchResults = await searchRecentChanges(question);
           resolve({ searchResults });
           break;
         }

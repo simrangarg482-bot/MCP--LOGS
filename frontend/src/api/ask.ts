@@ -138,7 +138,13 @@ export async function searchRecentChanges(
       query,
       since: options.since ?? null,
       topK: options.topK ?? 10,
-      collection: options.collection ?? "code",
+      // `null` (not a literal collection) when the caller doesn't name
+      // one -- matches `RecentChangesRequest.collection`'s own `None`
+      // default on the backend, which searches "documentation" *and*
+      // "code" together (see `agents_service.search_recent_changes`'s
+      // docstring). A hardcoded fallback here would silently override
+      // that and restrict every omitted-collection call back to one.
+      collection: options.collection ?? null,
     },
   });
 }

@@ -40,14 +40,17 @@ async def search_recent_changes(
     per this project's import-linter contract; `agents_service.
     search_recent_changes` is what actually validates it, and what its
     default comes from -- omit this parameter to use it rather than
-    duplicating the default here). Defaults to `"documentation"`: GitHub
-    commit messages, PR bodies, and issue bodies have no file extension,
-    so `app.ingestion.processors.chunking.classify_content_type` stores
-    them there, not in `"code"` (literal source files only) -- pass
-    `collection="code"` explicitly if you want source-file diffs
-    specifically rather than commit/PR/issue history. `repository` is only
-    usable with `collection` `"code"` or `"documentation"` --
-    `"conversations"` (chat) has no repository concept.
+    duplicating the default here). Omitted (the default), it searches both
+    `"documentation"` (GitHub commit messages, PR bodies, and issue bodies
+    -- no file extension, so `app.ingestion.processors.chunking.
+    classify_content_type` stores them here, not in `"code"`) and `"code"`
+    (the repo's actual changed source files) together, fused into one
+    ranked list -- "recent changes" means both a commit's own description
+    and the file it touched. Pass `collection="code"` or
+    `collection="documentation"` explicitly to restrict to just one of the
+    two instead. `repository` is only usable with `collection` `"code"` or
+    `"documentation"` (or omitted) -- `"conversations"` (chat) has no
+    repository concept.
 
     Returns: `{query: str, since?: str, repository?: str, collection?: str}`
     -> `list[ScoredChunk]` (serialized).
