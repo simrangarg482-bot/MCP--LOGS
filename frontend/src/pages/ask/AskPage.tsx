@@ -28,6 +28,7 @@ import {
 } from "@/api/ask";
 import { listIncidents } from "@/api/incidents";
 import { listGapReports } from "@/api/knowledge";
+import { useToast } from "@/context/ToastContext";
 import type { ApiError } from "@/types/common";
 import type { ChatTurn, QuickActionKind } from "@/types/ask";
 import { formatDateTime } from "@/utils/date";
@@ -37,7 +38,15 @@ import { cn } from "@/utils/cn";
 interface StarterQuestion {
   label: string;
   description: string;
-  question: string;
+  /**
+   * The canned query text this starter sends. Omitted for
+   * `action: "similar_incidents"`: that button has no fixed query -- it
+   * uses whatever the user has currently typed into the composer (see
+   * `runSimilarIncidentsAction`), since a hardcoded description would be
+   * unrelated to whatever incident/symptoms the user is actually
+   * investigating.
+   */
+  question?: string;
   icon: LucideIcon;
   tone: string;
   /**
@@ -61,7 +70,6 @@ const STARTER_QUESTIONS: StarterQuestion[] = [
   {
     label: "Similar incidents",
     description: "Compare symptoms with previous investigations",
-    question: "Have we seen this checkout error before?",
     icon: Search,
     tone: "bg-info-subtle text-info ring-info-border",
     action: "similar_incidents",
@@ -95,6 +103,7 @@ export function AskPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const { toast } = useToast();
 
   const historyQuery = useQuery({
     queryKey: ["ask-history"],
@@ -205,6 +214,30 @@ export function AskPage() {
         textareaRef.current?.focus();
       });
     }
+  }
+
+  /**
+   * Similar Incidents has no fixed query (see `StarterQuestion.question`'s
+   * docstring) -- it searches for incidents similar to whatever the user
+   * has typed into the composer, describing the incident/symptoms they're
+   * actually investigating right now. Validated here, before any API call:
+   * an empty/whitespace composer has nothing to search for, so this shows
+   * a toast asking the user to describe it first rather than sending a
+   * blank (or previously hardcoded) description to `/search/similar-incidents`.
+   */
+  function runSimilarIncidentsAction() {
+    const description = query.trim();
+    if (!description) {
+      toast({
+        variant: "warning",
+        title: "Describe the incident or symptoms first",
+        description: "Type what you're investigating in the composer below, then click Similar Incidents again.",
+      });
+      return;
+    }
+    setQuery("");
+    if (textareaRef.current) textareaRef.current.style.height = "auto";
+    void runStarterAction(description, "similar_incidents");
   }
 
   /** Retries a turn using whichever capability originally produced it. */
@@ -319,9 +352,15 @@ export function AskPage() {
                     const Icon = starter.icon;
                     return (
                       <button
-                        key={starter.question}
+                        key={starter.label}
                         type="button"
-                        onClick={() => void runStarterAction(starter.question, starter.action)}
+                        onClick={() => {
+                          if (starter.action === "similar_incidents") {
+                            runSimilarIncidentsAction();
+                          } else {
+                            void runStarterAction(starter.question ?? starter.label, starter.action);
+                          }
+                        }}
                         className="group flex items-start gap-3 rounded-lg border border-border bg-surface p-3 text-left transition-colors hover:border-accent-border hover:bg-accent-subtle/40 focus-visible:border-accent"
                       >
                         <span
