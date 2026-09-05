@@ -220,6 +220,13 @@ def test_historical_similarity_dropped_for_non_triage_calls(monkeypatch) -> None
 
 
 def test_historical_similarity_kept_for_triage_calls(monkeypatch) -> None:
+    """`historical_similarity` is now a real signal (audit finding 6): the
+    Retrieval Agent seeds it from a `collection="incidents"` search's raw
+    dense cosine similarity, and -- exactly like `top_similarity`, the same
+    embedding-model scale -- `evaluate_confidence` normalizes it via
+    `_normalize_top_similarity` rather than passing the raw value through
+    unchanged.
+    """
     monkeypatch.setattr(confidence_module, "get_settings", lambda: _FakeSettings(0.6))
     docs = [_chunk(uuid.uuid4())]
 
@@ -231,7 +238,34 @@ def test_historical_similarity_kept_for_triage_calls(monkeypatch) -> None:
         )
     )
 
-    assert out["confidence_signals"]["historical_similarity"] == 0.9
+    assert out["confidence_signals"]["historical_similarity"] == pytest.approx(
+        _normalize_top_similarity(0.9)
+    )
+
+
+def test_historical_similarity_absent_for_triage_call_with_no_historical_match(
+    monkeypatch,
+) -> None:
+    """Safe-when-absent case (audit finding 6, requirement 9's last two
+    bullets): a triage call whose incidents search found nothing historical
+    simply never has the key in `state.confidence_signals` to begin with
+    (the Retrieval Agent omits it rather than seeding a fabricated 0.0) --
+    `evaluate_confidence` must not synthesize it, and the weighted score
+    must renormalize over the signals that remain.
+    """
+    monkeypatch.setattr(confidence_module, "get_settings", lambda: _FakeSettings(0.6))
+    docs = [_chunk(uuid.uuid4())]
+
+    out = evaluate_confidence(
+        _state(
+            chunks=docs,
+            signals={"top_similarity": 0.5},
+            incident_id=uuid.uuid4(),
+        )
+    )
+
+    assert "historical_similarity" not in out["confidence_signals"]
+    assert 0.0 <= out["confidence_score"] <= 1.0
 
 
 # --------------------------------------------------------------------------

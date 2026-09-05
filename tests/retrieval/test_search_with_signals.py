@@ -57,6 +57,38 @@ def _patched_store(monkeypatch):
     return _install
 
 
+@pytest.fixture
+def _patched_single_collection_store(monkeypatch):
+    """Stub the embedding call and the *single-collection* store queries
+    (`search`/`lexical_search`, not `search_all`/`lexical_search_all`) --
+    used to prove `collection=...` routes to the single-collection path,
+    the same one the Retrieval Agent's new `historical_similarity` call
+    (audit finding 6) relies on for `collection="incidents"`.
+    """
+
+    async def _fake_embed_query(_query: str) -> list[float]:
+        return [0.1] * 384
+
+    monkeypatch.setattr(service.embedding, "embed_query", _fake_embed_query)
+
+    def _install(dense: list[ScoredChunk], lexical: list[ScoredChunk]) -> tuple[list, list]:
+        captured_collections: list[str] = []
+
+        async def _fake_search(_session, collection, *_args, **_kwargs):
+            captured_collections.append(collection)
+            return list(dense)
+
+        async def _fake_lexical_search(_session, collection, *_args, **_kwargs):
+            captured_collections.append(collection)
+            return list(lexical)
+
+        monkeypatch.setattr(service._store, "search", _fake_search)
+        monkeypatch.setattr(service._store, "lexical_search", _fake_lexical_search)
+        return captured_collections
+
+    return _install
+
+
 async def test_top_dense_similarity_is_the_best_dense_score(_patched_store) -> None:
     dense = [_chunk("best dense", 0.63), _chunk("second", 0.41)]
     lexical = [_chunk("lexical only", 0.02)]
@@ -101,3 +133,65 @@ async def test_chunks_are_the_rrf_fused_result_not_the_raw_dense_list(_patched_s
     assert result.chunks[0].chunk_id == shared_id
     # ...but the similarity signal still reflects the strongest dense match.
     assert result.top_dense_similarity == pytest.approx(0.99)
+
+
+
+async def test_collection_none_uses_the_all_collections_store_methods(
+    _patched_store, monkeypatch
+) -> None:
+    """Default behavior (`collection=None`) is unchanged by the new
+    parameter: it must still call `search_all`/`lexical_search_all`, not
+    the single-collection `search`/`lexical_search`.
+    """
+    _patched_store(dense=[_chunk("dense hit", 0.6)], lexical=[])
+
+    called_single_collection = False
+
+    async def _fail_if_called(*_args, **_kwargs):
+        nonlocal called_single_collection
+        called_single_collection = True
+        return []
+
+    monkeypatch.setattr(service._store, "search", _fail_if_called)
+    monkeypatch.setattr(service._store, "lexical_search", _fail_if_called)
+
+    result = await service.search_with_signals(None, "q", _FILTERS, top_k=10)
+
+    assert called_single_collection is False
+    assert result.top_dense_similarity == pytest.approx(0.6)
+
+
+async def test_collection_incidents_uses_the_single_collection_store_methods(
+    _patched_single_collection_store,
+) -> None:
+    """Audit finding 6: the Retrieval Agent's `historical_similarity` call
+    passes `collection="incidents"` -- this must route to the
+    single-collection `search`/`lexical_search` store methods, scoped to
+    exactly that collection, not the all-collections default.
+    """
+    dense_hit = _chunk("a similar past incident", 0.71, collection="incidents")
+    captured_collections = _patched_single_collection_store(dense=[dense_hit], lexical=[])
+
+    result = await service.search_with_signals(
+        None, "checkout failing", _FILTERS, top_k=5, collection="incidents"
+    )
+
+    assert captured_collections == ["incidents", "incidents"]
+    assert result.top_dense_similarity == pytest.approx(0.71)
+    assert [c.content for c in result.chunks] == ["a similar past incident"]
+
+
+async def test_collection_incidents_returns_none_similarity_when_no_historical_match(
+    _patched_single_collection_store,
+) -> None:
+    """Safe-when-empty case: an incident with no semantically similar past
+    incident must not fabricate a similarity score.
+    """
+    _patched_single_collection_store(dense=[], lexical=[])
+
+    result = await service.search_with_signals(
+        None, "a totally novel failure mode", _FILTERS, top_k=5, collection="incidents"
+    )
+
+    assert result.top_dense_similarity is None
+    assert result.chunks == []

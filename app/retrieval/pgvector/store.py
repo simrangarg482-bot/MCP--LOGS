@@ -3,11 +3,15 @@ Milestone 5's "pgvector backend" bullet -- the only backend this milestone
 builds; see `app.retrieval.interfaces.base`'s module docstring for why
 Qdrant stays unbuilt for now).
 
-Owned by: retrieval/pgvector/. Backs all three collections
-(`documentation_chunks`, `code_chunks`, `conversations_chunks`) today --
-`_COLLECTION_MODELS` is the only place that would need to change if a
-future collection moved to the Qdrant backend instead (PROJECT_PLAN.md
-section 8.4: a per-collection configuration choice, not a code fork).
+Owned by: retrieval/pgvector/. Backs all four collections
+(`documentation_chunks`, `code_chunks`, `conversations_chunks`,
+`incidents_chunks`) today -- `_COLLECTION_MODELS` (searched by the
+all-collections default) and `_SINGLE_COLLECTION_MODELS` (searched by an
+explicit-`collection` call; a superset of `_COLLECTION_MODELS` -- see that
+dict's own comment for why `"incidents"` is single-collection-only) are the
+only places that would need to change if a future collection moved to the
+Qdrant backend instead (PROJECT_PLAN.md section 8.4: a per-collection
+configuration choice, not a code fork).
 
 Joins back to `documents` (ingestion-owned) for `title`/`source_url` at
 query time -- the same direct-database-read exception already established
@@ -26,13 +30,40 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models.ingestion_models import Document, DocumentMetadata
-from app.database.models.retrieval_models import CodeChunk, ConversationChunk, DocumentationChunk
+from app.database.models.retrieval_models import (
+    CodeChunk,
+    ConversationChunk,
+    DocumentationChunk,
+    IncidentChunk,
+)
 from app.retrieval.schemas import CollectionName, ScoredChunk, SearchFilters, UpsertChunk
 
+# Backs `search_all`/`lexical_search_all` (the "search every collection"
+# fast path `retrieval.service.search(collection=None)` uses) -- these three
+# only, deliberately. "incidents" is NOT here: every existing caller of the
+# all-collections default (the Answer Agent's normal `answer_question` path,
+# the Investigation Agent's evidence gathering) must keep searching exactly
+# what it already searches, per this fix's own scope -- see
+# `retrieval.schemas.CollectionName`'s comment.
 _COLLECTION_MODELS: dict[CollectionName, type] = {
     "documentation": DocumentationChunk,
     "code": CodeChunk,
     "conversations": ConversationChunk,
+}
+
+# Backs the *single*-collection methods below (`search`, `lexical_search`,
+# `upsert`, `delete`) instead of `_COLLECTION_MODELS` directly -- every
+# collection `_COLLECTION_MODELS` has, plus `"incidents"`, reachable only
+# when a caller passes an explicit `collection` (never via the all-
+# collections default above). `IncidentChunk` needs no special-cased query
+# logic here: it is a plain `_ChunkColumns` table with a real `document_id`
+# FK into `documents`, populated by the normal ingestion pipeline exactly
+# like every other collection (`app.ingestion.connectors.incidents.
+# IncidentsConnector`), so the existing `.join(Document, ...)` logic below
+# already works for it unchanged.
+_SINGLE_COLLECTION_MODELS: dict[CollectionName, type] = {
+    **_COLLECTION_MODELS,
+    "incidents": IncidentChunk,
 }
 
 
@@ -94,7 +125,7 @@ class PgVectorStore:
         `ScoredChunk.metadata`'s docstring for why this isn't joined
         unconditionally.
         """
-        model = _COLLECTION_MODELS[collection]
+        model = _SINGLE_COLLECTION_MODELS[collection]
         distance = model.embedding.max_inner_product(query_embedding)
 
         stmt = (
@@ -293,7 +324,7 @@ class PgVectorStore:
 
         `include_metadata` -- see `search()`'s docstring, same contract.
         """
-        model = _COLLECTION_MODELS[collection]
+        model = _SINGLE_COLLECTION_MODELS[collection]
         tsquery = func.plainto_tsquery("english", query_text)
         rank = func.ts_rank_cd(model.content_tsv, tsquery).label("rank")
 
@@ -397,7 +428,7 @@ class PgVectorStore:
                 f"(got {len(chunks)} chunks, {len(embeddings)} embeddings)."
             )
 
-        model = _COLLECTION_MODELS[collection]
+        model = _SINGLE_COLLECTION_MODELS[collection]
         values_batch: list[dict] = []
         for chunk, embedding in zip(chunks, embeddings, strict=True):
             values: dict = dict(
@@ -442,6 +473,6 @@ class PgVectorStore:
         self, session: AsyncSession, collection: CollectionName, document_id: uuid.UUID
     ) -> None:
         """See `VectorStore.delete`'s docstring for the contract."""
-        model = _COLLECTION_MODELS[collection]
+        model = _SINGLE_COLLECTION_MODELS[collection]
         await session.execute(sql_delete(model).where(model.document_id == document_id))
         await session.flush()

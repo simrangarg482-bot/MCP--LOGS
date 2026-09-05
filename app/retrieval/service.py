@@ -132,6 +132,7 @@ async def search_with_signals(
     query: str,
     filters: SearchFilters,
     top_k: int,
+    collection: CollectionName | None = None,
 ) -> HybridSearchResult:
     """`search()` over every collection (no metadata join), but also
     returning the pre-fusion retrieval-quality signals `app.agents.
@@ -141,21 +142,35 @@ async def search_with_signals(
     Same query cost as `search()`'s all-collections fast path: it runs the
     identical `search_all` (dense) + `lexical_search_all` (lexical) passes
     and the same `reciprocal_rank_fusion`, and simply keeps the top dense
-    score that fusion would otherwise discard. Only the Retrieval Agent
-    (`app.agents.retrieval.node`) calls this; every other caller
-    (ingestion, the Investigation Agent's collection-scoped steps) still
-    uses `search()`.
+    score that fusion would otherwise discard. The Retrieval Agent
+    (`app.agents.retrieval.node`) calls this twice per incident-triage
+    invocation: once with `collection=None` (this function's original,
+    still-default behavior, unchanged for its main hybrid-search call) for
+    `"top_similarity"`, and once with `collection="incidents"` for
+    `"historical_similarity"` -- same signal shape (a raw dense cosine
+    similarity `app.agents.confidence._normalize_top_similarity` expects),
+    scoped to one collection instead of all three. `collection`, when
+    given, routes to `PgVectorStore`'s single-collection `search`/
+    `lexical_search` instead of `search_all`/`lexical_search_all` -- the
+    same `_SINGLE_COLLECTION_MODELS` collections `search()` above already
+    supports for an explicit `collection`, `"incidents"` included. Every
+    other caller (ingestion, the Investigation Agent's collection-scoped
+    steps) still uses `search()`, not this function.
     """
     query_embedding = await embedding.embed_query(query)
-    dense = await _store.search_all(session, query_embedding, filters, top_k)
-    lexical = await _store.lexical_search_all(session, query, filters, top_k)
+    if collection is None:
+        dense = await _store.search_all(session, query_embedding, filters, top_k)
+        lexical = await _store.lexical_search_all(session, query, filters, top_k)
+    else:
+        dense = await _store.search(session, collection, query_embedding, filters, top_k)
+        lexical = await _store.lexical_search(session, collection, query, filters, top_k)
     fused = reciprocal_rank_fusion([dense, lexical], top_k=top_k)
     return HybridSearchResult(
         chunks=fused,
-        # `dense` is ordered by similarity descending (`search_all` ends with
-        # `ORDER BY distance ASC` over the negated inner product), so [0] is
-        # the single best dense hit. Its `score` is already negated back to a
-        # normal cosine similarity by `PgVectorStore`.
+        # `dense` is ordered by similarity descending (`search_all`/`search`
+        # end with `ORDER BY distance ASC` over the negated inner product),
+        # so [0] is the single best dense hit. Its `score` is already
+        # negated back to a normal cosine similarity by `PgVectorStore`.
         top_dense_similarity=dense[0].score if dense else None,
     )
 

@@ -51,6 +51,11 @@ logger = get_logger(__name__)
 # over a smaller one).
 _CANDIDATE_POOL_SIZE = 24
 _RERANKED_TOP_K = 12
+# Small on purpose: only the top hit's raw dense similarity is read
+# (`HybridSearchResult.top_dense_similarity`) -- unlike the main hybrid
+# search above, nothing here needs a wide candidate pool to rerank or
+# assemble into context.
+_HISTORICAL_SIMILARITY_TOP_K = 5
 
 
 def make_retrieval_agent_node(
@@ -125,11 +130,64 @@ def make_retrieval_agent_node(
             narrowed = fused_order_fallback(candidates, top_k=_RERANKED_TOP_K)
         assembled_chunks = assemble_context(narrowed)
 
+        confidence_signals: dict[str, float] = {"top_similarity": top_dense_similarity}
+
+        if state.incident_id is not None:
+            # `historical_similarity` (`app.agents.confidence`'s own
+            # docstring: "a real, flagged gap... computing it means
+            # searching an 'incidents' retrieval collection" -- that
+            # collection now exists, see `retrieval.schemas.CollectionName`)
+            # only applies to incident-triage calls. Same shape as
+            # `top_similarity` above: a raw dense cosine similarity, seeded
+            # here and normalized by `evaluate_confidence` (same embedding
+            # model, so the same `_normalize_top_similarity` floor/ceiling
+            # applies), not pre-normalized here -- this node has no
+            # confidence-scoring logic of its own, by design (that stays in
+            # `agents.confidence`, not duplicated here).
+            try:
+                incident_hybrid_result = await call_with_retry(
+                    "retrieval_agent.historical_similarity_search",
+                    lambda: retrieval_service.search_with_signals(
+                        session,
+                        rewritten_query,
+                        filters,
+                        _HISTORICAL_SIMILARITY_TOP_K,
+                        collection="incidents",
+                    ),
+                    retry_count=state.retry_count,
+                )
+            except Exception as exc:
+                # Same non-fatal degradation as the main hybrid search
+                # above: an incidents-search failure must not fail the
+                # whole triage call, only leave this one signal absent (see
+                # `agents.confidence`'s own handling of a missing
+                # `historical_similarity`).
+                logger.warning(
+                    "retrieval_agent_historical_similarity_search_exhausted",
+                    query=rewritten_query,
+                    error=str(exc),
+                )
+                incident_hybrid_result = None
+
+            if (
+                incident_hybrid_result is not None
+                and incident_hybrid_result.top_dense_similarity is not None
+            ):
+                confidence_signals["historical_similarity"] = (
+                    incident_hybrid_result.top_dense_similarity
+                )
+            # Else: no historical incident matched (or the search failed) --
+            # the key is simply absent, same as `top_similarity`'s 0.0
+            # "no match" case would be if this node ever omitted it; here
+            # omission (not a fabricated 0.0) is correct, since
+            # `evaluate_confidence`'s own weighted average already
+            # renormalizes over whichever signals are present.
+
         return {
             "retrieved_chunks": assembled_chunks,
             "rewritten_query": rewritten_query,
             "retry_count": state.retry_count,
-            "confidence_signals": {"top_similarity": top_dense_similarity},
+            "confidence_signals": confidence_signals,
         }
 
     return node

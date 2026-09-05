@@ -60,6 +60,7 @@ async def test_search_similar_incidents_scopes_filters_to_actor_org(monkeypatch)
         captured["filters"] = filters
         captured["top_k"] = top_k
         captured["args"] = args
+        captured["kwargs"] = kwargs
         return [_chunk()]
 
     monkeypatch.setattr(agents_service.retrieval_service, "search", fake_search)
@@ -71,10 +72,57 @@ async def test_search_similar_incidents_scopes_filters_to_actor_org(monkeypatch)
     assert isinstance(captured["filters"], SearchFilters)
     assert captured["filters"].organization_id == actor.organization_id
     assert captured["top_k"] == 10
-    # No collection is passed -- `retrieval.search`'s own all-collections
-    # default (`collection=None`) applies, since no "incidents" collection
-    # exists (see the function's own docstring for why).
-    assert captured["args"] == ()
+
+
+@pytest.mark.asyncio
+async def test_search_similar_incidents_searches_the_incidents_collection(monkeypatch) -> None:
+    """Audit finding 6, regression: this used to search whatever collection
+    `retrieval.search`'s all-collections default happened to fuse together
+    (`documentation`/`code`/`conversations`) -- none of it actual historical
+    incident records, since no `"incidents"` collection existed. It must now
+    search the real `"incidents"` collection specifically, with metadata
+    included so a caller can resolve a match back to its source incident.
+    """
+    captured: dict[str, object] = {}
+
+    async def fake_search(session, query, filters, top_k, *args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return [_chunk(metadata={"incident_id": str(uuid.uuid4()), "status": "closed"})]
+
+    monkeypatch.setattr(agents_service.retrieval_service, "search", fake_search)
+
+    actor = Identity.for_agent("test_agent", uuid.uuid4())
+    result = await agents_service.search_similar_incidents(None, "checkout failing", actor)
+
+    assert len(result) == 1
+    assert result[0].metadata is not None and "incident_id" in result[0].metadata
+    # "incidents" is passed as the positional `collection` argument.
+    assert captured["args"] == ("incidents",)
+    assert captured["kwargs"] == {"include_metadata": True}
+
+
+@pytest.mark.asyncio
+async def test_search_similar_incidents_does_not_use_documentation_code_or_conversations(
+    monkeypatch,
+) -> None:
+    """Requirement 9's "unrelated documentation/code/conversation chunks
+    are not being used as the incident-history source by default": a fake
+    that only knows how to answer for `collection="incidents"` and raises
+    for anything else proves no other collection is ever queried.
+    """
+
+    async def fake_search(session, query, filters, top_k, collection=None, **kwargs):
+        if collection != "incidents":
+            raise AssertionError(f"unexpected collection searched: {collection!r}")
+        return [_chunk()]
+
+    monkeypatch.setattr(agents_service.retrieval_service, "search", fake_search)
+
+    actor = Identity.for_agent("test_agent", uuid.uuid4())
+    result = await agents_service.search_similar_incidents(None, "checkout failing", actor)
+
+    assert len(result) == 1
 
 
 @pytest.mark.asyncio

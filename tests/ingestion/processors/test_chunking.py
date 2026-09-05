@@ -84,3 +84,46 @@ def test_github_issue_with_extension_like_title_still_classifies_as_document() -
     )
 
     assert classify_content_type(doc) == "document"
+
+
+def test_incidents_source_classifies_as_incident() -> None:
+    """Audit finding 6: `IncidentsConnector.source_name == "incidents"`
+    must classify as the new `"incident"` `ContentType` -- source-based,
+    same as chat, since incident text has no distinguishing shape.
+    """
+    doc = RawDocument(
+        source="incidents",
+        external_id="11111111-1111-1111-1111-111111111111",
+        content=(
+            "Checkout returning 500 errors\n\n"
+            "Customers could not complete checkout for ~40 minutes.\n\n"
+            "Resolution: A null pointer in the checkout handler."
+        ),
+        title="Checkout returning 500 errors",
+        metadata={
+            "incident_id": "11111111-1111-1111-1111-111111111111",
+            "status": "closed",
+            "severity": "high",
+        },
+    )
+
+    assert classify_content_type(doc) == "incident"
+
+
+def test_incident_content_type_is_chunked_as_a_single_unit() -> None:
+    """Requirement 2/3: an incident's title+description+resolution must
+    stay one coherent chunk (like a chat message), not fragmented by
+    heading boundaries the way plain "document" content is.
+    """
+    from app.ingestion.processors.chunking import chunk_document
+
+    content = (
+        "Checkout returning 500 errors\n\n"
+        "Customers could not complete checkout for ~40 minutes.\n\n"
+        "Resolution: A null pointer in the checkout handler."
+    )
+
+    chunks = chunk_document(content, "incident")
+
+    assert len(chunks) == 1
+    assert chunks[0].content == content

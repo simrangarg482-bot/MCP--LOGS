@@ -72,6 +72,7 @@ from app.ingestion.connectors.confluence import ConfluenceConnector
 from app.ingestion.connectors.github import GitHubConnector
 from app.ingestion.connectors.gitlab import GitLabConnector
 from app.ingestion.connectors.google_drive import GoogleDriveConnector
+from app.ingestion.connectors.incidents import IncidentsConnector
 from app.ingestion.connectors.jira import JiraConnector
 from app.ingestion.connectors.notion import NotionConnector
 from app.ingestion.connectors.pagerduty import PagerDutyConnector
@@ -114,6 +115,7 @@ _CONNECTOR_REGISTRY: dict[str, Connector] = {
     NotionConnector.source_name: NotionConnector(),
     ServiceNowConnector.source_name: ServiceNowConnector(),
     PagerDutyConnector.source_name: PagerDutyConnector(),
+    IncidentsConnector.source_name: IncidentsConnector(),
 }
 
 # One shared, in-process limiter for every job this worker process runs --
@@ -150,6 +152,7 @@ _CONTENT_TYPE_TO_COLLECTION: dict[ContentType, CollectionName] = {
     "document": "documentation",
     "code": "code",
     "chat": "conversations",
+    "incident": "incidents",
 }
 
 

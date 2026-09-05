@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from app.core.incidents import reads
-from app.core.incidents.schemas import Postmortem
+from app.core.incidents.schemas import Incident, Postmortem
 
 
 def _postmortem_row(organization_id: uuid.UUID) -> Postmortem:
@@ -62,6 +62,93 @@ async def test_list_postmortems_for_ingestion_passes_through_and_maps(monkeypatc
     assert captured["since"] == since
     assert captured["offset"] == 10
     assert captured["limit"] == 25
+
+
+def _incident_row(organization_id: uuid.UUID) -> Incident:
+    now = datetime.now(timezone.utc)
+    return Incident(
+        id=uuid.uuid4(),
+        organization_id=organization_id,
+        project_id=uuid.uuid4(),
+        title="Checkout returning 500 errors",
+        description="Customers could not complete checkout for ~40 minutes.",
+        status="closed",
+        severity="high",
+        owner_team=None,
+        reported_by=uuid.uuid4(),
+        resolved_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+
+
+class _IncidentRow:
+    """Stand-in for the `Row` SQLAlchemy's `.all()` returns for a
+    `select(Incident, Postmortem.root_cause)` query -- `.Incident` and
+    `.root_cause` attribute access, same shape `repository.
+    list_incidents_for_ingestion` actually returns.
+    """
+
+    def __init__(self, incident: Incident, root_cause: str | None) -> None:
+        self.Incident = incident
+        self.root_cause = root_cause
+
+
+@pytest.mark.asyncio
+async def test_list_incidents_for_ingestion_passes_through_and_maps(monkeypatch) -> None:
+    """Audit finding 6: this read surface's new function, mirroring
+    `list_postmortems_for_ingestion` immediately above -- a thin,
+    agents-free wrapper around `repository.list_incidents_for_ingestion`
+    that maps ORM rows to pydantic `Incident` + `root_cause` pairs.
+    """
+    organization_id = uuid.uuid4()
+    incident = _incident_row(organization_id)
+    captured: dict[str, object] = {}
+
+    async def fake_repo(session, org_id, *, since, offset, limit):
+        captured["organization_id"] = org_id
+        captured["since"] = since
+        captured["offset"] = offset
+        captured["limit"] = limit
+        return [_IncidentRow(incident, "A null pointer in the checkout handler.")]
+
+    monkeypatch.setattr(reads.repository, "list_incidents_for_ingestion", fake_repo)
+
+    since = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    result = await reads.list_incidents_for_ingestion(
+        None, organization_id, since=since, offset=10, limit=25
+    )
+
+    assert len(result) == 1
+    returned_incident, root_cause = result[0]
+    assert returned_incident.id == incident.id
+    assert root_cause == "A null pointer in the checkout handler."
+    assert captured["organization_id"] == organization_id
+    assert captured["since"] == since
+    assert captured["offset"] == 10
+    assert captured["limit"] == 25
+
+
+@pytest.mark.asyncio
+async def test_list_incidents_for_ingestion_handles_no_resolution(monkeypatch) -> None:
+    """Requirement 8: an incident with no approved/published postmortem
+    yet must still come back, paired with `root_cause=None`, not filtered
+    out or errored on.
+    """
+    organization_id = uuid.uuid4()
+    incident = _incident_row(organization_id)
+
+    async def fake_repo(session, org_id, *, since, offset, limit):
+        return [_IncidentRow(incident, None)]
+
+    monkeypatch.setattr(reads.repository, "list_incidents_for_ingestion", fake_repo)
+
+    result = await reads.list_incidents_for_ingestion(
+        None, organization_id, since=None, offset=0, limit=50
+    )
+
+    assert len(result) == 1
+    assert result[0][1] is None
 
 
 def test_reads_module_never_imports_agents() -> None:

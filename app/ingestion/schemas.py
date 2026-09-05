@@ -31,7 +31,7 @@ from app.shared.schemas import DocumentStatus, IngestionJobStatus
 # `RawDocument` from this module; schemas.py must not import back from
 # chunking.py). `processors.chunking` imports this type from here instead of
 # defining it, so there is exactly one definition.
-ContentType = Literal["code", "chat", "document"]
+ContentType = Literal["code", "chat", "document", "incident"]
 
 # --- Connector-facing types (PROJECT_PLAN.md section 4.2) -------------------
 

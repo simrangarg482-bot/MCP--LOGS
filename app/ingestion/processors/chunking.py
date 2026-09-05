@@ -46,6 +46,14 @@ _CODE_EXTENSIONS = {
 # a chat message has none).
 _CHAT_SOURCES = {"slack", "teams"}
 
+# Same source-based classification as chat, and for the same reason: an
+# incident's title+description+resolution text has no file extension and
+# no shape that would otherwise distinguish it from a plain "documentation"
+# doc -- only `app.ingestion.connectors.incidents.IncidentsConnector.
+# source_name` identifies it. Kept as its own set (not folded into
+# `_CHAT_SOURCES`) since "incident" and "chat" are different `ContentType`s.
+_INCIDENT_SOURCES = {"incidents"}
+
 # Matches a plausible top-level function/class definition line across
 # several common languages -- a deliberately simple heuristic, not a real
 # per-language parser (tree-sitter or similar would be the correct long-term
@@ -65,10 +73,15 @@ _HEADING_BOUNDARY = re.compile(r"^#{1,6}\s+.+$", re.MULTILINE)
 
 def classify_content_type(raw_document: RawDocument) -> ContentType:
     """Decide which chunking strategy applies -- by content shape, not by
-    which connector produced the document (see module docstring).
+    which connector produced the document (see module docstring). Two
+    exceptions, both source-based rather than shape-based, for the same
+    reason: chat messages and incident records have no content shape that
+    distinguishes them from prose documentation on their own.
     """
     if raw_document.source in _CHAT_SOURCES:
         return "chat"
+    if raw_document.source in _INCIDENT_SOURCES:
+        return "incident"
     path = raw_document.metadata.get("path") or raw_document.title or raw_document.external_id
     if any(path.endswith(ext) for ext in _CODE_EXTENSIONS):
         return "code"
@@ -93,6 +106,15 @@ def chunk_document(
         # "chunk by message boundary" has effectively already happened
         # upstream by the time content reaches here -- there is only one
         # "message" in this content, spanning the whole string.
+        boundaries = [0]
+    elif content_type == "incident":
+        # Same reasoning as chat: `IncidentsConnector.normalize()` already
+        # produces one coherent unit (title + description + resolution) per
+        # incident -- splitting it by heading would fragment a single
+        # incident's symptoms from its own resolution, which is exactly the
+        # semantic unit "similar past incidents" search needs kept whole.
+        # `_split_oversized` below still splits it further if it's long
+        # enough to need that, same as every other strategy.
         boundaries = [0]
     else:
         boundaries = _find_boundaries(content, _HEADING_BOUNDARY)

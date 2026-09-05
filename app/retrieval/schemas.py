@@ -21,11 +21,20 @@ from pydantic import BaseModel, ConfigDict, Field
 
 # One collection per content category (PROJECT_PLAN.md section 8.2), mapping
 # 1:1 onto `app.ingestion.processors.chunking.ContentType` ("document" ->
-# "documentation", "chat" -> "conversations", "code" -> "code") -- see
-# `app.database.models.retrieval_models`'s module docstring for why no
-# `"incidents"` collection exists yet (section 8.2 names one, but nothing
-# produces embeddable chunks for it today).
-CollectionName = Literal["documentation", "code", "conversations"]
+# "documentation", "chat" -> "conversations", "code" -> "code", "incident"
+# -> "incidents") -- see `app.database.models.retrieval_models`'s module
+# docstring for how incidents (title + description + resolution, when
+# available) get embedded via `app.ingestion.connectors.incidents.
+# IncidentsConnector`, the same "re-ingest core-domain data through the
+# normal pipeline" pattern already established by `IncidentsConnector`'s
+# sibling `RunbooksConnector` for postmortems. `"incidents"` is deliberately
+# NOT included in `retrieval.service._ALL_COLLECTIONS` (the "search every
+# collection" default `collection=None` uses) -- only an explicit
+# `collection="incidents"` call reaches it (`agents.service.
+# search_similar_incidents`, and the Retrieval Agent's own
+# `historical_similarity` lookup for incident-triage calls), so every other
+# existing caller's default search behavior is unchanged.
+CollectionName = Literal["documentation", "code", "conversations", "incidents"]
 
 
 class SearchFilters(BaseModel):

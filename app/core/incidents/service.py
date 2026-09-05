@@ -46,6 +46,7 @@ from app.core.audit.service import record_audit_event
 from app.core.exceptions import ConflictError, NotFoundError, PermissionDeniedError, ValidationError
 from app.core.incidents import repository
 from app.core.incidents.reads import (
+    list_incidents_for_ingestion as list_incidents_for_ingestion,
     list_postmortems_for_ingestion as list_postmortems_for_ingestion,
 )
 from app.core.incidents.schemas import (
@@ -645,10 +646,11 @@ async def list_recent_postmortems(
     return [Postmortem.model_validate(row) for row in rows]
 
 
-# `list_postmortems_for_ingestion` used to be defined here; it now lives in
-# `core.incidents.reads` (imported and re-exported at the top of this file)
-# so `ingestion.connectors.runbooks` can depend on a module that never
-# imports `agents` -- see that module's docstring for the full reasoning.
+# `list_postmortems_for_ingestion`/`list_incidents_for_ingestion` live in
+# `core.incidents.reads` (imported and re-exported at the top of this file),
+# not here, so `ingestion.connectors.runbooks`/`ingestion.connectors.
+# incidents` can each depend on a module that never imports `agents` -- see
+# that module's docstring for the full reasoning.
 
 
 async def update_postmortem(

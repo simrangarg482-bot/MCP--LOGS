@@ -23,7 +23,7 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.incidents.schemas import IncidentFilter
@@ -107,6 +107,62 @@ async def list_incidents_by_severity_since(
     )
     result = await session.execute(stmt)
     return result.scalars().all()
+
+
+async def list_incidents_for_ingestion(
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    *,
+    since: datetime | None,
+    offset: int,
+    limit: int,
+) -> Sequence[tuple[Incident, str | None]]:
+    """Return `(incident, resolution_root_cause)` pairs for
+    `organization_id`, ordered oldest-last-modified-first, offset-paginated
+    -- backs `app.ingestion.connectors.incidents.IncidentsConnector`, the
+    same "re-ingest core-domain data through the normal pipeline" pattern
+    `list_postmortems_for_ingestion` already established for postmortems.
+
+    `resolution_root_cause` is a `LEFT OUTER JOIN` to this incident's
+    approved/published postmortem (`get_postmortem_by_incident_id`'s "one
+    postmortem per incident" invariant makes this join single-valued), or
+    `None` if none exists yet or none has been approved -- an incident is
+    still returned either way (never made conditional on having a
+    resolution: see `IncidentsConnector.normalize`'s own docstring on why
+    resolution must stay optional).
+
+    Ordered/filtered by `GREATEST(incidents.updated_at, postmortems.
+    updated_at)`, not `incidents.updated_at` alone -- a deliberate departure
+    from `list_postmortems_for_ingestion`'s plain `created_at` ordering,
+    because an incident and its resolution do not become stale together:
+    approving a postmortem (`core.incidents.service.approve_postmortem`)
+    updates only the `postmortems` row, not its parent incident, so an
+    incident closed *before* its postmortem was approved would never
+    resurface for a later incremental sync (`since` filtering on
+    `incidents.updated_at` alone) once that resolution became available --
+    silently missing exactly the "especially on close/update so resolution
+    information is included" case this connector exists for.
+    `func.greatest` ignores a NULL argument (no postmortem row) rather than
+    propagating it, so this is safe for incidents with no postmortem at
+    all.
+    """
+    last_modified = func.greatest(Incident.updated_at, Postmortem.updated_at)
+    stmt = (
+        select(Incident, Postmortem.root_cause)
+        .outerjoin(
+            Postmortem,
+            (Postmortem.incident_id == Incident.id)
+            & (Postmortem.status.in_(("approved", "published"))),
+        )
+        .where(Incident.organization_id == organization_id, Incident.deleted_at.is_(None))
+        .order_by(last_modified.asc())
+        .offset(offset)
+        .limit(limit)
+    )
+    if since is not None:
+        stmt = stmt.where(last_modified >= since)
+    result = await session.execute(stmt)
+    return result.all()
 
 
 async def update_incident(

@@ -74,6 +74,7 @@ ConnectorSource = Literal[
     "servicenow",
     "pagerduty",
     "monitoring",
+    "incidents",
 ]
 """`"monitoring"` (added alongside `agents.investigation.live.
 MonitoringLiveSource`'s registration into `_LIVE_SOURCES`) has no ingestion

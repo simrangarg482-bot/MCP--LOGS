@@ -43,18 +43,22 @@ requires.
   common case where one runbook/README/postmortem is the complete and
   correct source (EKIP audit 2026-09-02, finding 1).
 - `historical_similarity` -- for incident-triage calls only, per
-  AGENT_WORKFLOWS.md. A real, flagged gap, not a silent omission: computing
-  it means searching an "incidents" retrieval collection, and
-  `app.database.models.retrieval_models`'s own module docstring already
-  documents that no such collection exists yet ("nothing in core/incidents
-  produces embeddable chunks for it today"). Since this node does no I/O of
-  its own, it cannot fetch this signal even once that collection exists --
-  some upstream node would need to supply it, the same way the Retrieval
-  Agent now seeds `top_similarity`. Until then, this signal is simply
-  absent from the weighted formula rather than fabricated as 0.0 --
-  `_weighted_score` renormalizes over whichever signals are actually
-  present, so its permanent absence today doesn't silently deflate every
-  incident-triage confidence score relative to a non-triage one.
+  AGENT_WORKFLOWS.md. Seeded into `state.confidence_signals` by the
+  Retrieval Agent (`agents.retrieval.node`) exactly like `top_similarity`,
+  but from a second, `collection="incidents"`-scoped
+  `retrieval.service.search_with_signals` call (only issued when
+  `state.incident_id is not None`) against the real "incidents" retrieval
+  collection (`app.ingestion.connectors.incidents.IncidentsConnector`
+  re-ingests closed/resolved incidents into it -- see
+  `app.database.models.retrieval_models.IncidentChunk`). It is the same
+  kind of value as `top_similarity` -- a raw dense cosine similarity from
+  the same all-MiniLM-L6-v2 embedding space -- so it is normalized the same
+  way, via `_normalize_top_similarity`, below. When no historical incident
+  matches (or that search fails), the Retrieval Agent simply omits the key
+  rather than fabricating 0.0, and `_weighted_score` renormalizes over
+  whichever signals are actually present, so its absence on a given call
+  doesn't silently deflate that call's score relative to one where a match
+  was found.
 """
 
 from __future__ import annotations
@@ -127,8 +131,15 @@ def evaluate_confidence(state: GraphState) -> dict[str, Any]:
         # (AGENT_WORKFLOWS.md section 2.2) -- drop it if some future caller
         # ever seeds it for a non-triage query.
         signals.pop("historical_similarity", None)
-    # Else: left as whatever (if anything) an upstream node already put in
-    # `state.confidence_signals` -- nothing does yet, see module docstring.
+    elif "historical_similarity" in signals:
+        # Same embedding model/scale as `top_similarity` (both are
+        # all-MiniLM-L6-v2 dense cosine similarities) -- see module
+        # docstring -- so the same floor/ceiling normalization applies.
+        # Absent entirely (not normalized to 0.0) when the Retrieval Agent
+        # found no historical match; see module docstring.
+        signals["historical_similarity"] = _normalize_top_similarity(
+            signals["historical_similarity"]
+        )
 
     confidence_score = _weighted_score(signals)
     # `confidence_threshold`'s default (0.5, provisional since the

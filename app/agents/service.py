@@ -385,22 +385,29 @@ async def search_similar_incidents(
     *,
     top_k: int = 10,
 ) -> list[ScoredChunk]:
-    """Search for evidence resembling `description` (API_DESIGN.md section 3's
-    `search_similar_incidents` MCP tool: `{description: str}` ->
-    `list[ScoredChunk]`).
+    """Search for past incidents resembling `description` (API_DESIGN.md
+    section 3's `search_similar_incidents` MCP tool: `{description: str}`
+    -> `list[ScoredChunk]`).
 
-    API_DESIGN.md's table describes this as searching a `collection=
-    "incidents"` -- no such collection exists (`retrieval.schemas.
-    CollectionName` is `Literal["documentation", "code", "conversations"]`;
-    that Literal's own comment already flags "nothing produces embeddable
-    chunks for [incidents] today"). Passing a nonexistent collection would be
-    a hard runtime type error, not a graceful degradation, so this searches
-    every collection (`collection=None`, `retrieval.search`'s own
-    all-collections default) instead -- a real, flagged gap versus the
-    documented contract's literal wording, not a silent workaround.
+    Searches the real `"incidents"` collection (fixed; a previous version
+    of this function searched every collection instead -- `documentation`/
+    `code`/`conversations`, whatever content happened to exist, none of it
+    actual historical incident records -- because no `"incidents"`
+    collection existed at all; see `retrieval.schemas.CollectionName`'s own
+    comment and `app.ingestion.connectors.incidents.IncidentsConnector`,
+    which populates it from each organization's incidents). `top_k` and the
+    result shape are unchanged.
+
+    `include_metadata=True`: each result's `ScoredChunk.metadata` carries
+    `incident_id`/`status`/`severity` (`IncidentsConnector.normalize`'s own
+    `document_metadata` convention), so a caller can resolve a match back to
+    the actual incident it came from -- `document_id` alone is only the
+    retrieval-owned `documents` row, not `core.incidents.Incident.id`.
     """
     filters = SearchFilters(organization_id=actor.organization_id)
-    return await retrieval_service.search(session, description, filters, top_k)
+    return await retrieval_service.search(
+        session, description, filters, top_k, "incidents", include_metadata=True
+    )
 
 
 async def search_recent_changes(
