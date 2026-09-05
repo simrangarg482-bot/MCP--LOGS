@@ -25,13 +25,26 @@ def _reset_rate_limiters():
     and spuriously 429 a later, unrelated test. Real production behavior
     (the limiter persisting across real requests) is entirely unaffected --
     this only resets the test process's own accumulated state between tests.
+
+    `app.api.rate_limit._limiter` is now `RedisTokenBucketRateLimiter`
+    (Phase 6.5's distributed-rate-limiting fix) -- it has no `_buckets` dict
+    of its own to clear (its state lives in Redis, not this process), and
+    `tests/api/test_rate_limit.py` already swaps in its own throwaway
+    in-process limiter per test via `monkeypatch` for exactly this
+    isolation concern, so there's nothing for this fixture to do for it.
+    `app.mcp.rate_limit._limiter` is unchanged (still in-process, out of
+    this fix's scope) and still needs clearing.
     """
     from app.api import rate_limit as api_rate_limit
     from app.mcp import rate_limit as mcp_rate_limit
 
     limiters = (api_rate_limit._limiter, mcp_rate_limit._limiter)
     for limiter in limiters:
-        limiter._buckets.clear()
+        buckets = getattr(limiter, "_buckets", None)
+        if buckets is not None:
+            buckets.clear()
     yield
     for limiter in limiters:
-        limiter._buckets.clear()
+        buckets = getattr(limiter, "_buckets", None)
+        if buckets is not None:
+            buckets.clear()

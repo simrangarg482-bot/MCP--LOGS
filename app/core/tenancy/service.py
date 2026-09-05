@@ -169,6 +169,13 @@ async def create_organization(
     org_row = await repository.insert_organization(
         session, name=data.name, slug=data.slug
     )
+    # Milestone 10 RLS (c7d4e8f19a2b) enforces `app.current_organization_id`
+    # on every tenant-owned table, `projects` included -- the default
+    # project's INSERT below fails under RLS unless the tenant context is
+    # set first. There is no actor/Identity yet to have set it already (see
+    # this function's own docstring), so it must be set here, using the
+    # organization row just created above, before that insert.
+    await set_tenant_context(session, org_row.id)
     await repository.insert_project(
         session, organization_id=org_row.id, name="General", is_default=True
     )

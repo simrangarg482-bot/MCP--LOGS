@@ -400,7 +400,7 @@ async def search_recent_changes(
     *,
     since: datetime | None = None,
     top_k: int = 10,
-    collection: CollectionName = "code",
+    collection: CollectionName = "documentation",
     repository: str | None = None,
 ) -> list[ScoredChunk]:
     """Search for recent code/documentation changes matching `query`
@@ -421,13 +421,26 @@ async def search_recent_changes(
 
     `repository`, if given, restricts results to one GitHub repo (e.g.
     `"owner/name"`) via `SearchFilters.repository` -- valid for `collection
-    == "code"` (the default here) or `"documentation"` (most real GitHub
-    connector output -- issues, PRs, commit messages, READMEs -- lands
-    there, not in `"code"`); `PgVectorStore` raises for `"conversations"`,
-    which carries no `repo_full_name` to filter on. A repo with no source
-    files (nothing in `code_chunks`) needs an explicit `collection=
-    "documentation"` call to be found at all -- this function's own
-    `collection="code"` default won't surface it.
+    == "documentation"` (the default here) or `"code"`; `PgVectorStore`
+    raises for `"conversations"`, which carries no `repo_full_name` to
+    filter on.
+
+    `collection` defaults to `"documentation"`, not `"code"` (fixed; a
+    previous version of this function defaulted to `"code"`, which was
+    wrong for what "recent changes" actually means for a GitHub-backed
+    repo). `app.ingestion.processors.chunking.classify_content_type`
+    classifies by content *shape*, not by which connector produced it:
+    only a document with a real code file extension is chunked/stored as
+    `"code"`. GitHub commit messages, PR bodies, and issue bodies have no
+    file extension at all, so they land in `"documentation"`, the same as
+    READMEs and other docs. The literal `"code"` collection holds only
+    source files themselves -- searching it for "recent changes" returned
+    weak or empty results even when real commit/PR/issue history existed,
+    because that history was never stored there in the first place. A
+    caller that wants literal source-file diffs specifically (not commit/
+    PR/issue history) still needs an explicit `collection="code"` call --
+    this default only fixes which collection *most* real "recent changes"
+    content actually lives in.
     """
     filters = SearchFilters(organization_id=actor.organization_id, repository=repository)
     results = await retrieval_service.search(

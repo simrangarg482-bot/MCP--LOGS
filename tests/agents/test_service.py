@@ -78,7 +78,20 @@ async def test_search_similar_incidents_scopes_filters_to_actor_org(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_search_recent_changes_searches_code_collection_with_metadata(monkeypatch) -> None:
+async def test_search_recent_changes_searches_documentation_collection_with_metadata(
+    monkeypatch,
+) -> None:
+    """Regression test for a real bug: this used to default to `"code"`,
+    but GitHub commits, PR bodies, and issue bodies have no file extension,
+    so `app.ingestion.processors.chunking.classify_content_type` never
+    classifies them as `"code"` -- they land in `"documentation"`, same as
+    READMEs and other docs (see `test_search_recent_changes_default_
+    collection_matches_where_commit_and_issue_content_is_classified` below
+    for the direct proof tying this default to that classification). The
+    literal `"code"` collection holds only actual source files, so
+    searching it for "recent changes" returned weak/empty results even
+    when real commit/PR/issue history existed for a query.
+    """
     captured: dict[str, object] = {}
 
     async def fake_search(session, query, filters, top_k, collection=None, *, include_metadata=False):
@@ -92,8 +105,75 @@ async def test_search_recent_changes_searches_code_collection_with_metadata(monk
     result = await agents_service.search_recent_changes(None, "checkout", actor)
 
     assert len(result) == 1
-    assert captured["collection"] == "code"
+    assert captured["collection"] == "documentation"
     assert captured["include_metadata"] is True
+
+
+@pytest.mark.asyncio
+async def test_search_recent_changes_default_collection_matches_where_commit_and_issue_content_is_classified(
+    monkeypatch,
+) -> None:
+    """The direct proof this fix is correct, not just consistent with
+    itself: independently classify synthetic GitHub commit/PR/issue-shaped
+    content the same way ingestion actually does
+    (`classify_content_type` -> `_CONTENT_TYPE_TO_COLLECTION`, both
+    untouched by this fix), then assert `search_recent_changes`'s own
+    default collection is the one that mapping actually produces for that
+    content -- rather than merely asserting a literal string, which would
+    pass even if both the default and the classification/mapping logic
+    drifted out of sync in the same wrong direction.
+    """
+    from app.ingestion.processors.chunking import classify_content_type
+    from app.ingestion.schemas import RawDocument
+    from app.ingestion.service import _CONTENT_TYPE_TO_COLLECTION
+
+    # Shaped like real GitHub connector output (PROJECT_PLAN.md section
+    # 4.1's `normalize()` output): a commit message, a PR body, and an
+    # issue body -- none has a `path`/`title`/`external_id` ending in a
+    # code file extension, per `classify_content_type`'s own logic.
+    commit = RawDocument(
+        source="github",
+        external_id="abc123",
+        content="Fix checkout race condition under concurrent requests",
+        title="Fix checkout race condition",
+    )
+    pull_request = RawDocument(
+        source="github",
+        external_id="pr-42",
+        content="This PR fixes the checkout bug described in #41.",
+        title="Fix checkout bug",
+    )
+    issue = RawDocument(
+        source="github",
+        external_id="issue-41",
+        content="Checkout fails intermittently under load.",
+        title="Checkout fails intermittently",
+    )
+
+    for raw_document in (commit, pull_request, issue):
+        content_type = classify_content_type(raw_document)
+        assert content_type == "document", (
+            f"{raw_document.external_id} classified as {content_type!r}, not "
+            "'document' -- this test's premise (commit/PR/issue content has "
+            "no code file extension) no longer holds, so the collection "
+            "default below needs re-deriving, not just re-asserting"
+        )
+        expected_collection = _CONTENT_TYPE_TO_COLLECTION[content_type]
+
+        captured: dict[str, object] = {}
+
+        async def fake_search(
+            session, query, filters, top_k, collection=None, *, include_metadata=False
+        ):
+            captured["collection"] = collection
+            return []
+
+        monkeypatch.setattr(agents_service.retrieval_service, "search", fake_search)
+
+        actor = Identity.for_agent("test_agent", uuid.uuid4())
+        await agents_service.search_recent_changes(None, "checkout", actor)
+
+        assert captured["collection"] == expected_collection
 
 
 @pytest.mark.asyncio

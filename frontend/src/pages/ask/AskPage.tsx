@@ -179,7 +179,11 @@ export function AskPage() {
     try {
       switch (action) {
         case "recent_changes": {
-          const searchResults = await searchRecentChanges(question, { collection: "code" });
+          // GitHub commit/PR/issue content has no file extension, so
+          // ingestion classifies and stores it under "documentation", not
+          // "code" (literal source files only) -- see
+          // agents_service.search_recent_changes's own docstring.
+          const searchResults = await searchRecentChanges(question, { collection: "documentation" });
           resolve({ searchResults });
           break;
         }

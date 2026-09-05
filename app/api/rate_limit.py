@@ -15,16 +15,20 @@ identity-resolution logic FastAPI's own dependency injection already does
 for free -- `Depends(rate_limit_by_...(...))` composes with existing route
 dependencies instead of fighting them.
 
-In-process only (`app.shared.rate_limiter.TokenBucketRateLimiter`, the same
-class -- and the same disclosed "per-process, not distributed" limitation --
-`app.ingestion.service` already uses for outbound throttling). Correct for a
-single API process; multiple replicas would each enforce an independent
-budget, effectively multiplying the real ceiling by replica count. A
-Redis-backed distributed limiter is the correct production fix once this
-application actually runs more than one replica, flagged here as follow-up
-work rather than silently assumed solved -- the same disclosure
-`app.shared.rate_limiter`'s own docstring already makes for its ingestion
-callers.
+Backed by Redis (`app.shared.distributed_rate_limiter.
+RedisTokenBucketRateLimiter`, the same class -- and the same atomic
+Lua-script token bucket -- `app.ingestion.workers.tasks` already uses for
+per-connector/per-organization throttling), not the in-process
+`app.shared.rate_limiter.TokenBucketRateLimiter` this module used
+previously. That in-process limiter kept a separate budget per API
+process: with N replicas, a caller could get up to N times the configured
+limit, since each replica's own bucket had no idea another replica had
+already granted requests against the same key. Redis is the one state
+every replica already shares, so it is what makes one budget actually mean
+one budget regardless of how many replicas are serving traffic. See
+`RedisTokenBucketRateLimiter.try_acquire`'s own docstring for this module's
+Redis-unavailable behavior (fails open, does not turn a Redis blip into an
+API-wide outage).
 """
 
 from __future__ import annotations
@@ -34,14 +38,22 @@ from typing import Any
 
 from fastapi import Request
 
+from redis.asyncio import Redis
+
 from app.api.deps import CurrentIdentity
 from app.core.exceptions import RateLimitedError
-from app.shared.rate_limiter import TokenBucketRateLimiter
+from app.shared.config.settings import get_settings
+from app.shared.distributed_rate_limiter import RedisTokenBucketRateLimiter
 
-# One shared limiter for every rate-limited endpoint in this process --
-# `scope` (passed by each dependency factory below) namespaces keys so
-# different endpoints' budgets never collide even for the same caller.
-_limiter = TokenBucketRateLimiter()
+# One shared limiter for every rate-limited endpoint across every API
+# replica -- `scope` (passed by each dependency factory below) namespaces
+# keys so different endpoints' budgets never collide even for the same
+# caller. `Redis.from_url` is lazy (no connection is opened until the first
+# command), so constructing this at import time, the same way the
+# in-process limiter it replaces was constructed, does not block or risk
+# API startup -- consistent with `RedisTokenBucketRateLimiter.try_acquire`'s
+# own fail-open handling of a connection that never succeeds.
+_limiter = RedisTokenBucketRateLimiter(Redis.from_url(str(get_settings().redis_url)))
 
 
 def _client_ip(request: Request) -> str:

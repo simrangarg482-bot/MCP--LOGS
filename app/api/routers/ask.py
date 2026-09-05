@@ -105,7 +105,11 @@ class RecentChangesRequest(BaseModel):
     query: str
     since: datetime | None = None
     top_k: int = 10
-    collection: CollectionName = "code"
+    # Matches `agents_service.search_recent_changes`'s own default -- see
+    # that function's docstring: commit/PR/issue content has no file
+    # extension, so it's classified/stored under "documentation", not
+    # "code" (which holds only literal source files).
+    collection: CollectionName = "documentation"
 
 
 @router.post(

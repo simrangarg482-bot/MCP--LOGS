@@ -378,6 +378,9 @@ async def test_create_organization_without_actor_records_no_audit_event(monkeypa
     async def fake_insert_project(session, **kwargs):
         return None
 
+    async def fake_set_tenant_context(session, organization_id):
+        return None
+
     async def fake_record_audit_event(session, actor, **kwargs):
         audit_calls.append(kwargs)
 
@@ -386,6 +389,7 @@ async def test_create_organization_without_actor_records_no_audit_event(monkeypa
     )
     monkeypatch.setattr(tenancy_service.repository, "insert_organization", fake_insert_organization)
     monkeypatch.setattr(tenancy_service.repository, "insert_project", fake_insert_project)
+    monkeypatch.setattr(tenancy_service, "set_tenant_context", fake_set_tenant_context)
     monkeypatch.setattr(tenancy_service, "record_audit_event", fake_record_audit_event)
 
     result = await tenancy_service.create_organization(
@@ -414,6 +418,9 @@ async def test_create_organization_with_actor_records_audit_event(monkeypatch) -
     async def fake_insert_project(session, **kwargs):
         return None
 
+    async def fake_set_tenant_context(session, organization_id):
+        return None
+
     async def fake_record_audit_event(session, event_actor, **kwargs):
         assert event_actor is actor
         audit_calls.append(kwargs)
@@ -423,6 +430,7 @@ async def test_create_organization_with_actor_records_audit_event(monkeypatch) -
     )
     monkeypatch.setattr(tenancy_service.repository, "insert_organization", fake_insert_organization)
     monkeypatch.setattr(tenancy_service.repository, "insert_project", fake_insert_project)
+    monkeypatch.setattr(tenancy_service, "set_tenant_context", fake_set_tenant_context)
     monkeypatch.setattr(tenancy_service, "record_audit_event", fake_record_audit_event)
 
     result = await tenancy_service.create_organization(
@@ -472,17 +480,79 @@ async def test_create_organization_without_actor_bypasses_permission_check(monke
     async def fake_insert_project(session, **kwargs):
         return None
 
+    async def fake_set_tenant_context(session, organization_id):
+        return None
+
     monkeypatch.setattr(
         tenancy_service.repository, "get_organization_by_slug", fake_get_organization_by_slug
     )
     monkeypatch.setattr(tenancy_service.repository, "insert_organization", fake_insert_organization)
     monkeypatch.setattr(tenancy_service.repository, "insert_project", fake_insert_project)
+    monkeypatch.setattr(tenancy_service, "set_tenant_context", fake_set_tenant_context)
 
     result = await tenancy_service.create_organization(
         None, OrganizationCreate(name="Acme", slug="acme")
     )
 
     assert result.slug == "acme"
+
+
+@pytest.mark.asyncio
+async def test_create_organization_sets_tenant_context_before_default_project(
+    monkeypatch,
+) -> None:
+    """Regression test for a real bug: Milestone 10 RLS (`c7d4e8f19a2b`)
+    enforces `app.current_organization_id` on every tenant-owned table,
+    `projects` included. The default project is created in the same call as
+    the organization, before any `actor`/Identity exists to have already set
+    the tenant context (see this function's own docstring) -- so
+    `create_organization` must set it itself, using the just-created
+    organization's own id, before inserting the default project. Without
+    this, the project INSERT fails outright under real RLS with
+    `InsufficientPrivilegeError: new row violates row-level security policy
+    for table "projects"` -- invisible in this monkeypatched unit test
+    unless it specifically asserts call order and argument, which is what
+    this test does; only a live Postgres actually enforces the policy
+    (see `scripts/verify_rls_isolation.py`).
+    """
+    calls: list[str] = []
+    captured_tenant_context_org_id: uuid.UUID | None = None
+    captured_insert_project_org_id: uuid.UUID | None = None
+
+    async def fake_get_organization_by_slug(session, slug):
+        return None
+
+    async def fake_insert_organization(session, *, name, slug):
+        return _FakeOrgRow(name=name, slug=slug)
+
+    async def fake_set_tenant_context(session, organization_id):
+        nonlocal captured_tenant_context_org_id
+        captured_tenant_context_org_id = organization_id
+        calls.append("set_tenant_context")
+
+    async def fake_insert_project(session, *, organization_id, **kwargs):
+        nonlocal captured_insert_project_org_id
+        captured_insert_project_org_id = organization_id
+        calls.append("insert_project")
+        return None
+
+    monkeypatch.setattr(
+        tenancy_service.repository, "get_organization_by_slug", fake_get_organization_by_slug
+    )
+    monkeypatch.setattr(tenancy_service.repository, "insert_organization", fake_insert_organization)
+    monkeypatch.setattr(tenancy_service.repository, "insert_project", fake_insert_project)
+    monkeypatch.setattr(tenancy_service, "set_tenant_context", fake_set_tenant_context)
+
+    result = await tenancy_service.create_organization(
+        None, OrganizationCreate(name="Acme", slug="acme")
+    )
+
+    assert calls == ["set_tenant_context", "insert_project"], (
+        "tenant context must be set before the default project is inserted, "
+        "not after or not at all"
+    )
+    assert captured_tenant_context_org_id == result.id
+    assert captured_insert_project_org_id == result.id
 
 
 # --- accept_invitation hardening -----------------------------------------------
