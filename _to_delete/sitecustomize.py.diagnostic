@@ -1,0 +1,53 @@
+"""TEMPORARY DIAGNOSTIC FILE - tracing an unexplained duplicate python.exe
+spawn. Safe to delete once found."""
+import sys
+import traceback
+
+_LOG = r"C:\Users\DELL\Downloads\mcp-logs-1\spawn_trace.log"
+
+with open(_LOG, "a", encoding="utf-8") as f:
+    f.write(f"sitecustomize.py LOADED. sys.executable={sys.executable} argv={sys.argv}\n")
+
+
+def _log(name, *info):
+    try:
+        with open(_LOG, "a", encoding="utf-8") as f:
+            f.write(f"=== {name} called ===\n")
+            for i in info:
+                f.write(f"{i!r}\n")
+            f.write("".join(traceback.format_stack()))
+            f.write("\n\n")
+    except Exception:
+        pass
+
+
+try:
+    import _winapi
+    _orig_create_process = _winapi.CreateProcess
+
+    def _traced_create_process(app_name, cmd_line, *args, **kwargs):
+        _log("_winapi.CreateProcess", app_name, cmd_line)
+        return _orig_create_process(app_name, cmd_line, *args, **kwargs)
+
+    _winapi.CreateProcess = _traced_create_process
+except Exception as e:
+    with open(_LOG, "a", encoding="utf-8") as f:
+        f.write(f"FAILED to patch _winapi.CreateProcess: {e!r}\n")
+
+import subprocess
+_orig_popen_init = subprocess.Popen.__init__
+
+def _traced_popen_init(self, *args, **kwargs):
+    _log("subprocess.Popen", args, kwargs)
+    return _orig_popen_init(self, *args, **kwargs)
+
+subprocess.Popen.__init__ = _traced_popen_init
+
+import os as _os
+_orig_system = _os.system
+
+def _traced_system(cmd):
+    _log("os.system", cmd)
+    return _orig_system(cmd)
+
+_os.system = _traced_system
