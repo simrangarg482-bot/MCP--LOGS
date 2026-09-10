@@ -59,7 +59,13 @@ class EvidenceItem(BaseModel):
     list (no real PagerDuty/Datadog/Grafana/etc. integration exists yet),
     but now has a real, typed `source` value to use whenever one is built,
     rather than the previous state where no legitimate value existed for it
-    at all. `source_timestamp`/`metadata` are
+    at all. `"runbook"` was added alongside
+    `agents.investigation.evidence._gather_knowledge_evidence`: org
+    knowledge/runbooks retrieved from the "documentation" collection's
+    non-GitHub (no `repo` metadata) chunks -- manually-published documents
+    and, once ingested, runbooks-connector content -- distinct from
+    `"postmortem"`, which is a direct, unranked listing of recent
+    postmortems rather than a retrieval match. `source_timestamp`/`metadata` are
     additive fields (default `None`/`{}`, so every pre-existing construction
     site -- postmortem evidence, the zero-evidence/empty-evidence paths --
     keeps working unchanged): `source_timestamp` is the *original* GitHub
@@ -90,6 +96,7 @@ class EvidenceItem(BaseModel):
         "deployment",
         "postmortem",
         "monitoring",
+        "runbook",
     ]
     reference: str  # PR number, message link, ticket ID, etc.
     summary: str

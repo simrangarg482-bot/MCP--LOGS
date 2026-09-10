@@ -242,9 +242,23 @@ async def insert_document(
     """Insert one document row at `version` and return it. PostgreSQL's
     implicit ``RETURNING`` populates generated defaults during ``flush``;
     a separate ``refresh`` would add an unnecessary database round trip for
-    every ingested document. Always `status="proposed"` -- publishing is a
-    separate, not-yet-built review step (ARCHITECTURE.md section 5's
-    human-review gate), matching `documents.status`'s documented lifecycle.
+    every ingested document.
+
+    Always `status="published"` -- connector-synced content is auto-trusted
+    and already embedded into retrieval unconditionally by this module's own
+    caller (`app.ingestion.service`, immediately after this insert,
+    regardless of status), so there is no real review gate for it to sit
+    behind. Only `source="manual"` documents (a different table-writer,
+    `core.knowledge.repository.insert_document` -- see that module's own
+    docstring on the two-writer split) start at `status="proposed"` and go
+    through the actual human-review flow (`core.knowledge.service.
+    publish_document`/`reject_document`, gated by `knowledge:review`).
+    Before this change every ingested row also defaulted to
+    `status="proposed"`, which left it permanently stuck in
+    `/knowledge/review` (nothing ever published it) and permanently absent
+    from `/knowledge`'s browse view (filters on `status="published"`) --
+    see migration `a4c8e1f3b6d2` for the one-time backfill of every row
+    this affected before this fix.
 
     `acl_permission_code` defaults to `None` (no ACL restriction): no caller
     in this codebase currently passes a non-null value -- see
@@ -260,7 +274,7 @@ async def insert_document(
         content_hash=content_hash,
         title=title,
         source_url=source_url,
-        status="proposed",
+        status="published",
         version=version,
         acl_permission_code=acl_permission_code,
     )

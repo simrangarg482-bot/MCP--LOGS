@@ -248,17 +248,28 @@ async def list_published_documents(
     *,
     source: str | None = None,
     updated_since: datetime | None = None,
+    limit: int = 50,
+    offset: int = 0,
 ) -> list[Document]:
-    """List published documents for browsing (`GET /knowledge`) -- "browse
-    ingested GitHub/Slack data". No `knowledge:review` gate, unlike
-    `list_proposed_documents`: matches `get_document`'s existing rule that a
-    published document is readable by anyone in the organization, so this is
-    a plain org-scoped read, not a review-queue action.
+    """List a page of published documents for browsing (`GET /knowledge`)
+    -- "browse ingested GitHub/Slack data". No `knowledge:review` gate,
+    unlike `list_proposed_documents`: matches `get_document`'s existing rule
+    that a published document is readable by anyone in the organization, so
+    this is a plain org-scoped read, not a review-queue action.
+
+    `limit`/`offset` (Stage 3): threaded straight through to
+    `repository.list_published_documents` -- see that function's own
+    docstring for why this became necessary.
     """
     _ensure_same_organization(actor, organization_id)
 
     rows = await repository.list_published_documents(
-        session, organization_id, source=source, updated_since=updated_since
+        session,
+        organization_id,
+        source=source,
+        updated_since=updated_since,
+        limit=limit,
+        offset=offset,
     )
     return await _to_schemas_bulk(session, list(rows))
 

@@ -70,10 +70,18 @@ export function DashboardPage() {
   });
   const connectorsQuery = useQuery({ queryKey: ["connectors"], queryFn: listConnectors });
   const agentsQuery = useQuery({ queryKey: ["agents", "stats"], queryFn: listAgentStats });
+  // `listKnowledgeDocuments` returns one server-paginated page, not a
+  // `total` count (Stage 5 dropped the `Paginated<T>` wrapper -- the real
+  // `GET /knowledge` has no count query). `pageSize: 100` is the backend's
+  // max page size (`Query(..., le=100)`), so this is a best-effort,
+  // possibly-capped count for this readiness stat, not an exact total.
   const knowledgeQuery = useQuery({
     queryKey: ["knowledge", "dashboard"],
-    queryFn: () => listKnowledgeDocuments({ page: 1, pageSize: 1 }),
+    queryFn: () => listKnowledgeDocuments({ page: 1, pageSize: 100 }),
   });
+  const knowledgeDocsLabel = knowledgeQuery.data
+    ? `${knowledgeQuery.data.length}${knowledgeQuery.data.length >= 100 ? "+" : ""}`
+    : undefined;
 
   const incidents = recentIncidentsQuery.data ?? [];
   const breakdownIncidents = breakdownIncidentsQuery.data ?? [];
@@ -129,7 +137,7 @@ export function DashboardPage() {
         <div className="relative overflow-hidden rounded-2xl border border-accent-border bg-accent-subtle px-5 py-4">
           <div className="pointer-events-none absolute -right-10 -top-16 h-40 w-40 rounded-full bg-info/20 blur-3xl" />
           <div className="relative flex flex-wrap items-center justify-between gap-4">
-            <div><p className="text-sm font-semibold text-ink">Knowledge readiness</p><p className="mt-1 text-xs text-ink-muted">{connectedSources} of {totalSources} configured sources active · {knowledgeQuery.data?.total ?? 0} searchable documents</p></div>
+            <div><p className="text-sm font-semibold text-ink">Knowledge readiness</p><p className="mt-1 text-xs text-ink-muted">{connectedSources} of {totalSources} configured sources active · {knowledgeDocsLabel ?? 0} searchable documents</p></div>
             <Button size="sm" variant="secondary" onClick={() => navigate("/connectors")}>Review sources<ArrowRight className="h-3.5 w-3.5" /></Button>
           </div>
         </div>
@@ -142,7 +150,7 @@ export function DashboardPage() {
         <MetricCard label="Resolved Incidents" value={resolvedCount} icon={CheckCircle2} tone="success" />
         <MetricCard
           label="Knowledge Documents"
-          value={knowledgeQuery.data?.total ?? "—"}
+          value={knowledgeDocsLabel ?? "—"}
           icon={BookOpen}
         />
         <MetricCard

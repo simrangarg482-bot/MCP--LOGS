@@ -111,7 +111,13 @@ from app.agents.llm import TRANSIENT_LLM_ERRORS, get_llm
 from app.agents.postmortem.pipeline import run_postmortem_pipeline
 from app.agents.schemas import AgentExecution, AgentExecutionStats
 from app.agents.telemetry import get_estimated_cost_usd, summarize_usage
-from app.core.exceptions import EKIPError, PermissionDeniedError, ServiceUnavailableError
+from app.core.audit.service import record_audit_event
+from app.core.exceptions import (
+    EKIPError,
+    NotFoundError,
+    PermissionDeniedError,
+    ServiceUnavailableError,
+)
 from app.core.incidents import service as incidents_service
 from app.core.incidents.schemas import ActionItem
 from app.core.memory import service as memory_service
@@ -641,6 +647,49 @@ async def list_gap_reports(session: AsyncSession, actor: Identity) -> list[GapRe
     require_permission(actor, _GAP_REVIEW_PERMISSION)
     rows = await knowledge_gap_repository.list_open_gap_reports(session, actor.organization_id)
     return [_gap_report_to_schema(row) for row in rows]
+
+
+async def dismiss_gap_report(
+    session: AsyncSession, actor: Identity, gap_report_id: uuid.UUID
+) -> GapReport:
+    """Dismiss one open gap report (API_DESIGN.md: `POST /knowledge/gaps/
+    {gap_report_id}/dismiss`) -- the missing close-out action
+    `KnowledgeGapReport.status`'s own docstring flagged: `"dismissed"` was
+    part of that column's vocabulary from the start, but nothing ever set
+    it, so `GET /knowledge/gaps` accumulated every recommendation forever
+    with no way for a human to mark one handled.
+
+    Gated by the same `knowledge:review` permission `list_gap_reports`
+    requires. Organization ownership is enforced inside `repository.
+    update_gap_report_status` itself (scoped to `actor.organization_id`,
+    not just the bare `gap_report_id`) rather than fetched-then-checked
+    here -- a cross-organization id therefore updates nothing and this
+    raises `NotFoundError`, the same "don't leak existence across
+    organizations" treatment `core.knowledge.service._get_owned_document`
+    gives a cross-organization document id.
+    """
+    require_permission(actor, _GAP_REVIEW_PERMISSION)
+
+    updated = await knowledge_gap_repository.update_gap_report_status(
+        session, gap_report_id, actor.organization_id, status="dismissed"
+    )
+    if updated is None:
+        raise NotFoundError(
+            "Gap report not found.",
+            error_code="gap_report.not_found",
+            detail={"gap_report_id": str(gap_report_id)},
+        )
+
+    await record_audit_event(
+        session,
+        actor,
+        action="gap_report.dismiss",
+        resource_type="knowledge_gap_report",
+        resource_id=gap_report_id,
+        metadata={},
+    )
+    logger.info("gap_report_dismissed", gap_report_id=str(gap_report_id))
+    return _gap_report_to_schema(updated)
 
 
 async def get_agent_execution_stats(

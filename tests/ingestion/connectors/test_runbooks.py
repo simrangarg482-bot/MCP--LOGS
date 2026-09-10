@@ -44,10 +44,23 @@ def _postmortem(
     )
 
 
+class _FakeSession:
+    """Minimal stand-in for `AsyncSession`. `fetch_batch` calls
+    `set_tenant_context(session, ...)` before doing anything else, which
+    issues one `session.execute(...)` -- the only thing ever called on this
+    fake. Every RLS-protected read past that point goes through the
+    separately-monkeypatched `list_postmortems_for_ingestion`, which
+    ignores `session` entirely, so nothing else here needs to be real.
+    """
+
+    async def execute(self, *args, **kwargs) -> None:
+        return None
+
+
 def _patch_session_scope(monkeypatch) -> None:
     @asynccontextmanager
     async def fake_session_scope():
-        yield None
+        yield _FakeSession()
 
     monkeypatch.setattr(runbooks_module, "session_scope", fake_session_scope)
 

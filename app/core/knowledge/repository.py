@@ -136,14 +136,26 @@ async def list_proposed_documents(
     limit: int = 50,
     offset: int = 0,
 ) -> Sequence[Document]:
-    """Return every non-deleted, still-proposed document for
-    `organization_id`, newest first (API_DESIGN.md: `GET /knowledge/proposed`).
+    """Return every non-deleted, still-proposed, human/agent-authored
+    document for `organization_id`, newest first (API_DESIGN.md:
+    `GET /knowledge/proposed`).
+
+    `source == "manual"` (Stage 2 of the Knowledge/Knowledge Gaps review):
+    this is the review queue for `propose_document`/`propose_runbook_update`
+    proposals specifically, not for connector-synced content. Bulk ingestion
+    (`app.ingestion.repository.insert_document`) now defaults every row it
+    writes to `status="published"` (Stage 1), so in practice no non-`manual`
+    row should ever reach `status="proposed"` -- this filter is defense in
+    depth, guaranteeing this queue is correct by construction even if a
+    future connector regression ever wrote `status="proposed"` again,
+    rather than relying solely on ingestion always getting that right.
     """
     stmt = (
         select(Document)
         .where(
             Document.organization_id == organization_id,
             Document.status == "proposed",
+            Document.source == "manual",
             Document.deleted_at.is_(None),
         )
         .order_by(Document.created_at.desc())
@@ -160,16 +172,26 @@ async def list_published_documents(
     *,
     source: str | None = None,
     updated_since: datetime | None = None,
+    limit: int = 50,
+    offset: int = 0,
 ) -> Sequence[Document]:
-    """Return every non-deleted, published document for `organization_id`,
-    newest-updated first (`GET /knowledge` -- "browse ingested GitHub/Slack
-    data"), optionally narrowed to one connector `source` ("github"/"slack"/
-    "manual"/...) and/or documents touched since `updated_since`.
+    """Return a page of non-deleted, published documents for
+    `organization_id`, newest-updated first (`GET /knowledge` -- "browse
+    ingested GitHub/Slack data"), optionally narrowed to one connector
+    `source` ("github"/"slack"/"manual"/...) and/or documents touched since
+    `updated_since`.
 
     Published-only, unlike `list_proposed_documents`: mirrors `service.
     get_document`'s existing rule that a published document is readable by
     anyone in the organization, with no `knowledge:review` gate -- this is a
     browsing surface for already-approved content, not the review queue.
+
+    `limit`/`offset` (Stage 3 of the Knowledge/Knowledge Gaps review, same
+    defaults/bounds as `list_proposed_documents`): before Stage 1 made
+    ingested documents reach `status="published"` at all, this query always
+    returned an empty or near-empty set, so being unbounded was harmless.
+    Stage 1 made it return every ingested document in the organization in
+    one response with no way to page through it -- this closes that gap.
     """
     stmt = (
         select(Document)
@@ -184,6 +206,7 @@ async def list_published_documents(
         stmt = stmt.where(Document.source == source)
     if updated_since is not None:
         stmt = stmt.where(Document.updated_at >= updated_since)
+    stmt = stmt.limit(limit).offset(offset)
     result = await session.execute(stmt)
     return result.scalars().all()
 

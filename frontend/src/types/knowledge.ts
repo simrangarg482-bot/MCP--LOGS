@@ -16,7 +16,8 @@ export type KnowledgeSource =
   | "notion"
   | "servicenow"
   | "pagerduty"
-  | "monitoring";
+  | "monitoring"
+  | "incidents";
 
 /** Mirrors `app.shared.schemas.DocumentStatus` -- a rejected proposal is soft-deleted, not a third status value. */
 export type DocumentStatus = "published" | "proposed";
@@ -66,4 +67,16 @@ export interface KnowledgeFilters {
 export interface DocumentUpdateRequest {
   title?: string;
   content?: string;
+}
+
+/** Mirrors `app.core.knowledge.schemas.DocumentProposalCreate` -- the body
+ * for `POST /knowledge` (P3), the human-facing counterpart to connector/
+ * agent-proposed documents. Both `sourceIncidentId` and `projectId` are
+ * optional; an omitted `projectId` falls back to the organization's default
+ * project server-side (see `knowledge_service.propose_document`). */
+export interface DocumentProposalRequest {
+  title: string;
+  content: string;
+  sourceIncidentId?: UUID;
+  projectId?: UUID;
 }

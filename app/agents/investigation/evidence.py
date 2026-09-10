@@ -15,23 +15,34 @@ evidence is found, to bound latency"):
      `retrieval.service.search(..., collection="documentation")` for commit/
      PR/issue chunks (see below for why these land in two different
      collections), both with `include_metadata=True`.
-  2. Slack conversations -- `retrieval.service.search(..., collection="conversations")`.
-  3. Jira/Azure DevOps tickets -- no connector for either exists yet
+  2. Org knowledge/runbooks -- `retrieval.service.search(...,
+     collection="documentation")`, the complementary (non-`repo`-tagged)
+     side of the same collection source 1 restricts to GitHub content: any
+     manually-proposed-and-published document (`core.knowledge.service.
+     publish_document`) or ingested runbooks-connector content lands here
+     instead -- see `_gather_knowledge_evidence`.
+  3. Slack conversations -- `retrieval.service.search(..., collection="conversations")`.
+  4. Jira/Azure DevOps tickets -- no connector for either exists yet
      (PROJECT_PLAN.md Milestone 9), so nothing is ingested to search; this
      source always contributes zero evidence today. A real, flagged gap,
      not a bug.
-  4. Existing postmortems -- `core.incidents.list_recent_postmortems`, since
+  5. Existing postmortems -- `core.incidents.list_recent_postmortems`, since
      no "postmortems" retrieval collection exists (`retrieval_models.py`'s
-     own flagged gap) to search by relevance instead.
-  5. Monitoring/alert metadata -- explicitly mocked per AGENT_WORKFLOWS.md
+     own flagged gap) to search by relevance instead. Deduplicated against
+     source 2's runbook evidence first (`_gather_postmortem_evidence`'s own
+     docstring): once a postmortem has been ingested by
+     `ingestion.connectors.runbooks` (P1) and is already represented as a
+     `"runbook"` evidence item, it is not also returned here as a second,
+     redundant `"postmortem"` item for the same underlying knowledge.
+  6. Monitoring/alert metadata -- explicitly mocked per AGENT_WORKFLOWS.md
      section 2.4 ("interface designed so a real integration can replace the
      mock without changing the graph"). Returns empty: `EvidenceItem.source`
      itself (API_DESIGN.md's vocabulary) has no "monitoring"/"alert" value,
      only `deployment` among the non-code/chat/ticket options -- fabricating
      a placeholder evidence item under a mismatched source label would be
      worse than an honestly empty result.
-  6. Live evidence (`agents.investigation.live/`) -- optional, and only
-     reached after the five sources above and only when
+  7. Live evidence (`agents.investigation.live/`) -- optional, and only
+     reached after the six sources above and only when
      `_should_augment_with_live_evidence` says the indexed evidence so far
      is thin, stale, or this is a real, active incident (see that function's
      docstring). Fetches directly from GitHub's/Slack's APIs, scoped to the
@@ -39,7 +50,7 @@ evidence is found, to bound latency"):
      anything already ingested -- see `_gather_live_evidence`.
 
 This module's evidence gathering is deliberately hybrid, not purely
-ingestion-backed and not purely live: sub-stage A's first five sources
+ingestion-backed and not purely live: sub-stage A's first six sources
 (above) search what has already been indexed -- fast, and (per
 `ingestion.workers.main`'s hourly `scheduled_reconciliation` cron) at most
 about an hour stale. Live evidence exists specifically to cover the gap
@@ -66,9 +77,12 @@ rather than creating a new "github_events"-style one, per this feature's
 "reuse the current pipeline wherever possible" constraint. `_gather_code_evidence`
 therefore searches both collections and merges the results, filtering the
 "documentation" side down to chunks whose metadata carries a `repo` key
-(i.e., actually GitHub-sourced), since that collection could in principle
-also hold non-GitHub documentation once a Confluence/SharePoint connector
-exists. Each chunk's `source` is derived from its own `metadata["kind"]`
+(i.e., actually GitHub-sourced), since that collection also holds non-GitHub
+documentation -- manually-published runbooks today, and once a Confluence/
+SharePoint connector exists, that too. `_gather_knowledge_evidence` (source
+2 above) is the complementary consumer: it searches the same collection for
+chunks *without* a `repo` key, so the two sources partition it rather than
+double-counting. Each chunk's `source` is derived from its own `metadata["kind"]`
 (`"commit"` / `"pull_request"` / `"issue"`; a plain file chunk has no
 `"kind"` key at all and defaults to `"github"`) -- see `_chunk_to_evidence`.
 
@@ -165,13 +179,16 @@ async def gather_evidence(
     evidence.extend(await _gather_code_evidence(session, query, filters, retry_count))
 
     if len(evidence) < _EVIDENCE_CAP:
+        evidence.extend(await _gather_knowledge_evidence(session, query, filters, retry_count))
+
+    if len(evidence) < _EVIDENCE_CAP:
         evidence.extend(await _gather_slack_evidence(session, query, filters, retry_count))
 
     if len(evidence) < _EVIDENCE_CAP:
         evidence.extend(_gather_jira_evidence())
 
     if len(evidence) < _EVIDENCE_CAP:
-        evidence.extend(await _gather_postmortem_evidence(session, actor, retry_count))
+        evidence.extend(await _gather_postmortem_evidence(session, actor, retry_count, evidence))
 
     if len(evidence) < _EVIDENCE_CAP:
         evidence.extend(_gather_monitoring_evidence())
@@ -331,6 +348,34 @@ async def _search_code_and_documentation(
     return code_chunks, doc_chunks
 
 
+async def _gather_knowledge_evidence(
+    session: AsyncSession, query: str, filters: SearchFilters, retry_count: dict[str, int]
+) -> list[EvidenceItem]:
+    """Searches the "documentation" collection for org knowledge/runbooks --
+    the complementary side of the collection `_gather_code_evidence`
+    restricts to `repo`-tagged (GitHub) chunks. Covers both manually-
+    proposed-and-published documents (`core.knowledge.service.
+    publish_document` embeds the whole document as one chunk at publish
+    time) and, once ingested, runbooks-connector content
+    (`ingestion.connectors.runbooks`) -- neither carries a `repo` metadata
+    key, so filtering it out here is what keeps this source and
+    `_gather_code_evidence` from double-counting the same collection.
+    """
+    try:
+        chunks = await call_with_retry(
+            "investigation_agent.evidence.knowledge",
+            lambda: retrieval_service.search(
+                session, query, filters, _PER_SOURCE_TOP_K, collection="documentation", include_metadata=True
+            ),
+            retry_count=retry_count,
+        )
+    except Exception as exc:
+        logger.warning("investigation_evidence_source_failed", source="knowledge", error=str(exc))
+        return []
+    non_github_chunks = [chunk for chunk in chunks if not chunk.metadata.get("repo")]
+    return [_chunk_to_evidence(chunk, source="runbook") for chunk in non_github_chunks]
+
+
 async def _gather_slack_evidence(
     session: AsyncSession, query: str, filters: SearchFilters, retry_count: dict[str, int]
 ) -> list[EvidenceItem]:
@@ -359,8 +404,29 @@ def _gather_jira_evidence() -> list[EvidenceItem]:
 
 
 async def _gather_postmortem_evidence(
-    session: AsyncSession, actor: Identity, retry_count: dict[str, int]
+    session: AsyncSession,
+    actor: Identity,
+    retry_count: dict[str, int],
+    existing_evidence: list[EvidenceItem],
 ) -> list[EvidenceItem]:
+    """Same direct, unranked recent-postmortems listing as before P4, minus
+    whichever postmortems are already represented in `existing_evidence` as
+    `"runbook"` evidence (P4's goal -- see `_is_duplicate_of_runbook_evidence`
+    for the correlation logic). `existing_evidence` is `gather_evidence`'s
+    running evidence list at the point this source runs (after source 2,
+    `_gather_knowledge_evidence`, per priority order) -- passed in rather
+    than re-fetched, so this stays pure evidence-gathering with no new
+    retrieval call and no new persistence mechanism, exactly per the P4
+    plan's constraints.
+
+    Every kept item now also carries `metadata={"incident_id": ...,
+    "postmortem_id": ...}` (previously empty) -- an additive field (see
+    `EvidenceItem.metadata`'s own docstring: defaults to `{}`, so this
+    doesn't change any pre-existing caller's shape), and doubles as the
+    correlation key a *future* runbook evidence item would need to dedupe
+    against this one, matching the key `RunbooksConnector.normalize`
+    already embeds on the other side.
+    """
     try:
         postmortems = await call_with_retry(
             "investigation_agent.evidence.postmortems",
@@ -373,16 +439,75 @@ async def _gather_postmortem_evidence(
         logger.warning("investigation_evidence_source_failed", source="postmortem", error=str(exc))
         return []
 
+    runbook_evidence = [item for item in existing_evidence if item.source == "runbook"]
+    correlated_incident_ids = {
+        item.metadata["incident_id"] for item in runbook_evidence if item.metadata.get("incident_id")
+    }
+
     now = datetime.now(UTC)
-    return [
-        EvidenceItem(
-            source="postmortem",
-            reference=f"postmortem:{postmortem.id}",
-            summary=(postmortem.root_cause or "(no root cause recorded)")[:_EXCERPT_MAX_CHARS],
-            retrieved_at=now,
+    result: list[EvidenceItem] = []
+    for postmortem in postmortems:
+        summary = (postmortem.root_cause or "(no root cause recorded)")[:_EXCERPT_MAX_CHARS]
+        if _is_duplicate_of_runbook_evidence(postmortem, summary, runbook_evidence, correlated_incident_ids):
+            logger.info(
+                "investigation_evidence_postmortem_deduplicated",
+                postmortem_id=str(postmortem.id),
+                incident_id=str(postmortem.incident_id),
+            )
+            continue
+        result.append(
+            EvidenceItem(
+                source="postmortem",
+                reference=f"postmortem:{postmortem.id}",
+                summary=summary,
+                retrieved_at=now,
+                metadata={"incident_id": str(postmortem.incident_id), "postmortem_id": str(postmortem.id)},
+            )
         )
-        for postmortem in postmortems
-    ]
+    return result
+
+
+def _is_duplicate_of_runbook_evidence(
+    postmortem: incidents_service.Postmortem,
+    summary: str,
+    runbook_evidence: list[EvidenceItem],
+    correlated_incident_ids: set[str],
+) -> bool:
+    """True if `postmortem` is already represented among `runbook_evidence`
+    -- the same underlying postmortem knowledge, ingested via
+    `ingestion.connectors.runbooks` (P1) and retrieved as `"runbook"`
+    evidence (P0), should not also appear as a separate `"postmortem"`
+    evidence item (P4's goal).
+
+    Prefers the stable correlation key `RunbooksConnector.normalize`
+    embeds on every chunk of an ingested postmortem's document --
+    `metadata["incident_id"]`, which matches `Postmortem.incident_id`
+    one-to-one (a postmortem belongs to exactly one incident, and
+    `list_postmortems_for_ingestion` only ever ingests the one current
+    approved/published postmortem per incident). This is a clean,
+    already-existing key -- not something introduced just for this check
+    -- so it is tried first and, whenever present on any runbook evidence
+    item, is authoritative: no fallback needed or attempted.
+
+    Falls back to content identity only for runbook evidence items that
+    carry no `incident_id` key at all (a manually-proposed/published
+    document via P3 legitimately has none -- it was never generated from a
+    postmortem) -- this postmortem's own root-cause summary text appearing
+    verbatim inside that item's summary. Deliberately strict (full,
+    non-empty summary as a substring, not a fuzzy/partial-word match) so an
+    unrelated runbook with no correlation key never gets a false-positive
+    match against an unrelated postmortem just because both mention common
+    words.
+    """
+    if str(postmortem.incident_id) in correlated_incident_ids:
+        return True
+
+    normalized_summary = summary.strip()
+    if not normalized_summary or normalized_summary == "(no root cause recorded)":
+        return False
+
+    uncorrelated_runbook_evidence = [item for item in runbook_evidence if not item.metadata.get("incident_id")]
+    return any(normalized_summary in item.summary for item in uncorrelated_runbook_evidence)
 
 
 def _gather_monitoring_evidence() -> list[EvidenceItem]:
@@ -410,7 +535,7 @@ _KIND_TO_SOURCE: dict[str, Literal["commit", "pull_request", "issue"]] = {
 def _chunk_to_evidence(
     chunk: ScoredChunk,
     *,
-    source: Literal["github", "commit", "pull_request", "issue", "slack"] | None = None,
+    source: Literal["github", "commit", "pull_request", "issue", "slack", "runbook"] | None = None,
 ) -> EvidenceItem:
     """Convert one retrieved `ScoredChunk` into an `EvidenceItem`.
 

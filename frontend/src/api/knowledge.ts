@@ -1,14 +1,39 @@
 import { apiRequest, mockDelay } from "./client";
 import { USE_MOCK_DATA } from "./config";
-import type { DocumentUpdateRequest, GapReport, KnowledgeDocument, KnowledgeFilters } from "@/types/knowledge";
-import type { Paginated } from "@/types/common";
+import type {
+  DocumentProposalRequest,
+  DocumentUpdateRequest,
+  GapReport,
+  KnowledgeDocument,
+  KnowledgeFilters,
+} from "@/types/knowledge";
 import { mockGapReports, mockKnowledgeDocuments } from "@/mocks/data/knowledge";
 
+/**
+ * `GET /knowledge` -- server-side `limit`/`offset` pagination (Stage 3),
+ * one `source` value filtered server-side. There is no server-side
+ * search-text parameter and no total count, so:
+ *  - `filters.search` only narrows the page already fetched, not the full
+ *    dataset (a page can look "empty of matches" even when a later page
+ *    has some -- this is an accepted tradeoff of true server-side paging,
+ *    the same shape `listProposedDocuments` below already has).
+ *  - Callers get a plain array back (no `Paginated<T>` wrapper, since
+ *    there is no `total` to put in it) and drive "next page" off
+ *    `results.length < pageSize`, mirroring `KnowledgeReviewPage`'s
+ *    existing Previous/Next pattern for `listProposedDocuments`.
+ */
 export async function listKnowledgeDocuments(
   filters: KnowledgeFilters = {},
-): Promise<Paginated<KnowledgeDocument>> {
+): Promise<KnowledgeDocument[]> {
+  const pageSize = filters.pageSize ?? 20;
+  const page = filters.page ?? 1;
+  const offset = (page - 1) * pageSize;
+
   if (USE_MOCK_DATA) {
-    let result = [...mockKnowledgeDocuments];
+    // Mirrors the real endpoint: browse-page mocks are published documents
+    // only -- a "proposed" mock (manual, pending review) belongs in
+    // `listProposedDocuments` instead, never here.
+    let result = mockKnowledgeDocuments.filter((d) => d.status === "published");
     if (filters.search) {
       const q = filters.search.toLowerCase();
       result = result.filter((d) => (d.title ?? "").toLowerCase().includes(q));
@@ -16,45 +41,53 @@ export async function listKnowledgeDocuments(
     if (filters.source?.length) {
       result = result.filter((d) => filters.source!.includes(d.source));
     }
-    result.sort((a, b) => (a.updatedAt > b.updatedAt ? -1 : 1));
-
-    const page = filters.page ?? 1;
-    const pageSize = filters.pageSize ?? 20;
-    const start = (page - 1) * pageSize;
-    return mockDelay({
-      items: result.slice(start, start + pageSize),
-      total: result.length,
-      page,
-      pageSize,
-    });
+    result = [...result].sort((a, b) => (a.updatedAt > b.updatedAt ? -1 : 1));
+    return mockDelay(result.slice(offset, offset + pageSize));
   }
 
-  // The real GET /knowledge returns every published document (no pagination
-  // or search-text filter server-side; the backend does support `source`)
-  // -- filtering and paging happen client-side over that full list, same as
-  // the mock branch above.
-  const params = new URLSearchParams();
-  if (filters.source?.length === 1) params.set("source", filters.source[0]);
+  const params = new URLSearchParams({ limit: String(pageSize), offset: String(offset) });
+  if (filters.source?.length) params.set("source", filters.source[0]);
 
   let documents = await apiRequest<KnowledgeDocument[]>(`/knowledge?${params.toString()}`);
   if (filters.search) {
     const q = filters.search.toLowerCase();
     documents = documents.filter((d) => (d.title ?? "").toLowerCase().includes(q));
   }
-  if (filters.source && filters.source.length > 1) {
-    documents = documents.filter((d) => filters.source!.includes(d.source));
-  }
-  documents = [...documents].sort((a, b) => (a.updatedAt > b.updatedAt ? -1 : 1));
+  return documents;
+}
 
-  const page = filters.page ?? 1;
-  const pageSize = filters.pageSize ?? 20;
-  const start = (page - 1) * pageSize;
-  return {
-    items: documents.slice(start, start + pageSize),
-    total: documents.length,
-    page,
-    pageSize,
-  };
+/**
+ * `POST /knowledge` (`app.core.knowledge.service.propose_document`, no
+ * `knowledge:review` gate -- any authenticated org member may propose a
+ * document; see `propose_document`'s own docstring in
+ * `app/api/routers/knowledge.py`). Always creates `source="manual"`,
+ * `status="proposed"` -- identical to the mock branch below and to what
+ * `listProposedDocuments`/`KnowledgeReviewPage` already expect to see.
+ */
+export async function proposeDocument(data: DocumentProposalRequest): Promise<KnowledgeDocument> {
+  if (USE_MOCK_DATA) {
+    const now = new Date().toISOString();
+    const doc: KnowledgeDocument = {
+      id: crypto.randomUUID(),
+      // Matches `MOCK_ORG_ID`/`MOCK_PROJECT_ID` in `mocks/data/knowledge.ts`
+      // (not exported, so duplicated here rather than widening that
+      // module's public surface for one caller).
+      organizationId: "org-1",
+      projectId: data.projectId ?? "project-1",
+      title: data.title,
+      status: "proposed",
+      version: 1,
+      content: data.content,
+      source: "manual",
+      sourceUrl: null,
+      sourceIncidentId: data.sourceIncidentId ?? null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    mockKnowledgeDocuments.push(doc);
+    return mockDelay(doc);
+  }
+  return apiRequest<KnowledgeDocument>(`/knowledge`, { method: "POST", body: data });
 }
 
 export async function getKnowledgeDocument(id: string): Promise<KnowledgeDocument> {
@@ -142,4 +175,20 @@ export async function listGapReports(): Promise<GapReport[]> {
     return mockDelay(mockGapReports);
   }
   return apiRequest<GapReport[]>(`/knowledge/gaps`);
+}
+
+/**
+ * `POST /knowledge/gaps/{id}/dismiss` (`app.agents.service.dismiss_gap_report`,
+ * permission `knowledge:review`). One-way -- there is no endpoint to
+ * un-dismiss a gap report.
+ */
+export async function dismissGapReport(id: string): Promise<GapReport> {
+  if (USE_MOCK_DATA) {
+    const gap = mockGapReports.find((g) => g.id === id);
+    if (!gap) throw { status: 404, message: "Gap report not found" };
+    gap.status = "dismissed";
+    gap.updatedAt = new Date().toISOString();
+    return mockDelay(gap);
+  }
+  return apiRequest<GapReport>(`/knowledge/gaps/${id}/dismiss`, { method: "POST" });
 }

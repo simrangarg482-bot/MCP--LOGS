@@ -1280,3 +1280,78 @@ async def test_get_ingestion_job_stats_handles_null_aggregates(monkeypatch) -> N
     assert result[0].failed_count == 0
     assert result[0].avg_duration_seconds is None
     assert result[0].total_documents_processed == 0
+
+
+# --- get_connector_by_source (P1: postmortem-approval auto-ingestion) -------
+
+
+@pytest.mark.asyncio
+async def test_get_connector_by_source_returns_model_validated_connector(monkeypatch) -> None:
+    organization_id = uuid.uuid4()
+    row = _FakeConnectorConfigRow(
+        organization_id=organization_id, source="runbooks", credential_ref="encrypted-ref"
+    )
+    captured: dict[str, object] = {}
+
+    async def fake_get_connector_config_by_source(session, org_id, source):
+        captured["organization_id"] = org_id
+        captured["source"] = source
+        return row
+
+    monkeypatch.setattr(
+        tenancy_service.repository,
+        "get_connector_config_by_source",
+        fake_get_connector_config_by_source,
+    )
+
+    result = await tenancy_service.get_connector_by_source(None, organization_id, "runbooks")
+
+    assert result is not None
+    assert result.id == row.id
+    assert captured == {"organization_id": organization_id, "source": "runbooks"}
+
+
+@pytest.mark.asyncio
+async def test_get_connector_by_source_returns_none_when_repository_returns_none(monkeypatch) -> None:
+    async def fake_get_connector_config_by_source(session, org_id, source):
+        return None
+
+    monkeypatch.setattr(
+        tenancy_service.repository,
+        "get_connector_config_by_source",
+        fake_get_connector_config_by_source,
+    )
+
+    result = await tenancy_service.get_connector_by_source(None, uuid.uuid4(), "runbooks")
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_get_connector_by_source_requires_no_permission(monkeypatch) -> None:
+    """Deliberately no `actor`/`tenancy:manage` gate, unlike `get_connector`
+    -- this is an internal existence lookup for the postmortem-approval
+    flow, not a resource read exposed back to the caller. This test exists
+    so a future change accidentally adding a permission check here (and
+    thereby silently breaking auto-ingestion for approvers without
+    `tenancy:manage`) fails loudly.
+    """
+    organization_id = uuid.uuid4()
+    row = _FakeConnectorConfigRow(
+        organization_id=organization_id, source="runbooks", credential_ref="encrypted-ref"
+    )
+
+    async def fake_get_connector_config_by_source(session, org_id, source):
+        return row
+
+    monkeypatch.setattr(
+        tenancy_service.repository,
+        "get_connector_config_by_source",
+        fake_get_connector_config_by_source,
+    )
+
+    # No `actor` parameter exists on this function at all -- calling it with
+    # only `session`/`organization_id`/`source` is the whole point.
+    result = await tenancy_service.get_connector_by_source(None, organization_id, "runbooks")
+
+    assert result is not None

@@ -20,7 +20,7 @@ import pytest
 
 from app.agents import service as agents_service
 from app.agents.service import _passes_recency_filter
-from app.core.exceptions import PermissionDeniedError
+from app.core.exceptions import NotFoundError, PermissionDeniedError
 from app.retrieval.schemas import ScoredChunk, SearchFilters
 from app.shared.schemas import ActorKind, Identity
 
@@ -473,6 +473,85 @@ async def test_list_gap_reports_returns_reports_for_reviewer(monkeypatch) -> Non
     assert len(reports) == 1
     assert reports[0].suggested_action == "update_existing"
     assert len(reports[0].supporting_execution_ids) == 2
+
+
+@pytest.mark.asyncio
+async def test_dismiss_gap_report_requires_knowledge_review_permission() -> None:
+    actor = Identity.for_agent("some_agent", uuid.uuid4())
+    with pytest.raises(PermissionDeniedError):
+        await agents_service.dismiss_gap_report(None, actor, uuid.uuid4())
+
+
+@pytest.mark.asyncio
+async def test_dismiss_gap_report_denies_cross_organization(monkeypatch) -> None:
+    """`update_gap_report_status` scopes its query to the caller's own
+    `organization_id` (see that repository function's own docstring), so a
+    gap report id belonging to a different organization looks identical to
+    one that doesn't exist at all -- the fake below returns `None` exactly
+    as the real, org-scoped query would for either case.
+    """
+    actor = _reviewer(uuid.uuid4())
+
+    async def fake_update_gap_report_status(session, gap_report_id, organization_id, *, status):
+        assert organization_id == actor.organization_id
+        return None
+
+    monkeypatch.setattr(
+        agents_service.knowledge_gap_repository,
+        "update_gap_report_status",
+        fake_update_gap_report_status,
+    )
+
+    with pytest.raises(NotFoundError):
+        await agents_service.dismiss_gap_report(None, actor, uuid.uuid4())
+
+
+@pytest.mark.asyncio
+async def test_dismiss_gap_report_dismisses_and_records_audit_event(monkeypatch) -> None:
+    organization_id = uuid.uuid4()
+    actor = _reviewer(organization_id)
+    gap_report_id = uuid.uuid4()
+
+    from app.database.models.agent_models import KnowledgeGapReport
+
+    dismissed_row = KnowledgeGapReport(
+        id=gap_report_id,
+        organization_id=organization_id,
+        suggested_topic="Auth token expiry",
+        topic_embedding=[0.0, 1.0],
+        supporting_execution_ids=[str(uuid.uuid4())],
+        suggested_action="update_existing",
+        related_document_id=None,
+        status="dismissed",
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+
+    async def fake_update_gap_report_status(session, passed_id, passed_org_id, *, status):
+        assert passed_id == gap_report_id
+        assert passed_org_id == organization_id
+        assert status == "dismissed"
+        return dismissed_row
+
+    recorded_audit_events: list[dict[str, object]] = []
+
+    async def fake_record_audit_event(session, passed_actor, **kwargs):
+        assert passed_actor is actor
+        recorded_audit_events.append(kwargs)
+
+    monkeypatch.setattr(
+        agents_service.knowledge_gap_repository,
+        "update_gap_report_status",
+        fake_update_gap_report_status,
+    )
+    monkeypatch.setattr(agents_service, "record_audit_event", fake_record_audit_event)
+
+    report = await agents_service.dismiss_gap_report(None, actor, gap_report_id)
+
+    assert report.status == "dismissed"
+    assert len(recorded_audit_events) == 1
+    assert recorded_audit_events[0]["action"] == "gap_report.dismiss"
+    assert recorded_audit_events[0]["resource_id"] == gap_report_id
 
 
 def _observability_reader(organization_id: uuid.UUID) -> Identity:

@@ -255,6 +255,29 @@ async def get_connector_config_by_id(
     return await session.get(ConnectorConfig, connector_config_id)
 
 
+async def get_connector_config_by_source(
+    session: AsyncSession, organization_id: uuid.UUID, source: str
+) -> ConnectorConfig | None:
+    """Fetch `organization_id`'s connector configuration for `source`
+    (e.g. `"runbooks"`), or None if none is registered.
+
+    Backs `core.tenancy.service.get_connector_by_source` -- the postmortem-
+    approval flow's (`core.incidents` / `app.api.routers.postmortems`) way
+    of finding "does this org have a runbooks connector to enqueue
+    ingestion against" without a `connector_config_id` already in hand,
+    unlike every other connector lookup in this module. `.first()` rather
+    than `.one()`/`scalar_one_or_none()`: nothing currently enforces at
+    most one connector per `(organization_id, source)`, so this stays
+    defensive rather than raising if that ever changes.
+    """
+    stmt = select(ConnectorConfig).where(
+        ConnectorConfig.organization_id == organization_id,
+        ConnectorConfig.source == source,
+    )
+    result = await session.execute(stmt)
+    return result.scalars().first()
+
+
 async def list_connector_configs(
     session: AsyncSession, organization_id: uuid.UUID
 ) -> Sequence[ConnectorConfig]:

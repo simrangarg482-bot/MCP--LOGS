@@ -116,3 +116,45 @@ async def update_gap_report_supporting_ids(
     await session.flush()
     await session.refresh(row)
     return row
+
+
+async def update_gap_report_status(
+    session: AsyncSession,
+    gap_report_id: uuid.UUID,
+    organization_id: uuid.UUID,
+    *,
+    status: str,
+) -> KnowledgeGapReport | None:
+    """Transition one gap report's `status` (Stage 4 of the Knowledge/
+    Knowledge Gaps review: `service.dismiss_gap_report` calls this with
+    `status="dismissed"` -- the close-out action `KnowledgeGapReport.
+    status`'s own docstring flagged as missing: `"dismissed"` was part of
+    that column's vocabulary from the start, but nothing ever set it).
+
+    Scoped to `organization_id`, unlike `update_gap_report_supporting_ids`
+    above (an internal re-run idempotency check the pipeline only ever
+    calls with an id it just read for its own organization) -- this
+    function is reachable from a human-supplied `gap_report_id` via the
+    REST review action, so it must never mutate a row belonging to a
+    different organization. Matching it in the query itself, rather than
+    fetching by id alone and checking the row's `organization_id`
+    afterward, means a cross-organization id updates nothing at all instead
+    of transiently mutating a foreign organization's row before the caller
+    gets a chance to notice and undo it.
+
+    Returns the updated row, or `None` if no row with this id exists in
+    this organization -- the caller treats that identically to "does not
+    exist" (see `dismiss_gap_report`'s own docstring).
+    """
+    stmt = select(KnowledgeGapReport).where(
+        KnowledgeGapReport.id == gap_report_id,
+        KnowledgeGapReport.organization_id == organization_id,
+    )
+    result = await session.execute(stmt)
+    row = result.scalar_one_or_none()
+    if row is None:
+        return None
+    row.status = status
+    await session.flush()
+    await session.refresh(row)
+    return row

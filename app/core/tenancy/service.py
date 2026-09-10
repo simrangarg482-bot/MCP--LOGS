@@ -615,6 +615,28 @@ async def get_connector(
     return _redact_credential(ConnectorConfig.model_validate(row))
 
 
+async def get_connector_by_source(
+    session: AsyncSession, organization_id: uuid.UUID, source: str
+) -> ConnectorConfig | None:
+    """Fetch `organization_id`'s connector configuration for `source`
+    (e.g. `"runbooks"`), or None if none is registered.
+
+    Deliberately no `actor`/permission check, unlike `get_connector` above:
+    this is an internal existence lookup used by the postmortem-approval
+    flow (`app.api.routers.postmortems.approve_postmortem`) to decide
+    whether to enqueue a background ingestion job, not a read exposed back
+    to the caller -- the action it gates was already authorized by
+    `postmortem:approve` on the approval itself, and the raw
+    `ConnectorConfig` (including its encrypted `credential_ref`) never
+    reaches the client from this path, so `_redact_credential` is not
+    applied here either.
+    """
+    row = await repository.get_connector_config_by_source(session, organization_id, source)
+    if row is None:
+        return None
+    return ConnectorConfig.model_validate(row)
+
+
 async def list_ingestion_runs(
     session: AsyncSession,
     actor: Identity,

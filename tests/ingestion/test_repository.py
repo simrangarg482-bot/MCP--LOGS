@@ -180,3 +180,34 @@ async def test_insert_document_metadata_fits_every_value() -> None:
     assert [r.key for r in session.rows] == ["repo", "changed_files"]
     assert session.rows[0].value == "acme/widgets"
     assert len(session.rows[1].value.encode("utf-8")) <= repository._MAX_METADATA_VALUE_BYTES
+
+
+@pytest.mark.asyncio
+async def test_insert_document_defaults_to_published_status() -> None:
+    """Stage 1 of the Knowledge/Knowledge Gaps review (see `a4c8e1f3b6d2`'s
+    migration docstring and `insert_document`'s own docstring): connector-
+    synced documents must default to `status="published"`, not
+    `"proposed"` -- content is already embedded into retrieval
+    unconditionally at sync time regardless of status, so `"proposed"` only
+    ever meant "permanently stuck in `/knowledge/review`, permanently
+    absent from `/knowledge`" for this writer. Only `core.knowledge.
+    repository.insert_document` (a disjoint writer, `source="manual"`
+    only) should still default to `"proposed"` -- covered by that module's
+    own test suite, not this one.
+    """
+    session = _CollectingSession()
+
+    row = await repository.insert_document(
+        session,
+        organization_id=uuid.uuid4(),
+        project_id=uuid.uuid4(),
+        source="github",
+        external_id="acme/widgets:README.md",
+        content_hash="deadbeef",
+        title="README.md",
+        source_url="https://github.com/acme/widgets/blob/main/README.md",
+        version=1,
+    )
+
+    assert row.status == "published"
+    assert session.rows == [row]

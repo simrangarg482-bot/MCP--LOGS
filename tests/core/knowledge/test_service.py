@@ -450,3 +450,51 @@ async def test_update_document_project_scoped_permission_denies_for_different_pr
         await knowledge_service.update_document(
             None, actor, organization_id, row.id, DocumentUpdate(title="New title")
         )
+
+
+# --- list_published_documents pagination (Stage 3) -----------------------
+
+
+@pytest.mark.asyncio
+async def test_list_published_documents_threads_limit_and_offset(monkeypatch) -> None:
+    """No `knowledge:review` gate on this path (see the function's own
+    docstring), so any org-matched actor suffices -- the thing under test is
+    purely that `limit`/`offset` reach `repository.list_published_documents`
+    unchanged.
+    """
+    organization_id = uuid.uuid4()
+    actor = _non_reviewer(organization_id)
+    captured: dict[str, object] = {}
+
+    async def fake_list_published_documents(session, org_id, *, source, updated_since, limit, offset):
+        captured["limit"] = limit
+        captured["offset"] = offset
+        return []
+
+    monkeypatch.setattr(
+        knowledge_service.repository, "list_published_documents", fake_list_published_documents
+    )
+
+    await knowledge_service.list_published_documents(None, actor, organization_id, limit=7, offset=14)
+
+    assert captured == {"limit": 7, "offset": 14}
+
+
+@pytest.mark.asyncio
+async def test_list_published_documents_defaults_to_fifty_and_zero(monkeypatch) -> None:
+    organization_id = uuid.uuid4()
+    actor = _non_reviewer(organization_id)
+    captured: dict[str, object] = {}
+
+    async def fake_list_published_documents(session, org_id, *, source, updated_since, limit, offset):
+        captured["limit"] = limit
+        captured["offset"] = offset
+        return []
+
+    monkeypatch.setattr(
+        knowledge_service.repository, "list_published_documents", fake_list_published_documents
+    )
+
+    await knowledge_service.list_published_documents(None, actor, organization_id)
+
+    assert captured == {"limit": 50, "offset": 0}
