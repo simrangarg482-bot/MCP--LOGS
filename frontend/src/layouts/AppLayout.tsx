@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { Topbar } from "@/components/layout/Topbar";
+import { FluidParticlesBackground } from "@/components/ui/fluid-particles-background";
 import { useFocusTrap } from "@/hooks/useFocusTrap";
 
 export function AppLayout() {
@@ -29,10 +30,11 @@ export function AppLayout() {
   useFocusTrap(mobileNavRef, mobileNavOpen);
 
   return (
-    <div className="flex h-screen w-full overflow-hidden bg-background">
+    <div className="flex h-screen w-full overflow-hidden bg-transparent">
+      <FluidParticlesBackground asBackground particleCount={900} />
       <a
         href="#main-content"
-        className="fixed left-4 top-3 z-[70] -translate-y-20 rounded-md bg-accent px-3 py-2 text-sm font-medium text-white shadow-panel transition-transform focus:translate-y-0"
+        className="fixed left-4 top-3 z-[70] -translate-y-20 rounded-md bg-accent px-3 py-2 text-sm font-medium text-white shadow-glow transition-transform focus:translate-y-0"
       >
         Skip to content
       </a>
@@ -45,7 +47,7 @@ export function AppLayout() {
       {mobileNavOpen && (
         <div className="fixed inset-0 z-50 flex lg:hidden">
           <div
-            className="absolute inset-0 bg-slate-900/40"
+            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
             onClick={() => setMobileNavOpen(false)}
             aria-hidden="true"
           />

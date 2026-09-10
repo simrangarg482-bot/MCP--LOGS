@@ -10,14 +10,14 @@ interface MetricCardProps {
 }
 
 const TONE_ICON_CLASSES: Record<NonNullable<MetricCardProps["tone"]>, string> = {
-  neutral: "bg-slate-100 text-ink-muted",
+  neutral: "bg-white/[0.06] text-ink-muted",
   critical: "bg-critical-subtle text-critical",
   success: "bg-success-subtle text-success",
 };
 
 export function MetricCard({ label, value, icon: Icon, trend, tone = "neutral" }: MetricCardProps) {
   return (
-    <div className="rounded-xl border border-border bg-surface px-4 py-4 shadow-subtle transition-shadow hover:shadow-panel">
+    <div className="glass group rounded-2xl px-4 py-4 transition-shadow hover:shadow-glow">
       <div className="flex items-center justify-between">
         <p className="text-xs font-medium text-ink-muted">{label}</p>
         <div className={cn("flex h-6 w-6 items-center justify-center rounded-md", TONE_ICON_CLASSES[tone])}>
@@ -25,7 +25,7 @@ export function MetricCard({ label, value, icon: Icon, trend, tone = "neutral" }
         </div>
       </div>
       <div className="mt-3 flex items-baseline gap-2">
-        <p className="text-2xl font-semibold tracking-tight text-ink">{value}</p>
+        <p className="text-2xl font-semibold tracking-tight text-ink font-display">{value}</p>
         {trend && (
           <span
             className={cn(

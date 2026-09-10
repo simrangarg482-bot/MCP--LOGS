@@ -25,7 +25,7 @@ export function AgentsPage() {
         <div className="flex flex-col items-center gap-1">
           {agentPipelineStages.map((stage, index) => (
             <div key={stage.key} className="flex flex-col items-center gap-1">
-              <div className="w-full max-w-xs rounded-md border border-border bg-slate-50 px-4 py-2.5 text-center">
+              <div className="w-full max-w-xs rounded-md border border-border bg-white/[0.03] px-4 py-2.5 text-center">
                 <p className="text-sm font-medium text-ink">{stage.name}</p>
               </div>
               {index < agentPipelineStages.length - 1 && (

@@ -31,11 +31,22 @@ import type { Incident } from "@/types/incident";
 import { formatRelativeTime } from "@/utils/date";
 
 const SEVERITY_COLORS = {
-  critical: "#DC2626",
-  high: "#D97706",
-  medium: "#64748B",
-  low: "#93C5FD",
+  critical: "#F87171",
+  high: "#FBBF24",
+  medium: "#94A3B8",
+  low: "#60A5FA",
 };
+
+// Shared dark-theme values for the two Recharts panels below.
+const AXIS_TICK_COLOR = "#98A2B3";
+const GRID_STROKE = "rgba(255,255,255,0.1)";
+const TOOLTIP_STYLE = {
+  fontSize: 12,
+  borderRadius: 10,
+  border: "1px solid rgba(255,255,255,0.12)",
+  background: "#12131C",
+  color: "#E8EAF2",
+} as const;
 
 // A wider fetch than the 6-row table below needs, specifically so the
 // severity/owner-team breakdown charts reflect a real (if capped, not
@@ -115,8 +126,9 @@ export function DashboardPage() {
       />
 
       <div className="grid gap-3 lg:grid-cols-[1fr_auto]">
-        <div className="rounded-xl border border-accent-border bg-gradient-to-r from-accent-subtle to-white px-5 py-4">
-          <div className="flex flex-wrap items-center justify-between gap-4">
+        <div className="relative overflow-hidden rounded-2xl border border-accent-border bg-accent-subtle px-5 py-4">
+          <div className="pointer-events-none absolute -right-10 -top-16 h-40 w-40 rounded-full bg-info/20 blur-3xl" />
+          <div className="relative flex flex-wrap items-center justify-between gap-4">
             <div><p className="text-sm font-semibold text-ink">Knowledge readiness</p><p className="mt-1 text-xs text-ink-muted">{connectedSources} of {totalSources} configured sources active · {knowledgeQuery.data?.total ?? 0} searchable documents</p></div>
             <Button size="sm" variant="secondary" onClick={() => navigate("/connectors")}>Review sources<ArrowRight className="h-3.5 w-3.5" /></Button>
           </div>
@@ -171,8 +183,8 @@ export function DashboardPage() {
                       <Cell key={entry.severity} fill={SEVERITY_COLORS[entry.severity]} />
                     ))}
                   </Pie>
-                  <Legend wrapperStyle={{ fontSize: 12 }} />
-                  <RechartsTooltip contentStyle={{ fontSize: 12, borderRadius: 6, borderColor: "#E2E8F0" }} />
+                  <Legend wrapperStyle={{ fontSize: 12, color: AXIS_TICK_COLOR }} />
+                  <RechartsTooltip contentStyle={TOOLTIP_STYLE} itemStyle={{ color: "#E8EAF2" }} />
                 </PieChart>
               </ResponsiveContainer>
             ) : (
@@ -193,11 +205,11 @@ export function DashboardPage() {
             ) : ownerTeamBreakdown.length > 0 ? (
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={ownerTeamBreakdown} margin={{ left: -20, right: 8 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" vertical={false} />
-                  <XAxis dataKey="ownerTeam" tick={{ fontSize: 11, fill: "#64748B" }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fontSize: 11, fill: "#64748B" }} axisLine={false} tickLine={false} width={28} />
-                  <RechartsTooltip contentStyle={{ fontSize: 12, borderRadius: 6, borderColor: "#E2E8F0" }} />
-                  <Bar dataKey="count" name="Incidents" fill="#2563EB" radius={[3, 3, 0, 0]} isAnimationActive={false} />
+                  <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} vertical={false} />
+                  <XAxis dataKey="ownerTeam" tick={{ fontSize: 11, fill: AXIS_TICK_COLOR }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fontSize: 11, fill: AXIS_TICK_COLOR }} axisLine={false} tickLine={false} width={28} />
+                  <RechartsTooltip contentStyle={TOOLTIP_STYLE} itemStyle={{ color: "#E8EAF2" }} cursor={{ fill: "rgba(255,255,255,0.04)" }} />
+                  <Bar dataKey="count" name="Incidents" fill="#5B8DEF" radius={[3, 3, 0, 0]} isAnimationActive={false} />
                 </BarChart>
               </ResponsiveContainer>
             ) : (

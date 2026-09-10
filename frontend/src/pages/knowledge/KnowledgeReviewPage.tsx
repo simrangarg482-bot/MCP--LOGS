@@ -93,7 +93,7 @@ export function KnowledgeReviewPage() {
           title="Knowledge Review"
           description="Review documents proposed by connectors and agents before they're published."
         />
-        <p className="rounded-md border border-border bg-slate-50 px-3 py-2 text-xs text-ink-muted">
+        <p className="rounded-md border border-border bg-white/[0.03] px-3 py-2 text-xs text-ink-muted">
           You need the <code className="font-mono">knowledge:review</code> permission to review proposed
           documents. Contact an organization administrator if you believe this is a mistake.
         </p>

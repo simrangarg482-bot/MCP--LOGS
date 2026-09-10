@@ -106,13 +106,13 @@ export function SsoSettingsPage() {
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         {!canManage && (
-          <p className="rounded-md border border-border bg-slate-50 px-3 py-2 text-xs text-ink-muted">
+          <p className="rounded-md border border-border bg-white/[0.03] px-3 py-2 text-xs text-ink-muted">
             You need the <span className="font-medium text-ink">tenancy:manage</span> permission to change SSO
             configuration. You can still view the current settings below.
           </p>
         )}
         {canManage && isAlreadyConfigured && (
-          <p className="rounded-md border border-border bg-slate-50 px-3 py-2 text-xs text-ink-muted">
+          <p className="rounded-md border border-border bg-white/[0.03] px-3 py-2 text-xs text-ink-muted">
             SSO is already configured for this organization. Changing an existing configuration isn't supported yet
             -- these fields are shown read-only.
           </p>

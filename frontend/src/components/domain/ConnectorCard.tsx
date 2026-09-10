@@ -93,7 +93,7 @@ export function ConnectorCard({ connector, onSync, onView, onDelete, isSyncing, 
       <CardContent className="flex flex-col gap-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2.5">
-            <span className="flex h-8 w-8 items-center justify-center rounded-md bg-slate-100 text-ink-muted">
+            <span className="flex h-8 w-8 items-center justify-center rounded-md bg-white/[0.06] text-ink-muted">
               <Icon className="h-4 w-4" />
             </span>
             <p className="text-sm font-semibold text-ink">{titleCase(connector.source)}</p>

@@ -1,6 +1,7 @@
 import type { LucideIcon } from "lucide-react";
 import {
   MessageCircleQuestion,
+  Compass,
   LayoutDashboard,
   AlertCircle,
   BookOpen,
@@ -37,6 +38,7 @@ export const PRIMARY_NAV: NavItem[] = [
   { label: "Agents", path: "/agents", icon: Bot, permission: "observability:read" },
   { label: "MCP Tools", path: "/mcp", icon: Wrench, permission: "observability:read" },
   { label: "Audit Log", path: "/audit", icon: ScrollText, permission: "audit:read" },
+  { label: "Overview", path: "/about", icon: Compass },
 ];
 
 export const SETTINGS_NAV: NavItem[] = [{ label: "Settings", path: "/settings", icon: Settings }];

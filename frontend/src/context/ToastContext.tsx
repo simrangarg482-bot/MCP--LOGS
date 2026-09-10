@@ -18,10 +18,10 @@ interface ToastContextValue {
 const ToastContext = createContext<ToastContextValue | undefined>(undefined);
 
 const VARIANT_STYLES: Record<ToastVariant, { icon: typeof Info; classes: string }> = {
-  success: { icon: CheckCircle2, classes: "border-success-border bg-success-subtle text-success" },
-  error: { icon: XCircle, classes: "border-critical-border bg-critical-subtle text-critical" },
-  warning: { icon: AlertTriangle, classes: "border-warning-border bg-warning-subtle text-warning" },
-  info: { icon: Info, classes: "border-accent-border bg-accent-subtle text-accent" },
+  success: { icon: CheckCircle2, classes: "border-l-2 border-l-success text-success" },
+  error: { icon: XCircle, classes: "border-l-2 border-l-critical text-critical" },
+  warning: { icon: AlertTriangle, classes: "border-l-2 border-l-warning text-warning" },
+  info: { icon: Info, classes: "border-l-2 border-l-accent text-accent" },
 };
 
 let idCounter = 0;
@@ -56,7 +56,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
               role={t.variant === "error" || t.variant === "warning" ? "alert" : "status"}
               aria-live={t.variant === "error" || t.variant === "warning" ? "assertive" : "polite"}
               className={cn(
-                "flex items-start gap-2.5 rounded-md border px-3.5 py-3 shadow-panel",
+                "glass-panel flex items-start gap-2.5 rounded-lg px-3.5 py-3",
                 classes,
               )}
             >

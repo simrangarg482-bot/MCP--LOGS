@@ -50,10 +50,10 @@ export function AskCitationList({
                   "group flex w-full items-start gap-3 rounded-lg border px-3 py-2.5 text-left text-xs text-ink transition",
                   isActive
                     ? "border-accent-border bg-accent-subtle ring-1 ring-accent-border"
-                    : "border-border bg-slate-50/70 hover:border-accent-border hover:bg-accent-subtle",
+                    : "border-border bg-white/[0.03] hover:border-accent-border hover:bg-accent-subtle",
                 )}
               >
-                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-white text-[11px] font-semibold text-accent shadow-subtle ring-1 ring-inset ring-border">
+                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-white/[0.04] text-[11px] font-semibold text-accent shadow-subtle ring-1 ring-inset ring-white/10">
                   {index + 1}
                 </span>
                 <span className="min-w-0 flex-1">
@@ -61,7 +61,7 @@ export function AskCitationList({
                     <FileText className="h-3.5 w-3.5 shrink-0 text-ink-subtle" />
                     <span className="truncate">{label}</span>
                     {host && (
-                      <span className="shrink-0 rounded bg-white px-1 py-px text-[10px] font-normal text-ink-subtle ring-1 ring-inset ring-border">
+                      <span className="shrink-0 rounded bg-white/[0.04] px-1 py-px text-[10px] font-normal text-ink-subtle ring-1 ring-inset ring-white/10">
                         {host}
                       </span>
                     )}

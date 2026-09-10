@@ -32,7 +32,7 @@ export function Modal({ open, onClose, title, description, children, className }
   if (!open) return null;
 
   return createPortal(
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-900/50 px-0 backdrop-blur-[2px] sm:items-center sm:px-4">
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 px-0 backdrop-blur-sm sm:items-center sm:px-4">
       <div
         ref={dialogRef}
         role="dialog"
@@ -40,11 +40,11 @@ export function Modal({ open, onClose, title, description, children, className }
         aria-labelledby="modal-title"
         tabIndex={-1}
         className={cn(
-          "flex max-h-[92vh] w-full max-w-lg flex-col rounded-t-2xl border border-border bg-white shadow-panel sm:max-h-[85vh] sm:rounded-2xl",
+          "glass-panel flex max-h-[92vh] w-full max-w-lg flex-col rounded-t-2xl sm:max-h-[85vh] sm:rounded-2xl",
           className,
         )}
       >
-        <div className="flex shrink-0 items-start justify-between gap-3 border-b border-border px-5 py-4">
+        <div className="flex shrink-0 items-start justify-between gap-3 border-b border-white/10 px-5 py-4">
           <div className="min-w-0">
             <h2 id="modal-title" className="text-sm font-semibold text-ink">
               {title}
@@ -55,7 +55,7 @@ export function Modal({ open, onClose, title, description, children, className }
             type="button"
             onClick={onClose}
             aria-label="Close dialog"
-            className="shrink-0 rounded-md p-1 text-ink-subtle hover:bg-slate-100 hover:text-ink"
+            className="shrink-0 rounded-md p-1 text-ink-subtle hover:bg-white/10 hover:text-ink"
           >
             <X className="h-4 w-4" />
           </button>

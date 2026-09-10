@@ -46,8 +46,8 @@ export function DataTable<T>({
   return (
     <div className="overflow-x-auto scrollbar-thin">
       <table className="w-full min-w-[720px] border-collapse text-left text-sm">
-        <thead className="sticky top-0 z-10 bg-slate-50/95 backdrop-blur">
-          <tr className="border-b border-border">
+        <thead className="sticky top-0 z-10 bg-white/[0.04] backdrop-blur-xl">
+          <tr className="border-b border-white/10">
             {columns.map((col) => {
               const isSorted = sortKey === col.key;
               return (
@@ -85,7 +85,7 @@ export function DataTable<T>({
             })}
           </tr>
         </thead>
-        <tbody className="divide-y divide-border">
+        <tbody className="divide-y divide-white/5">
           {!isLoading && !isError &&
             rows.map((row) => (
               <tr
@@ -104,7 +104,7 @@ export function DataTable<T>({
                 }
                 className={cn(
                   "transition-colors",
-                  onRowClick && "cursor-pointer hover:bg-slate-50 focus-visible:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent",
+                  onRowClick && "cursor-pointer hover:bg-white/[0.05] focus-visible:bg-white/[0.05] focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent",
                 )}
               >
                 {columns.map((col) => (

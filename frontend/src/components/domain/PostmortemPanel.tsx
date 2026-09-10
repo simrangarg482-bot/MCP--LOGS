@@ -182,7 +182,7 @@ export function PostmortemPanel({ incident }: { incident: Incident }) {
                 value={draft?.rootCause ?? ""}
                 onChange={(e) => setDraft((d) => (d ? { ...d, rootCause: e.target.value } : d))}
                 rows={4}
-                className="w-full rounded-md border border-border bg-white px-3 py-2 text-sm text-ink focus-visible:border-accent"
+                className="w-full rounded-md border border-border bg-white/[0.04] px-3 py-2 text-sm text-ink focus-visible:border-accent"
               />
             ) : (
               <p className="text-sm text-ink">{postmortem.rootCause ?? "Not yet determined."}</p>
@@ -211,7 +211,7 @@ export function PostmortemPanel({ incident }: { incident: Incident }) {
             )}
             <ul className="flex flex-col gap-2">
               {(editable ? draft?.actionItems ?? [] : postmortem.actionItems).map((item, index) => (
-                <li key={index} className="flex items-center gap-2 rounded-md border border-border bg-white px-2.5 py-2">
+                <li key={index} className="flex items-center gap-2 rounded-md border border-border bg-white/[0.04] px-2.5 py-2">
                   {editable ? (
                     <>
                       <input

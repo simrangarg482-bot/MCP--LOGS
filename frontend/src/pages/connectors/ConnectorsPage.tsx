@@ -230,13 +230,13 @@ export function ConnectorsPage() {
       {connectorsQuery.data && configuredConnectors.length > 0 && (
         <>
           <div className="grid grid-cols-3 gap-3">
-            <button type="button" onClick={() => setStatusFilter("all")} className={`rounded-xl border bg-white p-3 text-left shadow-subtle ${statusFilter === "all" ? "border-accent" : "border-border"}`}>
+            <button type="button" onClick={() => setStatusFilter("all")} className={`rounded-xl border bg-white/[0.04] p-3 text-left shadow-subtle ${statusFilter === "all" ? "border-accent" : "border-border"}`}>
               <span className="flex items-center gap-2 text-xs text-ink-muted"><Plug className="h-3.5 w-3.5" />Configured</span><span className="mt-1 block text-xl font-semibold text-ink">{configuredConnectors.length}</span>
             </button>
-            <button type="button" onClick={() => setStatusFilter("active")} className={`rounded-xl border bg-white p-3 text-left shadow-subtle ${statusFilter === "active" ? "border-success" : "border-border"}`}>
+            <button type="button" onClick={() => setStatusFilter("active")} className={`rounded-xl border bg-white/[0.04] p-3 text-left shadow-subtle ${statusFilter === "active" ? "border-success" : "border-border"}`}>
               <span className="flex items-center gap-2 text-xs text-ink-muted"><CheckCircle2 className="h-3.5 w-3.5 text-success" />Active</span><span className="mt-1 block text-xl font-semibold text-ink">{activeCount}</span>
             </button>
-            <button type="button" onClick={() => setStatusFilter("error")} className={`rounded-xl border bg-white p-3 text-left shadow-subtle ${statusFilter === "error" ? "border-critical" : "border-border"}`}>
+            <button type="button" onClick={() => setStatusFilter("error")} className={`rounded-xl border bg-white/[0.04] p-3 text-left shadow-subtle ${statusFilter === "error" ? "border-critical" : "border-border"}`}>
               <span className="flex items-center gap-2 text-xs text-ink-muted"><AlertTriangle className="h-3.5 w-3.5 text-critical" />Needs attention</span><span className="mt-1 block text-xl font-semibold text-ink">{errorCount}</span>
             </button>
           </div>
@@ -354,7 +354,7 @@ export function ConnectorsPage() {
             </div>
             <div>
               <p className="mb-1.5 text-xs text-ink-muted">Configuration</p>
-              <pre className="overflow-x-auto rounded-md border border-border bg-slate-50 px-3 py-2 text-xs text-ink">
+              <pre className="overflow-x-auto rounded-md border border-border bg-white/[0.03] px-3 py-2 text-xs text-ink">
                 {JSON.stringify(viewing.config, null, 2)}
               </pre>
             </div>

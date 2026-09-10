@@ -205,7 +205,7 @@ export function AccessRulesSettingsPage() {
       <Card>
         <div className="px-4 py-3">
           <h3 className="text-sm font-semibold text-ink">Access rules</h3>
-          <p className="mt-2 rounded-md border border-border bg-slate-50 px-3 py-2 text-xs text-ink-muted">
+          <p className="mt-2 rounded-md border border-border bg-white/[0.03] px-3 py-2 text-xs text-ink-muted">
             You need the <span className="font-medium text-ink">tenancy:manage</span> permission to view or manage
             access rules.
           </p>

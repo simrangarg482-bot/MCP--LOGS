@@ -31,7 +31,7 @@ export function Drawer({ open, onClose, title, children, className }: DrawerProp
   if (!open) return null;
 
   return createPortal(
-    <div className="fixed inset-0 z-50 flex justify-end bg-slate-900/40">
+    <div className="fixed inset-0 z-50 flex justify-end bg-black/60 backdrop-blur-sm">
       <div
         ref={dialogRef}
         role="dialog"
@@ -39,17 +39,17 @@ export function Drawer({ open, onClose, title, children, className }: DrawerProp
         aria-label={title}
         tabIndex={-1}
         className={cn(
-          "flex h-full w-full max-w-md flex-col border-l border-border bg-white shadow-panel",
+          "glass-panel flex h-full w-full max-w-md flex-col",
           className,
         )}
       >
-        <div className="flex items-center justify-between border-b border-border px-5 py-4">
+        <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
           <h2 className="text-sm font-semibold text-ink">{title}</h2>
           <button
             type="button"
             onClick={onClose}
             aria-label="Close panel"
-            className="rounded-md p-1 text-ink-subtle hover:bg-slate-100 hover:text-ink"
+            className="rounded-md p-1 text-ink-subtle hover:bg-white/10 hover:text-ink"
           >
             <X className="h-4 w-4" />
           </button>

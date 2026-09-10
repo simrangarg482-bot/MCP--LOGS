@@ -27,7 +27,7 @@ export function EvidencePreviewModal({
         <div className="flex flex-col gap-3">
           <div>
             <p className="mb-1 text-xs font-medium uppercase tracking-wide text-ink-subtle">Excerpt</p>
-            <p className="whitespace-pre-wrap rounded-md border border-border bg-slate-50 px-3 py-2.5 text-sm text-ink">
+            <p className="whitespace-pre-wrap rounded-md border border-border bg-white/[0.03] px-3 py-2.5 text-sm text-ink">
               {citation.excerpt}
             </p>
           </div>

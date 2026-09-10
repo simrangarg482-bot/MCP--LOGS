@@ -165,7 +165,7 @@ export function IncidentDetailPage() {
                     value={note}
                     onChange={(e) => setNote(e.target.value)}
                     placeholder="Add a note to the timeline…"
-                    className="h-9 w-full rounded-md border border-border bg-white px-3 text-sm text-ink placeholder:text-ink-subtle focus-visible:border-accent"
+                    className="h-9 w-full rounded-md border border-border bg-white/[0.04] px-3 text-sm text-ink placeholder:text-ink-subtle focus-visible:border-accent"
                   />
                 </label>
                 <Button type="submit" size="sm" isLoading={addNoteMutation.isPending}>
@@ -247,10 +247,10 @@ export function IncidentDetailPage() {
                       href={chunk.sourceUrl ?? "#"}
                       target={chunk.sourceUrl ? "_blank" : undefined}
                       rel="noreferrer"
-                      className="flex flex-col gap-1 rounded-md border border-border bg-white px-3 py-2.5 hover:border-accent-border hover:bg-accent-subtle"
+                      className="flex flex-col gap-1 rounded-md border border-border bg-white/[0.04] px-3 py-2.5 hover:border-accent-border hover:bg-accent-subtle"
                     >
                       <div className="flex items-center gap-2">
-                        <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-ink-muted">
+                        <span className="rounded bg-white/[0.06] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-ink-muted">
                           {chunk.collection}
                         </span>
                         <span className="truncate text-sm font-medium text-ink">{chunk.title ?? "Untitled"}</span>

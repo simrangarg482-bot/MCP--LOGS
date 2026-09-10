@@ -121,7 +121,7 @@ function SearchResultRow({ chunk }: { chunk: ScoredChunk }) {
         href={chunk.sourceUrl ?? "#"}
         target={chunk.sourceUrl ? "_blank" : undefined}
         rel="noreferrer"
-        className="flex flex-col gap-1 rounded-md px-3 py-2.5 hover:bg-slate-50"
+        className="flex flex-col gap-1 rounded-md px-3 py-2.5 hover:bg-white/[0.03]"
       >
         <div className="flex items-center justify-between gap-3">
           <p className="text-sm font-medium text-ink">{chunk.title ?? "Untitled"}</p>

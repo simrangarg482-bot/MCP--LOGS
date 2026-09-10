@@ -46,7 +46,7 @@ export function IncidentCreatePage() {
       <Card>
         <CardContent>
           {!canWrite && (
-            <p className="mb-4 rounded-md border border-border bg-slate-50 px-3 py-2 text-xs text-ink-muted">
+            <p className="mb-4 rounded-md border border-border bg-white/[0.03] px-3 py-2 text-xs text-ink-muted">
               You need the <span className="font-medium text-ink">incident:write</span> permission to create an
               incident.
             </p>
@@ -78,7 +78,7 @@ export function IncidentCreatePage() {
                 placeholder="What's happening, and what's the customer/system impact so far?"
                 value={description}
                 onChange={(event) => setDescription(event.target.value)}
-                className="w-full rounded-md border border-border bg-white px-3 py-2 text-sm text-ink placeholder:text-ink-subtle focus-visible:border-accent disabled:bg-slate-50 disabled:text-ink-subtle"
+                className="w-full rounded-md border border-border bg-white/[0.04] px-3 py-2 text-sm text-ink placeholder:text-ink-subtle focus-visible:border-accent disabled:bg-white/[0.03] disabled:text-ink-subtle"
               />
             </label>
 

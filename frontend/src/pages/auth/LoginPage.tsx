@@ -71,7 +71,7 @@ export function LoginPage() {
 
   if (pendingSelection) {
     return (
-      <div className="rounded-lg border border-border bg-surface px-6 py-6 shadow-panel">
+      <div className="glass-panel rounded-2xl px-6 py-6">
         <h1 className="mb-1 text-center text-lg font-semibold text-ink">Choose an organization</h1>
         <p className="mb-4 text-center text-xs text-ink-subtle">
           Your account belongs to more than one organization. Pick one to continue.
@@ -103,7 +103,7 @@ export function LoginPage() {
   }
 
   return (
-    <div className="rounded-lg border border-border bg-surface px-6 py-6 shadow-panel">
+    <div className="glass-panel rounded-2xl px-6 py-6">
       <h1 className="mb-4 text-center text-lg font-semibold text-ink">Sign in to EKIP</h1>
       <form onSubmit={handleSubmit} className="flex flex-col gap-3">
         <div>
@@ -142,6 +142,11 @@ export function LoginPage() {
         Don't have an account?{" "}
         <Link to="/signup" className="font-medium text-accent hover:underline">
           Create one
+        </Link>
+      </p>
+      <p className="mt-2 text-center text-xs text-ink-subtle">
+        <Link to="/about" className="font-medium text-ink-muted transition-colors hover:text-ink">
+          Learn what EKIP does &rarr;
         </Link>
       </p>
     </div>

@@ -40,23 +40,23 @@ export function Topbar({ isMobileNavOpen, onToggleSidebar }: TopbarProps) {
   }
 
   return (
-    <header className="flex h-16 shrink-0 items-center gap-3 border-b border-border bg-surface/95 px-4 backdrop-blur sm:px-6">
-      <button type="button" onClick={onToggleSidebar} aria-label="Toggle sidebar" aria-expanded={isMobileNavOpen} className="rounded-md p-1.5 text-ink-muted hover:bg-slate-100 hover:text-ink lg:hidden">
+    <header className="flex h-16 shrink-0 items-center gap-3 border-b border-white/10 bg-background/60 px-4 backdrop-blur-xl sm:px-6">
+      <button type="button" onClick={onToggleSidebar} aria-label="Toggle sidebar" aria-expanded={isMobileNavOpen} className="rounded-md p-1.5 text-ink-muted hover:bg-white/[0.06] hover:text-ink lg:hidden">
         <Menu className="h-4 w-4" />
       </button>
       <div className="hidden min-w-0 lg:block"><TenantSwitcher /></div>
-      <div className="hidden h-6 w-px bg-border xl:block" />
+      <div className="hidden h-6 w-px bg-white/10 xl:block" />
       <p className="hidden min-w-0 truncate text-xs font-medium text-ink-muted xl:block">{currentRoute?.label ?? "Workspace"}</p>
       <form onSubmit={handleSubmitSearch} className="mx-auto max-w-xl flex-1">
         <div ref={searchRef} className="relative">
           <SearchBar value={query} onChange={setQuery} placeholder="Search incidents, knowledge, and evidence…" />
-          {!query && <kbd className="pointer-events-none absolute right-2.5 top-1/2 hidden -translate-y-1/2 rounded border border-border bg-slate-50 px-1.5 py-0.5 text-[10px] text-ink-subtle sm:block">/</kbd>}
+          {!query && <kbd className="pointer-events-none absolute right-2.5 top-1/2 hidden -translate-y-1/2 rounded border border-white/10 bg-white/[0.04] px-1.5 py-0.5 text-[10px] text-ink-subtle sm:block">/</kbd>}
         </div>
       </form>
       <DropdownMenu
         trigger={
-          <button type="button" aria-label={user?.name ? `Account menu for ${user.name}` : "Account menu"} className="flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-slate-100">
-            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-accent-subtle text-accent"><UserIcon className="h-3.5 w-3.5" /></div>
+          <button type="button" aria-label={user?.name ? `Account menu for ${user.name}` : "Account menu"} className="flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-white/[0.06]">
+            <div className="flex h-8 w-8 items-center justify-center rounded-full border border-accent-border bg-accent-subtle text-accent"><UserIcon className="h-3.5 w-3.5" /></div>
             <span className="hidden max-w-32 truncate text-sm font-medium text-ink sm:inline">{user?.name}</span>
           </button>
         }

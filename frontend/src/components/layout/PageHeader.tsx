@@ -15,7 +15,7 @@ export function PageHeader({ title, description, breadcrumbs, actions }: PageHea
       {breadcrumbs && <Breadcrumbs items={breadcrumbs} />}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold tracking-[-0.025em] text-ink">{title}</h1>
+          <h1 className="font-display text-2xl font-semibold tracking-[-0.025em] text-gradient">{title}</h1>
           {description && <p className="mt-1 max-w-3xl text-sm leading-5 text-ink-muted">{description}</p>}
         </div>
         {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}

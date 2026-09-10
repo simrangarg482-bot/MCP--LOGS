@@ -53,7 +53,7 @@ export function SignupPage() {
   }
 
   return (
-    <div className="rounded-lg border border-border bg-surface px-6 py-6 shadow-panel">
+    <div className="glass-panel rounded-2xl px-6 py-6">
       <h1 className="mb-4 text-center text-lg font-semibold text-ink">Create your EKIP account</h1>
       <form onSubmit={handleSubmit} className="flex flex-col gap-3">
         <div>

@@ -4,7 +4,7 @@ import { cn } from "@/utils/cn";
 export type BadgeTone = "neutral" | "accent" | "success" | "warning" | "critical" | "info";
 
 const TONE_CLASSES: Record<BadgeTone, string> = {
-  neutral: "bg-slate-100 text-ink-muted border-border",
+  neutral: "bg-white/[0.06] text-ink-muted border-white/10",
   accent: "bg-accent-subtle text-accent border-accent-border",
   success: "bg-success-subtle text-success border-success-border",
   warning: "bg-warning-subtle text-warning border-warning-border",

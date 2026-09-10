@@ -23,7 +23,7 @@ export function Timeline({ entries }: { entries: TimelineEntry[] }) {
         const Icon = entry.eventType === "investigation" ? Sparkles : MessageSquare;
         return (
           <li key={entry.id} className="relative">
-            <span className="absolute -left-[1.6rem] flex h-5 w-5 items-center justify-center rounded-full border border-border bg-white">
+            <span className="absolute -left-[1.6rem] flex h-5 w-5 items-center justify-center rounded-full border border-border bg-white/[0.04]">
               <Icon className="h-3 w-3 text-ink-muted" />
             </span>
             <div className="flex flex-wrap items-baseline gap-2">

@@ -32,9 +32,9 @@ export function InvestigationPanel({ investigation }: { investigation: Investiga
           ) : (
             <ul className="flex flex-col gap-1.5">
               {investigation.evidence.map((item, index) => (
-                <li key={index} className="rounded-md border border-border bg-white px-2.5 py-2 text-sm text-ink">
+                <li key={index} className="rounded-md border border-border bg-white/[0.04] px-2.5 py-2 text-sm text-ink">
                   <div className="mb-0.5 flex items-center gap-1.5">
-                    <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-ink-muted">
+                    <span className="rounded bg-white/[0.06] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-ink-muted">
                       {item.source}
                     </span>
                     <span className="text-xs text-ink-muted">{item.reference}</span>
@@ -63,7 +63,7 @@ export function InvestigationPanel({ investigation }: { investigation: Investiga
           ) : (
             <ol className="flex flex-col gap-2">
               {investigation.hypotheses.map((hypothesis, index) => (
-                <li key={index} className="rounded-md border border-border bg-slate-50 px-3 py-2.5">
+                <li key={index} className="rounded-md border border-border bg-white/[0.03] px-3 py-2.5">
                   <div className="flex items-start justify-between gap-3">
                     <p className="text-sm font-medium text-ink">{hypothesis.description}</p>
                     <span className="shrink-0 text-xs font-medium text-ink-muted">

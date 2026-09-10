@@ -296,13 +296,13 @@ export function AskPage() {
   return (
     // Full-bleed: cancel AppLayout's page padding so the chat surface runs
     // edge-to-edge from just under the Topbar to the bottom of the viewport.
-    <div className="-mx-4 -my-5 flex h-[calc(100dvh-4rem)] min-h-[560px] flex-col bg-surface sm:-mx-6 sm:-my-6 lg:-mx-8">
+    <div className="-mx-4 -my-5 flex h-[calc(100dvh-4rem)] min-h-[560px] flex-col bg-transparent sm:-mx-6 sm:-my-6 lg:-mx-8">
       {/* Workspace toolbar */}
-      <div className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-border px-3 sm:px-5">
+      <div className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-white/10 bg-background/40 px-3 backdrop-blur-xl sm:px-5">
         <div
           role="tablist"
           aria-label="Ask EKIP views"
-          className="flex items-center gap-1 rounded-lg bg-slate-100 p-0.5"
+          className="flex items-center gap-1 rounded-lg bg-white/[0.06] p-0.5"
         >
           {tabs.map((item) => {
             const isActive = tab === item.key;
@@ -317,7 +317,7 @@ export function AskPage() {
                 onClick={() => setTab(item.key)}
                 className={cn(
                   "rounded-md px-3 py-1.5 text-[13px] font-medium transition-colors",
-                  isActive ? "bg-white text-ink shadow-subtle" : "text-ink-muted hover:text-ink",
+                  isActive ? "bg-white/10 text-ink shadow-subtle" : "text-ink-muted hover:text-ink",
                 )}
               >
                 {item.label}
@@ -353,10 +353,10 @@ export function AskPage() {
           <div className="min-h-0 flex-1 overflow-y-auto scrollbar-thin" aria-live="polite">
             {turns.length === 0 ? (
               <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col items-center justify-center px-5 py-10 text-center">
-                <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-accent text-white shadow-sm">
-                  <Sparkles className="h-5 w-5" />
+                <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-accent to-info text-white shadow-glow">
+                  <Sparkles className="h-6 w-6" />
                 </div>
-                <h2 className="mt-5 text-xl font-semibold tracking-[-0.02em] text-ink">
+                <h2 className="mt-5 font-display text-2xl font-semibold tracking-[-0.02em] text-gradient">
                   Ask what happened. See why.
                 </h2>
                 <p className="mt-2 max-w-md text-sm leading-6 text-ink-muted">
@@ -378,7 +378,7 @@ export function AskPage() {
                             void runStarterAction(starter.question ?? starter.label, starter.action);
                           }
                         }}
-                        className="group flex items-start gap-3 rounded-lg border border-border bg-surface p-3 text-left transition-colors hover:border-accent-border hover:bg-accent-subtle/40 focus-visible:border-accent"
+                        className="glass-hollow group flex items-start gap-3 rounded-xl p-3 text-left hover:border-accent-border focus-visible:border-accent"
                       >
                         <span
                           className={cn(
@@ -432,9 +432,9 @@ export function AskPage() {
           </div>
 
           {/* Composer */}
-          <div className="border-t border-border bg-surface px-3 py-3 sm:px-5">
+          <div className="border-t border-white/10 bg-background/40 px-3 py-3 backdrop-blur-xl sm:px-5">
             <form onSubmit={handleSubmit} className="mx-auto w-full max-w-6xl">
-              <div className="rounded-xl border border-border-strong bg-white shadow-subtle transition-colors focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20">
+              <div className="glass rounded-2xl transition-colors focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20">
                 <textarea
                   ref={textareaRef}
                   value={query}
@@ -453,7 +453,7 @@ export function AskPage() {
                   rows={1}
                   className="block max-h-36 min-h-[46px] w-full resize-none rounded-t-xl border-0 bg-transparent px-3.5 py-3 text-sm leading-5 text-ink outline-none placeholder:text-ink-subtle focus:outline-none focus-visible:outline-none focus-visible:ring-0 focus-visible:ring-offset-0"
                 />
-                <div className="flex items-center justify-between gap-3 border-t border-border px-2.5 py-2">
+                <div className="flex items-center justify-between gap-3 border-t border-white/10 px-2.5 py-2">
                   <span className="hidden min-w-0 items-center gap-1.5 truncate text-[11px] text-ink-subtle sm:inline-flex">
                     <Lightbulb className="h-3 w-3 shrink-0" />
                     Name a service, incident, or timeframe for a sharper answer
@@ -485,7 +485,7 @@ export function AskPage() {
           role="tabpanel"
           aria-labelledby={`${TAB_ID_PREFIX}-tab-history`}
           tabIndex={0}
-          className="min-h-0 flex-1 overflow-y-auto bg-background focus:outline-none scrollbar-thin"
+          className="min-h-0 flex-1 overflow-y-auto bg-transparent focus:outline-none scrollbar-thin"
         >
           <div className="mx-auto max-w-3xl px-4 py-7 sm:px-6">
             <div className="mb-4">
@@ -498,7 +498,7 @@ export function AskPage() {
             {historyQuery.isLoading && <LoadingState label="Loading history…" />}
             {historyQuery.isError && <ErrorState onRetry={() => historyQuery.refetch()} />}
             {historyQuery.data?.length === 0 && (
-              <div className="rounded-xl border border-dashed border-border-strong bg-surface py-8">
+              <div className="rounded-2xl border border-dashed border-white/15 bg-white/[0.02] py-8">
                 <EmptyState
                   icon={Clock3}
                   title="No questions yet"
@@ -516,9 +516,9 @@ export function AskPage() {
                         type="button"
                         disabled={!question}
                         onClick={() => question && reuseHistoryQuestion(question)}
-                        className="group flex w-full items-start gap-3 rounded-lg border border-border bg-surface px-3.5 py-3 text-left transition-colors hover:border-accent-border hover:bg-accent-subtle/40 disabled:cursor-default disabled:hover:border-border disabled:hover:bg-surface"
+                        className="glass-hollow group flex w-full items-start gap-3 rounded-xl px-3.5 py-3 text-left hover:border-accent-border disabled:cursor-default disabled:hover:border-white/15 disabled:hover:bg-transparent"
                       >
-                        <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-slate-100 text-ink-muted">
+                        <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-white/[0.06] text-ink-muted">
                           <MessageCircleQuestion className="h-3.5 w-3.5" />
                         </span>
                         <span className="min-w-0 flex-1">

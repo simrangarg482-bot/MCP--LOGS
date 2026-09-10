@@ -35,7 +35,7 @@ export function SettingsLayout() {
               className={({ isActive }) =>
                 cn(
                   "whitespace-nowrap rounded-md px-3 py-2 text-sm font-medium transition-colors",
-                  isActive ? "bg-slate-100 text-ink" : "text-ink-muted hover:bg-slate-50 hover:text-ink",
+                  isActive ? "bg-white/[0.06] text-ink" : "text-ink-muted hover:bg-white/[0.03] hover:text-ink",
                 )
               }
             >

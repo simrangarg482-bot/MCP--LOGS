@@ -58,7 +58,7 @@ function SearchResultsSection({
         </span>
       </div>
       {results.length === 0 ? (
-        <p className="rounded-lg border border-border bg-slate-50 px-3.5 py-3 text-sm text-ink-muted">
+        <p className="rounded-lg border border-border bg-white/[0.03] px-3.5 py-3 text-sm text-ink-muted">
           {NO_RESULTS_MESSAGE[kind]}
         </p>
       ) : (
@@ -66,10 +66,10 @@ function SearchResultsSection({
           {results.map((chunk) => (
             <li
               key={chunk.chunkId}
-              className="rounded-md border border-border bg-white px-3 py-2.5 text-sm text-ink"
+              className="rounded-md border border-border bg-white/[0.04] px-3 py-2.5 text-sm text-ink"
             >
               <div className="mb-1 flex flex-wrap items-center gap-1.5">
-                <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-ink-muted">
+                <span className="rounded bg-white/[0.06] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-ink-muted">
                   {chunk.collection}
                 </span>
                 {chunk.title && <span className="truncate font-medium text-ink">{chunk.title}</span>}
@@ -107,7 +107,7 @@ function IncidentBriefingSection({ incidents }: { incidents: Incident[] }) {
         Critical incidents
       </p>
       {incidents.length === 0 ? (
-        <p className="rounded-lg border border-border bg-slate-50 px-3.5 py-3 text-sm text-ink-muted">
+        <p className="rounded-lg border border-border bg-white/[0.03] px-3.5 py-3 text-sm text-ink-muted">
           No critical incidents are currently open.
         </p>
       ) : (
@@ -115,7 +115,7 @@ function IncidentBriefingSection({ incidents }: { incidents: Incident[] }) {
           {incidents.map((incident) => (
             <li
               key={incident.id}
-              className="rounded-md border border-border bg-white px-3 py-2.5 text-sm text-ink"
+              className="rounded-md border border-border bg-white/[0.04] px-3 py-2.5 text-sm text-ink"
             >
               <div className="flex items-start justify-between gap-2">
                 <span className="font-medium text-ink">{incident.title}</span>
@@ -149,7 +149,7 @@ function KnowledgeCoverageSection({ gaps }: { gaps: GapReport[] }) {
         Knowledge gaps
       </p>
       {gaps.length === 0 ? (
-        <p className="rounded-lg border border-border bg-slate-50 px-3.5 py-3 text-sm text-ink-muted">
+        <p className="rounded-lg border border-border bg-white/[0.03] px-3.5 py-3 text-sm text-ink-muted">
           No open knowledge gaps have been flagged yet.
         </p>
       ) : (
@@ -157,7 +157,7 @@ function KnowledgeCoverageSection({ gaps }: { gaps: GapReport[] }) {
           {gaps.map((gap) => (
             <li
               key={gap.id}
-              className="rounded-md border border-border bg-white px-3 py-2.5 text-sm text-ink"
+              className="rounded-md border border-border bg-white/[0.04] px-3 py-2.5 text-sm text-ink"
             >
               <div className="flex items-start justify-between gap-2">
                 <span className="font-medium text-ink">{gap.suggestedTopic}</span>
@@ -193,7 +193,7 @@ function ConfidenceMeter({ value }: { value: number }) {
         : { bar: "bg-critical", text: "text-critical" };
   return (
     <span className="inline-flex items-center gap-2" title={`Model confidence: ${pct}%`}>
-      <span className="h-1.5 w-14 overflow-hidden rounded-full bg-slate-200" aria-hidden>
+      <span className="h-1.5 w-14 overflow-hidden rounded-full bg-white/[0.1]" aria-hidden>
         <span className={cn("block h-full rounded-full", tone.bar)} style={{ width: `${pct}%` }} />
       </span>
       <span className={cn("text-xs font-medium tabular-nums", tone.text)}>
@@ -227,7 +227,7 @@ export function ChatMessage({ turn, onRetry }: { turn: ChatTurn; onRetry?: () =>
         <div className="max-w-xl whitespace-pre-wrap rounded-2xl rounded-tr-sm bg-accent px-4 py-3 text-sm leading-5 text-white shadow-sm [word-break:break-word]">
           {turn.question}
         </div>
-        <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-100 text-ink-muted">
+        <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white/[0.06] text-ink-muted">
           <UserIcon className="h-3.5 w-3.5" />
         </div>
       </div>
@@ -315,7 +315,7 @@ export function ChatMessage({ turn, onRetry }: { turn: ChatTurn; onRetry?: () =>
 
                 {/* honest decline on the answer route */}
                 {isDecline && (
-                  <div className="rounded-lg border border-border bg-slate-50 px-3.5 py-3 text-sm text-ink-muted">
+                  <div className="rounded-lg border border-border bg-white/[0.03] px-3.5 py-3 text-sm text-ink-muted">
                     <p className="font-medium text-ink">EKIP didn&rsquo;t find enough grounded evidence to answer this confidently.</p>
                     <p className="mt-1 leading-5">
                       Try rephrasing with more specific terms, or check that the relevant source is
@@ -341,10 +341,10 @@ export function ChatMessage({ turn, onRetry }: { turn: ChatTurn; onRetry?: () =>
                           {response.investigation.evidence.map((item, index) => (
                             <li
                               key={index}
-                              className="rounded-md border border-border bg-white px-2.5 py-2 text-sm text-ink"
+                              className="rounded-md border border-border bg-white/[0.04] px-2.5 py-2 text-sm text-ink"
                             >
                               <div className="mb-0.5 flex items-center gap-1.5">
-                                <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-ink-muted">
+                                <span className="rounded bg-white/[0.06] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-ink-muted">
                                   {item.source}
                                 </span>
                                 <span className="text-xs text-ink-muted">{item.reference}</span>
@@ -365,7 +365,7 @@ export function ChatMessage({ turn, onRetry }: { turn: ChatTurn; onRetry?: () =>
                           {response.investigation.hypotheses.map((hypothesis, index) => (
                             <li
                               key={index}
-                              className="rounded-md border border-border bg-slate-50 px-2.5 py-2 text-sm text-ink"
+                              className="rounded-md border border-border bg-white/[0.03] px-2.5 py-2 text-sm text-ink"
                             >
                               <div className="flex items-start justify-between gap-2">
                                 <span>{hypothesis.description}</span>

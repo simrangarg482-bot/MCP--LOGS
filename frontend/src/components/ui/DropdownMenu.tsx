@@ -87,7 +87,7 @@ export function DropdownMenu({ trigger, items, align = "right" }: DropdownMenuPr
           id={menuId}
           role="menu"
           className={cn(
-            "absolute z-40 mt-1 min-w-[10rem] rounded-md border border-border bg-white py-1 shadow-panel",
+            "glass-panel absolute z-40 mt-1 min-w-[10rem] rounded-xl py-1",
             align === "right" ? "right-0" : "left-0",
           )}
         >
@@ -105,7 +105,7 @@ export function DropdownMenu({ trigger, items, align = "right" }: DropdownMenuPr
               }}
               onKeyDown={(event) => handleMenuKeyDown(event, index)}
               className={cn(
-                "block w-full px-3 py-1.5 text-left text-sm hover:bg-slate-50 focus-visible:bg-slate-50 focus-visible:outline-none",
+                "block w-full px-3 py-1.5 text-left text-sm hover:bg-white/[0.06] focus-visible:bg-white/[0.06] focus-visible:outline-none",
                 item.destructive ? "text-critical" : "text-ink",
               )}
             >

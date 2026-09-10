@@ -29,7 +29,7 @@ export function Tooltip({ content, children, side = "top" }: TooltipProps) {
         <span
           role="tooltip"
           className={cn(
-            "absolute z-50 whitespace-nowrap rounded-md bg-sidebar px-2 py-1 text-xs text-white shadow-panel",
+            "glass-panel absolute z-50 whitespace-nowrap rounded-md px-2 py-1 text-xs text-ink",
             positionClasses[side],
           )}
         >

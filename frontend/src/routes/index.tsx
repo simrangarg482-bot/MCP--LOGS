@@ -6,6 +6,7 @@ import { ProtectedRoute } from "./ProtectedRoute";
 import { AcceptInvitationPage } from "@/pages/auth/AcceptInvitationPage";
 import { LoginPage } from "@/pages/auth/LoginPage";
 import { SignupPage } from "@/pages/auth/SignupPage";
+import { AboutPage } from "@/pages/about/AboutPage";
 import { AskPage } from "@/pages/ask/AskPage";
 import { DashboardPage } from "@/pages/dashboard/DashboardPage";
 import { IncidentsListPage } from "@/pages/incidents/IncidentsListPage";
@@ -30,6 +31,9 @@ import { AccessRulesSettingsPage } from "@/pages/settings/AccessRulesSettingsPag
 import { NotFoundPage } from "@/pages/misc/NotFoundPage";
 
 export const router = createBrowserRouter([
+  // Public, unauthenticated. `/about` explains the product and is linked from
+  // both the login screen and the in-app "Overview" nav item.
+  { path: "/about", element: <AboutPage /> },
   {
     element: <AuthLayout />,
     children: [

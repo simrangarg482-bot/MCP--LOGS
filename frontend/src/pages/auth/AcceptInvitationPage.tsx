@@ -26,7 +26,7 @@ export function AcceptInvitationPage() {
 
   if (!invitationId || !token) {
     return (
-      <div className="rounded-lg border border-border bg-surface px-6 py-6 shadow-panel">
+      <div className="glass-panel rounded-2xl px-6 py-6">
         <h1 className="mb-2 text-center text-lg font-semibold text-ink">Invalid invitation link</h1>
         <p className="text-center text-sm text-ink-muted">
           This link is missing its invitation token. Ask whoever invited you to send it again.
@@ -51,7 +51,7 @@ export function AcceptInvitationPage() {
   }
 
   return (
-    <div className="rounded-lg border border-border bg-surface px-6 py-6 shadow-panel">
+    <div className="glass-panel rounded-2xl px-6 py-6">
       <h1 className="mb-4 text-center text-lg font-semibold text-ink">Accept your invitation</h1>
       <form onSubmit={handleSubmit} className="flex flex-col gap-3">
         <div>

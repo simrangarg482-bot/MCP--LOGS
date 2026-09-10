@@ -18,7 +18,7 @@ export function SearchBar({ value, onChange, placeholder = "Search…", classNam
         autoFocus={autoFocus}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        className="h-9 w-full rounded-md border border-border bg-white pl-9 pr-8 text-sm text-ink placeholder:text-ink-subtle focus-visible:border-accent"
+        className="h-9 w-full rounded-lg border border-white/10 bg-white/[0.04] pl-9 pr-8 text-sm text-ink placeholder:text-ink-subtle transition-colors focus-visible:border-accent focus-visible:bg-white/[0.06]"
       />
       {value && (
         <button

@@ -57,7 +57,7 @@ export function Tabs({ items, activeKey, onChange, idPrefix = "tabs" }: TabsProp
   }
 
   return (
-    <div role="tablist" className="flex items-center gap-1 overflow-x-auto border-b border-border pb-px scrollbar-thin">
+    <div role="tablist" className="flex items-center gap-1 overflow-x-auto border-b border-white/10 pb-px scrollbar-thin">
       {items.map((item, index) => {
         const isActive = item.key === activeKey;
         return (
@@ -80,9 +80,11 @@ export function Tabs({ items, activeKey, onChange, idPrefix = "tabs" }: TabsProp
           >
             {item.label}
             {item.count !== undefined && (
-              <span className="rounded-full bg-slate-100 px-1.5 text-xs text-ink-muted">{item.count}</span>
+              <span className="rounded-full bg-white/[0.08] px-1.5 text-xs text-ink-muted">{item.count}</span>
             )}
-            {isActive && <span className="absolute inset-x-0 -bottom-px h-0.5 rounded-full bg-accent" />}
+            {isActive && (
+              <span className="absolute inset-x-0 -bottom-px h-0.5 rounded-full bg-gradient-to-r from-accent to-info" />
+            )}
           </button>
         );
       })}
