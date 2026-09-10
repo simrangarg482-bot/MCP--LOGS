@@ -69,7 +69,7 @@ from datetime import datetime
 from typing import Any
 
 from app.core.incidents import reads as incidents_reads
-from app.database.session import session_scope
+from app.database.session import session_scope, set_tenant_context
 from app.ingestion.schemas import FetchResult, RawDocument, ResolvedConnectorConfig
 from app.shared.config.logging import get_logger
 from app.shared.schemas import Identity
@@ -142,6 +142,12 @@ class RunbooksConnector:
         offset = self._decode_cursor(cursor)
 
         async with session_scope() as session:
+            # Same RLS gap as `IncidentsConnector.fetch_batch` -- this
+            # self-opened session never had `app.current_organization_id`
+            # set, so RLS on `postmortems` failed every query with
+            # `invalid input syntax for type uuid: ""`. See that method's
+            # comment for the full explanation.
+            await set_tenant_context(session, client.organization_id)
             postmortems = await incidents_reads.list_postmortems_for_ingestion(
                 session,
                 client.organization_id,

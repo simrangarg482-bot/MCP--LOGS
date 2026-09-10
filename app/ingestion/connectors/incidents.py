@@ -44,7 +44,7 @@ from datetime import datetime
 from typing import Any
 
 from app.core.incidents import reads as incidents_reads
-from app.database.session import session_scope
+from app.database.session import session_scope, set_tenant_context
 from app.ingestion.schemas import FetchResult, RawDocument, ResolvedConnectorConfig
 from app.shared.config.logging import get_logger
 from app.shared.schemas import Identity
@@ -111,6 +111,14 @@ class IncidentsConnector:
         offset = self._decode_cursor(cursor)
 
         async with session_scope() as session:
+            # RLS on `incidents`/`postmortems` checks the per-session
+            # `app.current_organization_id` GUC (see `set_tenant_context`'s
+            # own docstring) -- this session is opened locally here, not
+            # threaded in from a request/job context that already set it,
+            # so it must be set explicitly before querying either table or
+            # the RLS policy sees an unset value and every query fails with
+            # `invalid input syntax for type uuid: ""`.
+            await set_tenant_context(session, client.organization_id)
             pairs = await incidents_reads.list_incidents_for_ingestion(
                 session,
                 client.organization_id,

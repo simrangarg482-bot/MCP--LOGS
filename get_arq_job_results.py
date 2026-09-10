@@ -23,8 +23,11 @@ from app.shared.redis_settings import build_redis_settings
 # arq:result:* keys check_arq_queue.py just showed you that you haven't
 # seen before.
 _JOB_IDS = [
-    "8be9bafe20a2401aaacab62cc267ad39",
-    "bbc1e77000f04ac784c635721ce2f4fc",
+    "1753dcf3f6884886a2560c028bd69829",
+    "59b9050343eb4f5f96f969db4c9786eb",
+    "af37d6e1ac24461c9fb2e6122bcf2455",
+    "d39b88275344433eb128e990cb7dc5bb",
+    "d54404bb937e49b1a1058832ef12b313",
 ]
 
 
