@@ -157,7 +157,7 @@ async def create_organization(
     org_row = await repository.insert_organization(
         session, name=data.name, slug=data.slug
     )
-    # Milestone 10 RLS (c7d4e8f19a2b) enforces `app.current_organization_id`
+    # enforces `app.current_organization_id`
     # on every tenant-owned table, `projects` included -- the default
     # project's INSERT below fails under RLS unless the tenant context is
     # set first. There is no actor/Identity yet to have set it already (see
@@ -208,7 +208,7 @@ async def list_organizations(session: AsyncSession) -> list[Organization]:
     checked against it," not an oversight. The only legitimate caller is a
     scheduled, system-internal job that must iterate every tenant by
     definition (`app.agents.workers.tasks`'s Knowledge Gap Agent cron,
-    Milestone 9 -- mirroring `app.ingestion.workers.tasks.
+    -- mirroring `app.ingestion.workers.tasks.
     scheduled_reconciliation`'s identical precedent of calling a repository-
     level, unscoped listing directly from a worker task rather than through
     a normal actor-scoped service call). There is no narrower organization
@@ -237,7 +237,7 @@ async def get_organization_sso_config(
     the organization exists but has no SSO configured yet (an organization
     mid-onboarding, before an IT Admin has connected an IdP).
 
-    Milestone 10 RLS note: `get_organization_by_slug` needs no bypass --
+    RLS note: `get_organization_by_slug` needs no bypass --
     `organizations` itself is deliberately excluded from RLS (see the RLS
     migration's own docstring), so this lookup succeeds unrestricted before
     `organization_id` is even known. The very next query, though
@@ -265,7 +265,7 @@ async def get_organization_sso_config(
     return SSOConfiguration.model_validate(sso_row)
 
 
-_REDACTED_CLIENT_SECRET = "••••••••"  # noqa: RUF001 -- intentional bullet glyphs, not a lookalike-character bug
+_REDACTED_CLIENT_SECRET = "••••••••"  
 
 
 def _redact_client_secret(config: SSOConfiguration) -> SSOConfiguration:
@@ -984,7 +984,7 @@ async def create_invitation(
     exists (the partial unique index's application-level counterpart, for a
     clean domain error instead of a raw integrity-error surface).
 
-    Phase 7.5: generates a random, single-use token, stores only its hash
+    generates a random, single-use token, stores only its hash
     (`token_hash`), and returns the raw value exactly once via the response
     `Invitation.token` field -- the caller (an admin UI, or whatever sends
     the actual invitation email) is responsible for including it in the
@@ -1108,9 +1108,9 @@ async def accept_invitation(session: AsyncSession, invitation_id: uuid.UUID) -> 
     admin-facing action.
 
     Guards added for its second caller, `auth_service.
-    accept_invitation_with_password` (Phase 7.5 -- itself behind
+    accept_invitation_with_password  -- itself behind
     `POST /invitations/{invitation_id}/accept`, which verifies the caller's
-    `token` against `Invitation.token_hash` *before* ever reaching here):
+    `token` against `Invitation.token_hash` before ever reaching here:
     raises NotFoundError for an unknown id, and ConflictError if the
     invitation is not currently `"pending"` (already accepted/revoked) or has
     passed its `expires_at`. `evaluate_provisioning` only ever passes an id it

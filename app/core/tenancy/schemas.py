@@ -355,7 +355,7 @@ class Invitation(BaseModel):
 
 class InvitationAcceptRequest(BaseModel):
     """Request body for the password-organization acceptance flow
-    (`POST /invitations/{id}/accept`, Phase 7.5) -- proves control of the
+     -- proves control of the
     invited email address via `token` (the raw value from `Invitation.
     token`'s one-time exposure at creation, not the invitation's own id),
     and provisions the new account's login credential in the same call.

@@ -346,7 +346,7 @@ async def get_ingestion_job_stats(
     session: AsyncSession, organization_id: uuid.UUID, *, since: datetime | None = None
 ) -> list[Any]:
     """Aggregate `ingestion_jobs` by `connector_config_id` for
-    `organization_id` (Phase 5.6): count, succeeded/failed counts, average
+    `organization_id` : count, succeeded/failed counts, average
     duration, total documents processed -- the ingestion-side counterpart to
     `app.agents.repository.get_agent_execution_stats`/`core.observability.
     repository.get_mcp_tool_stats`. Same "read `ingestion_jobs` directly"
@@ -579,7 +579,7 @@ async def insert_invitation(
     """Create one invitation row (status defaults to `"pending"`, per the
     model's column default) and return it with server defaults populated.
 
-    `token_hash` (Phase 7.5) is optional -- `None` is a legitimate value,
+    `token_hash` is optional -- `None` is a legitimate value,
     not an omission: see `Invitation.token_hash`'s own column comment for
     when a `NULL` token is correct (pre-Phase-7.5 rows; this codebase has no
     other caller that leaves it unset going forward).

@@ -68,3 +68,4 @@ Thumbs.db
 # --- Docker / deployment (once these exist) ---------------------------------
 docker/*.local.yml
 .dockerignore.local
+docs/
