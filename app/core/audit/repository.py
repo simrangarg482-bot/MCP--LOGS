@@ -79,6 +79,9 @@ async def list_entries(
         stmt = stmt.where(AuditLog.resource_id == query.resource_id)
     if query.actor is not None:
         stmt = stmt.where(AuditLog.actor == query.actor)
+    if query.action_prefix:
+        escaped = query.action_prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        stmt = stmt.where(AuditLog.action.like(f"{escaped}%", escape="\\"))
 
     stmt = stmt.order_by(AuditLog.occurred_at.desc()).limit(query.limit).offset(query.offset)
 

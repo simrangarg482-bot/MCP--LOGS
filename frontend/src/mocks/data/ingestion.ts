@@ -66,3 +66,28 @@ export const mockIngestionRuns: Record<string, IngestionRun[]> = {
     },
   ],
 };
+
+import type { IngestionJobStats, IngestionQueueHealth } from "@/types/ingestion";
+
+export const mockIngestionStats: IngestionJobStats[] = [
+  {
+    connectorConfigId: "conn-github",
+    runCount: 14,
+    succeededCount: 12,
+    failedCount: 1,
+    deadLetteredCount: 1,
+    avgDurationSeconds: 42.5,
+    totalDocumentsProcessed: 380,
+    totalPagesFetched: 96,
+    totalItemsDiscovered: 402,
+    totalItemsSkipped: 22,
+    totalChunksEmbedded: 1840,
+    totalRetries: 3,
+  },
+];
+
+export const mockIngestionQueueHealth: IngestionQueueHealth = {
+  queuedJobs: 0,
+  oldestQueuedAgeSeconds: null,
+  workerMaxConcurrency: 4,
+};

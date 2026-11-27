@@ -4,6 +4,7 @@ import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/context/ToastContext";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+import { SsoSignIn } from "@/components/domain/SsoSignIn";
 import type { OrganizationSummary } from "@/types/auth";
 import type { ApiError } from "@/types/common";
 import { ResendVerification } from "./ResendVerification";
@@ -49,10 +50,22 @@ export function LoginPage() {
         setUnverifiedEmail(email.trim());
         return;
       }
+      const code = (err as ApiError)?.errorCode;
+      if (code === "auth.organization_suspended") {
+        // Every organization this person can sign in to is suspended: say so (the API client already
+        // recorded the organization's customer-facing message).
+        navigate("/suspended");
+        return;
+      }
       toast({
         variant: "error",
         title: "Sign in failed",
-        description: "Check your email and password and try again.",
+        description:
+          code === "auth.organization_suspended"
+            ? "Your organization's access has been suspended. Contact your administrator."
+            : code === "rate_limited.ip"
+              ? "Too many attempts. Please wait a minute and try again."
+              : "Check your email and password and try again.",
       });
     } finally {
       setIsSubmitting(false);
@@ -162,11 +175,23 @@ export function LoginPage() {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
           />
+          <div className="mt-1.5 text-right">
+            <Link to="/forgot-password" className="text-xs font-medium text-accent hover:underline">
+              Forgot password?
+            </Link>
+          </div>
         </div>
         <Button type="submit" variant="primary" className="w-full" isLoading={isSubmitting}>
           Sign in
         </Button>
       </form>
+
+      <div className="my-5 flex items-center gap-3 text-[11px] uppercase tracking-wide text-ink-subtle" aria-hidden="true">
+        <span className="h-px flex-1 bg-border" />
+        or sign in with your organization
+        <span className="h-px flex-1 bg-border" />
+      </div>
+      <SsoSignIn />
 
       <p className="mt-6 text-center text-xs text-ink-subtle">
         Don't have an account?{" "}

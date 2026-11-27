@@ -10,19 +10,22 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Collection, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit.service import record_audit_event
 from app.core.exceptions import (
+    OrganizationSuspendedError,
     ConflictError,
     NotFoundError,
     PermissionDeniedError,
+    RateLimitedError,
     ServiceUnavailableError,
     ValidationError,
 )
-from app.core.tenancy import repository
+from app.core.tenancy import invitation_email, repository
 from app.core.tenancy.live_credentials import (
     LiveConnectorCredential,
     LiveConnectorResolution,
@@ -44,11 +47,16 @@ from app.core.tenancy.schemas import (
     ProvisioningDecision,
     SSOConfiguration,
     SSOConfigurationCreate,
+    SSOConfigurationUpdate,
 )
-from app.core.users import repository as users_repository
+from app.core.users import role_service
 from app.core.users.service import require_permission, require_project_permission
 from app.database.session import set_tenant_context
 from app.shared.config.logging import get_logger
+from app.shared.config.settings import get_settings
+from app.shared.email import email_delivery_configured
+from app.shared.organization_status import is_recognized, is_suspended
+from app.shared.outbound_url import UnsafeOutboundUrlError, normalize_issuer
 from app.shared.schemas import Identity
 from app.shared.security import (
     KmsUnavailableError,
@@ -103,7 +111,11 @@ def _ensure_same_organization(actor: Identity, organization_id: uuid.UUID) -> No
 
 
 async def create_organization(
-    session: AsyncSession, data: OrganizationCreate, actor: Identity | None = None
+    session: AsyncSession,
+    data: OrganizationCreate,
+    actor: Identity | None = None,
+    *,
+    initial_status: str = "onboarding",
 ) -> Organization:
     """Create a new organization together with its mandatory default project.
 
@@ -143,6 +155,13 @@ async def create_organization(
     so every incident/document has a uniform `project_id` even for customers
     who never create a second one.
 
+    `initial_status` is `onboarding` for every caller except the verified self-service registration
+    (`core.auth.email_verification._activate_registration`), which creates the organization `active`:
+    an organization exists only once its creator has proven their email, so there is nothing left to
+    wait for. Any other organization (an additional one created by an existing admin, an
+    operator-provisioned one) stays `onboarding` until a platform operator activates it. The
+    application role may INSERT a status but can never UPDATE one (migration d4a7b1c8e3f6).
+
     Raises ConflictError if `data.slug` is already taken. Note: this is a
     pre-check, not a database-constraint-driven retry -- a race between two
     concurrent signups for the same slug is a known, accepted gap (the
@@ -162,7 +181,7 @@ async def create_organization(
         )
 
     org_row = await repository.insert_organization(
-        session, name=data.name, slug=data.slug
+        session, name=data.name, slug=data.slug, status=initial_status
     )
 
     # Tenant-context ordering matters here (verified against real Postgres
@@ -201,6 +220,9 @@ async def create_organization(
     await repository.insert_project(
         session, organization_id=org_row.id, name="General", is_default=True
     )
+    # The three editable starter roles (viewer / engineer / reviewer); written
+    # under the new organization's context, which is active right here.
+    await role_service.ensure_default_roles(session, org_row.id)
 
     if actor is not None:
         await set_tenant_context(session, actor.organization_id)
@@ -248,47 +270,92 @@ async def list_organizations(session: AsyncSession) -> list[Organization]:
     return [Organization.model_validate(row) for row in rows]
 
 
-async def get_organization_sso_config(
-    session: AsyncSession, org_slug: str
-) -> SSOConfiguration:
-    """Resolve an organization's SSO configuration by its login-URL slug.
+def _sso_unavailable() -> NotFoundError:
+    """The one error every "you cannot sign in with SSO here" cause maps to --
+    unknown organization, suspended organization, no configuration, disabled
+    configuration, unsupported protocol -- so the public endpoints cannot be
+    used to tell those apart (organization enumeration). No detail on purpose."""
+    return NotFoundError(
+        "Single sign-on is not available for this organization.",
+        error_code="sso.unavailable",
+    )
 
-    Called *before* any Identity exists -- this is the very first step of the
-    SSO login flow (PROJECT_PLAN.md section 3.3, section 11.1:
-    `GET /o/{org-slug}/login`), so unlike every other function in this module
-    it takes no `actor` and performs no tenant-isolation check: the slug
-    itself is the only thing identifying which organization the employee is
-    trying to log into.
 
-    Raises NotFoundError if the slug doesn't resolve to an organization, or if
-    the organization exists but has no SSO configured yet (an organization
-    mid-onboarding, before an IT Admin has connected an IdP).
+# --- Background processing gate ------------------------------------------------------
+#
+# Workers and scheduled jobs never pass through `resolve_identity` (they construct their own
+# `Identity.for_agent(...)` or none at all), so the "is this organization allowed to be processed"
+# decision is made HERE, with the same definition of "suspended" as every access path
+# (`app.shared.organization_status`). `onboarding` and `active` are processed normally.
 
-    RLS note: `get_organization_by_slug` needs no bypass --
-    `organizations` itself is deliberately excluded from RLS (see the RLS
-    migration's own docstring), so this lookup succeeds unrestricted before
-    `organization_id` is even known. The very next query, though
-    (`sso_configurations`, which *is* RLS-protected), does need the GUC set
-    first -- done immediately below, the moment `org_row.id` is known.
-    """
-    org_row = await repository.get_organization_by_slug(session, org_slug)
-    if org_row is None:
+
+async def assert_organization_processing_allowed(
+    session: AsyncSession, organization_id: uuid.UUID
+) -> None:
+    """Raise `OrganizationSuspendedError` if `organization_id` is suspended, `NotFoundError` if it
+    does not exist. Reads the CURRENT committed value (never a cached ORM object), so a job can
+    call it again at every page / batch boundary and notice a suspension that happened mid-run."""
+    exists, status = await repository.get_organization_status(session, organization_id)
+    if not exists:
         raise NotFoundError(
             "Organization not found.",
             error_code="organization.not_found",
-            detail={"slug": org_slug},
+            detail={"organization_id": str(organization_id)},
         )
+    if is_suspended(status):
+        raise OrganizationSuspendedError(
+            "This organization's access has been suspended; background processing is stopped.",
+            detail={"organization_id": str(organization_id)},
+        )
+    if not is_recognized(status):
+        logger.warning("organization_status_unrecognized", organization_id=str(organization_id))
+
+
+async def list_processable_organizations(session: AsyncSession) -> list[Organization]:
+    """Every organization a scheduled fan-out may enqueue work for: all except suspended ones.
+
+    Same deliberate "no actor" exception as `list_organizations` (a system job iterating every
+    tenant); it only narrows that listing."""
+    return [org for org in await list_organizations(session) if not is_suspended(org.status)]
+
+
+async def get_processable_organization_ids(
+    session: AsyncSession, organization_ids: Sequence[uuid.UUID]
+) -> set[uuid.UUID]:
+    """The subset of `organization_ids` that exist and are not suspended -- one query, for fan-outs
+    that start from other ids (connectors) and must drop the suspended organizations' work."""
+    statuses = await repository.get_organization_statuses(session, list(organization_ids))
+    return {org_id for org_id, status in statuses.items() if not is_suspended(status)}
+
+
+async def get_organization_sso_config(
+    session: AsyncSession, org_slug: str
+) -> SSOConfiguration:
+    """Resolve an organization's *usable* SSO configuration by its login-URL slug.
+
+    Called *before* any Identity exists -- the very first step of the SSO login
+    flow (`GET /auth/{org_slug}/login`) -- so it takes no `actor`: the slug alone
+    identifies the organization.
+
+    Raises `sso.unavailable` (identical for every cause, see `_sso_unavailable`)
+    when the slug is unknown, the organization is suspended, it has no SSO
+    configuration, the configuration is disabled, or its protocol is not OIDC
+    (SAML is not implemented, so a SAML row is never treated as OIDC).
+
+    RLS note: `organizations` carries no RLS policy, so the slug lookup needs no
+    tenant context; `sso_configurations` does, so it is set the moment the
+    organization id is known.
+    """
+    org_row = await repository.get_organization_by_slug(session, org_slug)
+    if org_row is None or is_suspended(org_row.status):
+        raise _sso_unavailable()
 
     await set_tenant_context(session, org_row.id)
     sso_row = await repository.get_sso_configuration_by_organization_id(
         session, org_row.id
     )
-    if sso_row is None:
-        raise NotFoundError(
-            "This organization has not configured SSO yet.",
-            error_code="sso_configuration.not_found",
-            detail={"organization_id": str(org_row.id)},
-        )
+    if sso_row is None or not sso_row.enabled or sso_row.protocol != "oidc":
+        raise _sso_unavailable()
     return SSOConfiguration.model_validate(sso_row)
 
 
@@ -353,6 +420,11 @@ async def configure_sso(
     """
     _ensure_same_organization(actor, organization_id)
     require_permission(actor, _MANAGE_PERMISSION)
+    _require_oidc(data.protocol)
+    issuer_url = _normalized_issuer_or_raise(data.issuer_url)
+    client_id = _required_text(data.client_id, "client_id")
+    if not data.client_secret_ref.strip():
+        raise ValidationError("The client secret is required.", error_code="sso.client_secret_required")
 
     existing = await repository.get_sso_configuration_by_organization_id(
         session, organization_id
@@ -382,9 +454,10 @@ async def configure_sso(
         organization_id=organization_id,
         provider=data.provider,
         protocol=data.protocol,
-        issuer_url=data.issuer_url,
-        client_id=data.client_id,
+        issuer_url=issuer_url,
+        client_id=client_id,
         client_secret_ref=encrypted_client_secret_ref,
+        enabled=data.enabled,
     )
     await record_audit_event(
         session,
@@ -392,8 +465,142 @@ async def configure_sso(
         action="sso_configuration.configure",
         resource_type="sso_configuration",
         resource_id=row.id,
-        metadata={"organization_id": str(organization_id), "provider": data.provider},
+        metadata={
+            "organization_id": str(organization_id),
+            "provider": data.provider,
+            "enabled": data.enabled,
+        },
     )
+    return _redact_client_secret(SSOConfiguration.model_validate(row))
+
+
+def _require_oidc(protocol: str) -> None:
+    if protocol != "oidc":
+        raise ValidationError(
+            "Only OpenID Connect (OIDC) single sign-on is supported. SAML is not implemented.",
+            error_code="sso.protocol_unsupported",
+        )
+
+
+def _normalized_issuer_or_raise(issuer_url: str) -> str:
+    try:
+        return normalize_issuer(
+            issuer_url, allow_insecure=get_settings().sso_allow_insecure_issuers
+        )
+    except UnsafeOutboundUrlError as exc:
+        raise ValidationError(
+            f"The issuer URL is not acceptable: {exc} It must be an https:// URL with no "
+            "query string or credentials.",
+            error_code="sso.issuer_invalid",
+        ) from exc
+
+
+def _required_text(value: str, field: str) -> str:
+    cleaned = value.strip()
+    if not cleaned:
+        raise ValidationError(f"{field} is required.", error_code="sso.field_required")
+    return cleaned
+
+
+async def update_sso_config(
+    session: AsyncSession,
+    actor: Identity,
+    organization_id: uuid.UUID,
+    data: SSOConfigurationUpdate,
+) -> SSOConfiguration:
+    """Change an existing SSO configuration, including switching it off/on.
+
+    Requires `tenancy:manage` in `organization_id` (`_ensure_same_organization`
+    + RLS keep it to the caller's own organization). Only supplied fields
+    change; a new client secret is envelope-encrypted, an omitted one is kept.
+
+    Changing the provider or issuer means the organization trusts a *different*
+    identity provider, whose `sub` values are unrelated to the old one's -- a
+    stored (organization, sub) link could then point a new, unrelated person at
+    an existing account. Existing identity links are therefore dropped, but only
+    when the caller explicitly confirms (`confirm_identity_reset`); otherwise
+    `sso.identity_reset_required` (409) says how many links would be lost.
+    Nothing is deleted on a plain disable/enable or a secret/client-id rotation.
+    """
+    _ensure_same_organization(actor, organization_id)
+    require_permission(actor, _MANAGE_PERMISSION)
+
+    row = await repository.get_sso_configuration_by_organization_id(session, organization_id)
+    if row is None:
+        raise NotFoundError(
+            "This organization has not configured SSO yet.",
+            error_code="sso_configuration.not_found",
+            detail={"organization_id": str(organization_id)},
+        )
+
+    changes: dict[str, object] = {}
+    identity_changed = False
+
+    if data.provider is not None and data.provider != row.provider:
+        changes["provider"] = data.provider
+        identity_changed = True
+    if data.issuer_url is not None:
+        new_issuer = _normalized_issuer_or_raise(data.issuer_url)
+        try:
+            current_issuer = normalize_issuer(
+                row.issuer_url, allow_insecure=get_settings().sso_allow_insecure_issuers
+            )
+        except UnsafeOutboundUrlError:
+            current_issuer = row.issuer_url
+        if new_issuer != current_issuer:
+            changes["issuer_url"] = new_issuer
+            identity_changed = True
+    if data.client_id is not None:
+        client_id = _required_text(data.client_id, "client_id")
+        if client_id != row.client_id:
+            changes["client_id"] = client_id
+    if data.client_secret_ref is not None:
+        if not data.client_secret_ref.strip():
+            raise ValidationError(
+                "The client secret cannot be empty.", error_code="sso.client_secret_required"
+            )
+        try:
+            changes["client_secret_ref"] = await encrypt_secret(get_kms(), data.client_secret_ref)
+        except KmsUnavailableError as exc:
+            raise ServiceUnavailableError(
+                "The SSO client secret cannot be stored right now -- the key "
+                "management service is unreachable or misconfigured. Try again shortly.",
+                error_code="sso_configuration.kms_unavailable",
+            ) from exc
+    if data.enabled is not None and data.enabled != row.enabled:
+        changes["enabled"] = data.enabled
+
+    cleared_links = 0
+    if identity_changed:
+        link_count = await repository.count_external_identity_mappings(session, organization_id)
+        if link_count and not data.confirm_identity_reset:
+            raise ConflictError(
+                "Changing the identity provider or issuer unlinks every person who has signed "
+                "in with SSO. Confirm to continue.",
+                error_code="sso.identity_reset_required",
+                detail={"identity_link_count": link_count},
+            )
+        if link_count:
+            cleared_links = await repository.delete_external_identity_mappings(
+                session, organization_id
+            )
+
+    if changes:
+        row = await repository.update_sso_configuration(session, row, changes)
+        await record_audit_event(
+            session,
+            actor,
+            action="sso_configuration.update",
+            resource_type="sso_configuration",
+            resource_id=row.id,
+            metadata={
+                "organization_id": str(organization_id),
+                # field NAMES only -- never a secret or its ciphertext
+                "changed_fields": sorted(changes),
+                "enabled": row.enabled,
+                "identity_links_cleared": cleared_links,
+            },
+        )
     return _redact_client_secret(SSOConfiguration.model_validate(row))
 
 
@@ -1005,19 +1212,22 @@ async def disconnect_connector(
 # --- Organization access rules (domain / group auto-join) --------------------
 
 
-async def _resolve_role_id(session: AsyncSession, role_name: str) -> uuid.UUID:
+async def _resolve_role_id(
+    session: AsyncSession, actor: Identity, organization_id: uuid.UUID, role_name: str
+) -> uuid.UUID:
     """Resolve a role name (as supplied on `AccessRuleCreate`/`InvitationCreate`)
-    to its id, raising a clean domain error rather than letting a bad name
-    surface as a foreign-key violation at insert time.
+    to its id among the roles `organization_id` may use -- its own custom roles
+    first, then the built-ins -- raising a clean domain error rather than
+    letting a bad name surface as a foreign-key violation at insert time.
+
+    Also refuses a role carrying permissions `actor` does not hold themselves
+    (`role.permission_escalation`): handing out a role is granting its
+    permissions, so an administrator cannot invite or auto-admit someone into a
+    role more powerful than their own.
     """
-    role = await users_repository.get_role_by_name(session, role_name)
-    if role is None:
-        raise ValidationError(
-            "Unknown role name.",
-            error_code="role.not_found",
-            detail={"role": role_name},
-        )
-    return role.id
+    role_id = await role_service.resolve_role_id(session, organization_id, role_name)
+    await role_service.assert_actor_can_grant_role(session, actor, organization_id, role_id)
+    return role_id
 
 
 async def create_access_rule(
@@ -1030,7 +1240,7 @@ async def create_access_rule(
     _ensure_same_organization(actor, organization_id)
     require_permission(actor, _MANAGE_PERMISSION)
 
-    role_id = await _resolve_role_id(session, data.grants_role)
+    role_id = await _resolve_role_id(session, actor, organization_id, data.grants_role)
     row = await repository.insert_access_rule(
         session,
         organization_id=organization_id,
@@ -1152,7 +1362,7 @@ async def create_invitation(
             detail={"organization_id": str(organization_id), "email": data.email},
         )
 
-    role_id = await _resolve_role_id(session, data.grants_role)
+    role_id = await _resolve_role_id(session, actor, organization_id, data.grants_role)
     expires_at = data.expires_at or (datetime.now(timezone.utc) + _DEFAULT_INVITATION_LIFETIME)
 
     raw_token = generate_opaque_token()
@@ -1176,6 +1386,213 @@ async def create_invitation(
         resource_id=row.id,
     )
     return Invitation.model_validate(row).model_copy(update={"token": raw_token})
+
+
+@dataclass(frozen=True)
+class IssuedInvitation:
+    """Result of issuing or re-issuing an invitation.
+
+    `pending_email` is set when a mail is owed -- the caller schedules
+    `invitation_email.deliver_invitation_email(pending_email)` to run after the
+    response. `invitation.token` (the raw, single-use secret) is set ONLY when
+    the admin has to hand the link over themselves: email is not configured, or
+    they explicitly asked for a fresh link. When the mail is going out, the
+    token never leaves the server except inside that mail.
+    """
+
+    invitation: Invitation
+    pending_email: invitation_email.PendingInvitationEmail | None
+
+
+async def _enforce_invitation_caps(
+    session: AsyncSession, organization_id: uuid.UUID, now: datetime
+) -> None:
+    """At most `invitation_max_per_hour` / `invitation_max_per_day` NEW
+    invitations per organization. Counted from the database (not Redis), so the
+    limit holds across API replicas and never fails open; the advisory lock
+    makes count-then-insert atomic per organization."""
+    settings = get_settings()
+    await repository.acquire_invitation_cap_lock(session, organization_id)
+    for window, delta, limit, code in (
+        ("hour", timedelta(hours=1), settings.invitation_max_per_hour, "invitation.hourly_limit"),
+        ("day", timedelta(days=1), settings.invitation_max_per_day, "invitation.daily_limit"),
+    ):
+        if await repository.count_invitations_since(session, organization_id, now - delta) >= limit:
+            raise RateLimitedError(
+                f"This organization has reached its limit of {limit} invitations per {window}. "
+                "Please try again later.",
+                error_code=code,
+                detail={"limit": limit, "window": window},
+            )
+
+
+async def issue_invitation(
+    session: AsyncSession,
+    actor: Identity,
+    organization_id: uuid.UUID,
+    data: InvitationCreate,
+) -> IssuedInvitation:
+    """Create an invitation and, when an email provider exists, queue the email.
+
+    Same authorization and validation as `create_invitation` (which stays as the
+    plain, non-emailing primitive for scripts), plus: per-organization hourly /
+    daily caps, and delivery state on the row -- `queued` when a mail is owed,
+    `not_configured` when it is not and the admin must copy the link.
+
+    The response is identical whether or not `data.email` already belongs to an
+    account: nothing here looks the address up.
+    """
+    _ensure_same_organization(actor, organization_id)
+    require_permission(actor, _MANAGE_PERMISSION)
+    if actor.user_id is None:
+        raise ValidationError(
+            "Only a user identity can send invitations.", error_code="invitation.invalid_actor"
+        )
+
+    now = datetime.now(timezone.utc)
+    await _enforce_invitation_caps(session, organization_id, now)
+
+    existing = await repository.get_pending_invitation(session, organization_id, data.email)
+    if existing is not None:
+        raise ConflictError(
+            "An invitation is already pending for this email.",
+            error_code="invitation.already_pending",
+            detail={"organization_id": str(organization_id), "email": data.email},
+        )
+
+    role_id = await _resolve_role_id(session, actor, organization_id, data.grants_role)
+    expires_at = data.expires_at or (now + _DEFAULT_INVITATION_LIFETIME)
+    emailing = email_delivery_configured()
+
+    raw_token = generate_opaque_token()
+    row = await repository.insert_invitation(
+        session,
+        organization_id=organization_id,
+        email=data.email,
+        grants_role_id=role_id,
+        invited_by=actor.user_id,
+        expires_at=expires_at,
+        token_hash=hash_opaque_token(raw_token),
+        email_status="queued" if emailing else "not_configured",
+    )
+    if emailing:
+        row.email_last_attempt_at = now  # the resend cooldown starts when the mail is queued
+        await session.flush()
+        await session.refresh(row)  # `updated_at` is regenerated by the UPDATE
+    await record_audit_event(
+        session,
+        actor,
+        action="invitation.create",
+        resource_type="invitation",
+        metadata={
+            "organization_id": str(organization_id),
+            "email": data.email,
+            "email_status": row.email_status,
+        },
+        resource_id=row.id,
+    )
+
+    pending = (
+        await invitation_email.prepare_invitation_email(session, actor, row, raw_token, origin="create")
+        if emailing
+        else None
+    )
+    invitation = Invitation.model_validate(row).model_copy(
+        update={"token": None if emailing else raw_token}
+    )
+    return IssuedInvitation(invitation=invitation, pending_email=pending)
+
+
+async def resend_invitation(
+    session: AsyncSession,
+    actor: Identity,
+    organization_id: uuid.UUID,
+    invitation_id: uuid.UUID,
+    *,
+    method: str = "email",
+) -> IssuedInvitation:
+    """Re-issue a pending invitation: ROTATE its token (the previous link stops
+    working) and either email the new link (`method="email"`) or return it once
+    for the admin to copy (`method="link"`).
+
+    Email resends are bounded: a cooldown between sends and a maximum count per
+    invitation. A fresh link also pushes the expiry out to the default lifetime
+    if it would otherwise be sooner (an invitation that lapsed can be revived).
+    """
+    _ensure_same_organization(actor, organization_id)
+    require_permission(actor, _MANAGE_PERMISSION)
+    settings = get_settings()
+
+    row = await repository.get_invitation_for_update(session, invitation_id)
+    if row is None or row.organization_id != organization_id:
+        raise NotFoundError(
+            "Invitation not found.",
+            error_code="invitation.not_found",
+            detail={"invitation_id": str(invitation_id)},
+        )
+    if row.status != "pending":
+        raise ConflictError(
+            "This invitation is no longer pending.",
+            error_code="invitation.not_pending",
+            detail={"status": row.status},
+        )
+
+    now = datetime.now(timezone.utc)
+    emailing = method == "email"
+    if emailing:
+        if not email_delivery_configured():
+            raise ServiceUnavailableError(
+                "Email delivery is not configured. Copy a new link instead.",
+                error_code="email.not_configured",
+            )
+        if row.resend_count >= settings.invitation_max_resends:
+            raise RateLimitedError(
+                f"This invitation has already been re-sent {settings.invitation_max_resends} times.",
+                error_code="invitation.resend_limit",
+                detail={"limit": settings.invitation_max_resends},
+            )
+        last = row.email_last_attempt_at
+        cooldown = timedelta(seconds=settings.invitation_resend_cooldown_seconds)
+        if last is not None and now - last < cooldown:
+            wait = int((cooldown - (now - last)).total_seconds()) + 1
+            raise RateLimitedError(
+                f"Please wait {wait} seconds before re-sending this invitation.",
+                error_code="invitation.resend_cooldown",
+                detail={"retry_after_seconds": wait},
+            )
+
+    raw_token = generate_opaque_token()
+    row.token_hash = hash_opaque_token(raw_token)
+    refreshed_expiry = now + _DEFAULT_INVITATION_LIFETIME
+    if row.expires_at < refreshed_expiry:
+        row.expires_at = refreshed_expiry
+    if emailing:
+        row.resend_count += 1
+        row.email_status = "queued"
+        row.email_attempts = 0
+        row.email_last_attempt_at = now  # starts the cooldown at queue time
+    else:
+        row.email_status = "not_sent"  # the mail already sent carries a link that no longer works
+    await session.flush()
+    await session.refresh(row)
+
+    await record_audit_event(
+        session,
+        actor,
+        action="invitation.resend",
+        resource_type="invitation",
+        resource_id=row.id,
+        metadata={"organization_id": str(organization_id), "method": method},
+    )
+    pending = (
+        await invitation_email.prepare_invitation_email(session, actor, row, raw_token, origin="resend")
+        if emailing
+        else None
+    )
+    invitation = Invitation.model_validate(row).model_copy(
+        update={"token": None if emailing else raw_token}
+    )
+    return IssuedInvitation(invitation=invitation, pending_email=pending)
 
 
 async def list_invitations(

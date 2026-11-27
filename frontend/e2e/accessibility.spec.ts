@@ -54,10 +54,13 @@ test.describe("Accessibility", () => {
     await expect(page.getByRole("button", { name: "Sign in" })).toBeVisible();
 
     // Keyboard-only flow: Tab from the email field should reach the
-    // password field, then the submit button, in document order.
+    // password field, then the "Forgot password?" link that sits under it, then the submit button,
+    // in document order.
     await page.getByLabel("Work email").focus();
     await page.keyboard.press("Tab");
     await expect(page.getByLabel("Password")).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(page.getByRole("link", { name: "Forgot password?" })).toBeFocused();
     await page.keyboard.press("Tab");
     await expect(page.getByRole("button", { name: "Sign in" })).toBeFocused();
   });

@@ -66,12 +66,15 @@ async def test_get_current_identity_sets_tenant_context_after_resolving_identity
         def __init__(self) -> None:
             self.user_id = user_id
             self.organization_id = organization_id
+            self.issued_at = None
+            self.org_session_epoch = 0
+            self.member_epoch = 0
 
     def fake_verify_access_token(token: str):
         assert token == "a-valid-token"
         return _FakeClaims()
 
-    async def fake_resolve_identity(session_arg, user_id_arg, organization_id_arg):
+    async def fake_resolve_identity(session_arg, user_id_arg, organization_id_arg, **kwargs):
         assert session_arg is session
         assert user_id_arg == user_id
         assert organization_id_arg == organization_id

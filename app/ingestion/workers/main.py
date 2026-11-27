@@ -16,7 +16,13 @@ from __future__ import annotations
 
 from arq.cron import cron
 
-from app.ingestion.workers.tasks import MAX_JOB_TRIES, run_ingestion_job_task, scheduled_reconciliation
+from app.ingestion.workers.tasks import (
+    MAX_JOB_TRIES,
+    cleanup_connector_documents_task,
+    run_ingestion_job_task,
+    scheduled_maintenance,
+    scheduled_reconciliation,
+)
 from app.shared.config.logging import configure_logging
 from app.shared.config.settings import get_settings
 from app.shared.config.tracing import configure_worker_tracing
@@ -62,14 +68,20 @@ class WorkerSettings:
     CLI command shown in this module's docstring.
     """
 
-    functions = [run_ingestion_job_task]
+    functions = [run_ingestion_job_task, cleanup_connector_documents_task]
     on_startup = _on_startup
     # Hourly reconciliation (minute=0, every hour) -- PROJECT_PLAN.md
     # section 4.4's "periodic reconciliation pass ... even for
     # webhook-supported sources". Omitting `hour` means "every hour", per
     # arq's cron field semantics (an omitted field matches any value, the
     # same convention as a bare `*` in crontab syntax).
-    cron_jobs = [cron(scheduled_reconciliation, minute=0)]
+    # Daily maintenance (retention, document cleanup, storage snapshot) at RETENTION_HOUR:15 in the worker's
+    # own time zone (arq's default; this worker's settings are otherwise unchanged) -- after the hourly
+    # reconciliation of that hour has been enqueued, so they rarely overlap.
+    cron_jobs = [
+        cron(scheduled_reconciliation, minute=0),
+        cron(scheduled_maintenance, hour=_settings.retention_hour, minute=15, timeout=14400, unique=True),
+    ]
     redis_settings = build_redis_settings()
     # arq defaults every Worker to the same hardcoded queue name
     # ("arq:queue") regardless of `functions` -- with no override, this

@@ -167,3 +167,51 @@ class EmailVerification(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
+
+
+class PasswordReset(Base):
+    """One outstanding "forgot password" link.
+
+    Global like `users` and `email_verifications` (NOT row-level-security
+    protected): a reset is requested and consumed before any session or
+    organization exists, and a password is a USER-level credential that spans
+    every organization the person belongs to. Reachable only through
+    `core.auth.password_reset`.
+
+    `token_hash` is SHA-256 of a 256-bit random token that exists in cleartext
+    only in memory between generation and the outgoing mail. `consumed_at` is
+    set by a single atomic `UPDATE ... WHERE consumed_at IS NULL AND expires_at
+    > now() RETURNING` -- the single-use gate, in the same transaction as the
+    password change and the session revocation. At most ONE open link per user
+    (partial unique index): asking again rotates it, which kills the earlier
+    link.
+    """
+
+    __tablename__ = "password_resets"
+    __table_args__ = (
+        Index(
+            "uq_password_resets_open_user",
+            "user_id",
+            unique=True,
+            postgresql_where=text("consumed_at IS NULL"),
+        ),
+        Index("ix_password_resets_expires_at", "expires_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    token_hash: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    send_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    send_window_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

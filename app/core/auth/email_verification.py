@@ -38,7 +38,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import repository
-from app.core.exceptions import ConflictError, ValidationError
+from app.core.exceptions import ConflictError, PermissionDeniedError, ValidationError
 from app.core.tenancy import repository as tenancy_repository
 from app.core.tenancy import service as tenancy_service
 from app.core.tenancy.schemas import OrganizationCreate
@@ -46,6 +46,7 @@ from app.core.users import service as users_service
 from app.database.session import set_tenant_context
 from app.shared.config.logging import get_logger
 from app.shared.config.settings import get_settings
+from app.shared.organization_status import is_suspended
 from app.shared.email import EmailDeliveryError, EmailNotConfiguredError, get_email_sender
 from app.shared.email.messages import EmailSender
 from app.shared.email.templates import render_verification_email, verification_link
@@ -352,8 +353,12 @@ async def verify_token(session: AsyncSession, raw_token: str) -> VerificationRes
 
 
 async def _activate_registration(session: AsyncSession, row) -> None:
+    # The creator just proved ownership of their email address, which is the only thing an
+    # organization created through self-service signup waits for: it starts `active`.
     organization = await tenancy_service.create_organization(
-        session, OrganizationCreate(name=row.organization_name, slug=row.organization_slug)
+        session,
+        OrganizationCreate(name=row.organization_name, slug=row.organization_slug),
+        initial_status="active",
     )
     user_id = await users_service.create_verified_user(
         session,
@@ -382,6 +387,14 @@ async def _activate_invitation(session: AsyncSession, row, now: datetime) -> Non
     if organization_id is None:
         raise ConflictError("Invitation not found.", error_code="invitation.not_found")
     await set_tenant_context(session, organization_id)
+    organization = await tenancy_repository.get_organization_by_id(session, organization_id)
+    if organization is None or is_suspended(organization.status):
+        # Raising rolls the whole activation back: the link is not consumed and no user,
+        # role or invitation change is written.
+        raise PermissionDeniedError(
+            "This organization's access has been suspended. Contact your administrator.",
+            error_code="auth.organization_suspended",
+        )
     invitation = await tenancy_repository.get_invitation_by_id(session, row.invitation_id)
     if invitation is None:
         raise ConflictError("Invitation not found.", error_code="invitation.not_found")

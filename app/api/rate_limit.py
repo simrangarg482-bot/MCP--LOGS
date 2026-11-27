@@ -144,3 +144,19 @@ def rate_limit_by_org(
             )
 
     return _dependency
+
+
+async def enforce_rate_limit(
+    *, scope: str, key: str, requests_per_minute: float, error_code: str = "rate_limited.key"
+) -> None:
+    """Consume one token from the shared limiter for an arbitrary caller-built `key` (e.g. a hashed
+    login name, or a platform operator id) and raise `RateLimitedError` when the budget is spent. For
+    callers whose key is not the IP or the tenant `Identity` the dependency factories above know about."""
+    if not await _limiter.try_acquire(
+        f"{scope}:{key}", requests_per_minute / 60.0, capacity=requests_per_minute
+    ):
+        raise RateLimitedError(
+            "Too many requests. Please wait before trying again.",
+            error_code=error_code,
+            detail={"scope": scope},
+        )

@@ -54,6 +54,36 @@ def client():
     api_main.app.dependency_overrides.clear()
 
 
+class _FakeSession:
+    def __init__(self) -> None:
+        self.events: list[str] = []
+
+    async def commit(self) -> None:
+        self.events.append("commit")
+
+
+class _FakePool:
+    def __init__(self, fail: bool = False) -> None:
+        self.jobs: list[tuple] = []
+        self.fail = fail
+
+    async def enqueue_job(self, name, *args, **kwargs):
+        if self.fail:
+            raise ConnectionError("redis down")
+        self.jobs.append((name, args, kwargs))
+
+
+def _session_and_pool(*, fail_enqueue: bool = False):
+    session, pool = _FakeSession(), _FakePool(fail_enqueue)
+
+    async def _session_dep():
+        yield session
+
+    api_main.app.dependency_overrides[get_db_session] = _session_dep
+    api_main.app.dependency_overrides[get_arq_pool] = lambda: pool
+    return session, pool
+
+
 def _connector_config(organization_id: uuid.UUID, *, source: str = "jira") -> ConnectorConfig:
     now = datetime.now(timezone.utc)
     return ConnectorConfig(
@@ -139,6 +169,7 @@ def test_delete_connector_calls_disconnect_with_callers_own_organization(client,
         return disconnected
 
     monkeypatch.setattr(tenancy_router.tenancy_service, "disconnect_connector", fake_disconnect_connector)
+    session, pool = _session_and_pool()
 
     response = test_client.delete(f"/tenancy/connectors/{connector_id}")
 
@@ -147,6 +178,30 @@ def test_delete_connector_calls_disconnect_with_callers_own_organization(client,
     assert captured["actor"] is actor
     assert captured["organization_id"] == actor.organization_id
     assert captured["connector_id"] == connector_id
+    # The document cleanup is queued (not performed in the request), AFTER the disconnect was committed,
+    # for THIS organization and connector only, with an idempotent job id.
+    assert session.events == ["commit"]
+    assert pool.jobs == [
+        ("cleanup_connector_documents_task", (str(actor.organization_id), str(connector_id)),
+         {"_job_id": f"connector-cleanup:{connector_id}"})
+    ]
+
+
+def test_delete_connector_still_succeeds_when_the_cleanup_cannot_be_queued(client, monkeypatch) -> None:
+    test_client, actor = client
+    connector_id = uuid.uuid4()
+    disconnected = _connector_config(actor.organization_id, source="github").model_copy(update={"status": "disconnected"})
+
+    async def fake_disconnect_connector(session, passed_actor, organization_id, passed_connector_id):
+        return disconnected
+
+    monkeypatch.setattr(tenancy_router.tenancy_service, "disconnect_connector", fake_disconnect_connector)
+    session, pool = _session_and_pool(fail_enqueue=True)
+
+    response = test_client.delete(f"/tenancy/connectors/{connector_id}")
+
+    assert response.status_code == 200 and response.json()["status"] == "disconnected"
+    assert session.events == ["commit"]  # the disconnect is durable; the daily sweep finishes the cleanup
 
 
 def test_connector_event_is_enqueued_idempotently(client, monkeypatch) -> None:
@@ -474,10 +529,11 @@ def test_create_invitation_under_organization(client, monkeypatch) -> None:
     test_client, actor = client
     result = _invitation(actor.organization_id)
 
-    async def fake_create_invitation(session, passed_actor, organization_id, data):
-        return result
+    async def fake_issue_invitation(session, passed_actor, organization_id, data):
+        assert passed_actor is actor and organization_id == actor.organization_id
+        return tenancy_router.tenancy_service.IssuedInvitation(invitation=result, pending_email=None)
 
-    monkeypatch.setattr(tenancy_router.tenancy_service, "create_invitation", fake_create_invitation)
+    monkeypatch.setattr(tenancy_router.tenancy_service, "issue_invitation", fake_issue_invitation)
 
     response = test_client.post(
         f"/organizations/{actor.organization_id}/invitations",
@@ -485,6 +541,45 @@ def test_create_invitation_under_organization(client, monkeypatch) -> None:
     )
 
     assert response.status_code == 201
+
+
+def test_create_invitation_schedules_the_email_only_after_committing(client, monkeypatch) -> None:
+    """The background task must never run before the invitation is durable: the
+    router commits first, then schedules the delivery."""
+    test_client, actor = client
+    events: list[str] = []
+    pending = object()
+
+    class _Session:
+        async def commit(self):
+            events.append("commit")
+
+    async def fake_session():
+        yield _Session()
+
+    async def fake_issue(session, passed_actor, organization_id, data):
+        return tenancy_router.tenancy_service.IssuedInvitation(
+            invitation=_invitation(actor.organization_id), pending_email=pending
+        )
+
+    async def fake_deliver(arg):
+        assert arg is pending
+        events.append("deliver")
+
+    from app.api.main import app
+    from app.database.session import get_db_session
+
+    app.dependency_overrides[get_db_session] = fake_session
+    monkeypatch.setattr(tenancy_router.tenancy_service, "issue_invitation", fake_issue)
+    monkeypatch.setattr(tenancy_router.invitation_email, "deliver_invitation_email", fake_deliver)
+
+    response = test_client.post(
+        f"/organizations/{actor.organization_id}/invitations",
+        json={"email": "new.hire@acme.com", "grants_role": "engineer"},
+    )
+
+    assert response.status_code == 201
+    assert events == ["commit", "deliver"]
 
 
 def test_list_invitations_under_organization(client, monkeypatch) -> None:

@@ -135,7 +135,14 @@ async def get_current_identity(
     """
     token = _extract_bearer_token(authorization)
     claims = auth_service.verify_access_token(token)
-    identity = await users_service.resolve_identity(session, claims.user_id, claims.organization_id)
+    identity = await users_service.resolve_identity(
+        session,
+        claims.user_id,
+        claims.organization_id,
+        token_issued_at=claims.issued_at,
+        token_org_epoch=claims.org_session_epoch,
+        token_member_epoch=claims.member_epoch,
+    )
     await set_tenant_context(session, identity.organization_id)
 
     # Phase 5.1: bound alongside (not instead of) `RequestContextMiddleware`'s

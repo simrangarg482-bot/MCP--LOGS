@@ -3,9 +3,11 @@ from datetime import datetime
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     Text,
     UniqueConstraint,
     func,
@@ -36,13 +38,317 @@ class Organization(Base):
     slug: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
     # onboarding / active / suspended -- the onboarding state machine
     # referenced in PROJECT_PLAN.md section 9.2.
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="onboarding")
+    # The application role cannot UPDATE this column (migration d4a7b1c8e3f6); the only writer is the
+    # SECURITY DEFINER function platform_set_organization_status().
+    status: Mapped[str] = mapped_column(
+        Text, nullable=False, default="onboarding", server_default=text("'onboarding'")
+    )
+    status_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Customer-facing text only. Operator notes live in organization_status_history, which the
+    # application role cannot read.
+    status_message_public: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Organization-level session version: bumped on every suspension and reactivation; access tokens
+    # carry the value they were issued under (claim `oe`).
+    session_epoch: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('onboarding', 'active', 'suspended')", name="ck_organizations_status"
+        ),
+    )
+
+
+class OrganizationMemberState(Base):
+    """Organization-scoped state of ONE member's access. A missing row means `active`.
+
+    Deactivation is per organization: it never touches `users.is_active` (which is global). The database
+    computes `member_epoch` (see migration a8e3c5d1f2b7): it moves on every deactivation and every
+    reactivation, and access tokens carry the value they were issued under (claim `me`).
+    """
+
+    __tablename__ = "organization_member_states"
+    __table_args__ = (
+        CheckConstraint("status IN ('active', 'deactivated')", name="ck_member_states_status"),
+        CheckConstraint("source IN ('admin', 'scim')", name="ck_member_states_source"),
+        CheckConstraint("member_epoch >= 0", name="ck_member_states_epoch"),
+        Index("ix_member_states_user", "user_id"),
+        Index("ix_member_states_org_status", "organization_id", "status"),
+    )
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="active", server_default=text("'active'"))
+    source: Mapped[str] = mapped_column(Text, nullable=False, default="admin", server_default=text("'admin'"))
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    deactivated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    member_epoch: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class ScimConfiguration(Base):
+    """Per-organization SCIM settings and health (migration b9f4d6e2a1c8). `enabled` is OFF by default."""
+
+    __tablename__ = "scim_configurations"
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True
+    )
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
+    guard_min_absolute: Mapped[int] = mapped_column(Integer, nullable=False, default=5, server_default=text("5"))
+    guard_percent: Mapped[int] = mapped_column(Integer, nullable=False, default=20, server_default=text("20"))
+    guard_window_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=60, server_default=text("60"))
+    reactivation_settle_seconds: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=300, server_default=text("300")
+    )
+    last_request_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_error_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class ScimToken(Base):
+    """An organization's SCIM bearer token. ONLY the SHA-256 hash is stored; the raw value is shown once."""
+
+    __tablename__ = "scim_tokens"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    token_hash: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    token_prefix: Mapped[str] = mapped_column(Text, nullable=False)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ScimIdentity(Base):
+    """What the identity provider told us about one user. Not an EKIP account: it grants nothing, and
+    `user_id` stays NULL (pending) until linked by proof or by an administrator."""
+
+    __tablename__ = "scim_identities"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    user_name: Mapped[str] = mapped_column(Text, nullable=False)
+    user_name_key: Mapped[str] = mapped_column(Text, nullable=False)
+    external_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    display_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    linked_via: Mapped[str | None] = mapped_column(Text, nullable=True)
+    linked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class ScimPendingAction(Base):
+    """A deactivation held by the mass-deactivation guard until an administrator decides."""
+
+    __tablename__ = "scim_pending_actions"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    scim_identity_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("scim_identities.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    action: Mapped[str] = mapped_column(Text, nullable=False, default="deactivate", server_default=text("'deactivate'"))
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="pending", server_default=text("'pending'"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    decided_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ScimGroup(Base):
+    """A group the identity provider pushed. It grants nothing until an administrator maps it to roles."""
+
+    __tablename__ = "scim_groups"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    display_name: Mapped[str] = mapped_column(Text, nullable=False)
+    display_name_key: Mapped[str] = mapped_column(Text, nullable=False)
+    external_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class ScimGroupMember(Base):
+    __tablename__ = "scim_group_members"
+
+    group_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("scim_groups.id", ondelete="CASCADE"), primary_key=True
+    )
+    scim_identity_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("scim_identities.id", ondelete="CASCADE"), primary_key=True
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class ScimGroupRoleMapping(Base):
+    """The EXPLICIT organization-level configuration: this group grants this role."""
+
+    __tablename__ = "scim_group_role_mappings"
+
+    group_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("scim_groups.id", ondelete="CASCADE"), primary_key=True
+    )
+    role_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("roles.id", ondelete="CASCADE"), primary_key=True
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class ScimRoleGrant(Base):
+    """One (group, user, role) that currently grants the role. A role granted by several groups has several rows."""
+
+    __tablename__ = "scim_role_grants"
+
+    group_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("scim_groups.id", ondelete="CASCADE"), primary_key=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    role_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("roles.id", ondelete="CASCADE"), primary_key=True
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    granted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class PlatformOperator(Base):
+    """Who may operate the platform. Global; unreachable for the application role (no privileges).
+
+    Rows are created only by the (Phase 4) owner-credential CLI. Holding `tenancy:manage` grants nothing
+    here.
+    """
+
+    __tablename__ = "platform_operators"
+    __table_args__ = (
+        CheckConstraint("role IN ('admin', 'viewer')", name="ck_platform_operators_role"),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    role: Mapped[str] = mapped_column(Text, nullable=False)
+    granted_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    granted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class OrganizationStatusHistory(Base):
+    """Append-only record of every status change, including the private operator note."""
+
+    __tablename__ = "organization_status_history"
+    __table_args__ = (
+        CheckConstraint(
+            "previous_status IN ('onboarding', 'active', 'suspended') AND new_status IN ('active', 'suspended')",
+            name="ck_organization_status_history_statuses",
+        ),
+        Index("ix_organization_status_history_org_changed", "organization_id", text("changed_at DESC")),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    previous_status: Mapped[str] = mapped_column(Text, nullable=False)
+    new_status: Mapped[str] = mapped_column(Text, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    customer_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    internal_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    operator_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    changed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    request_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class PlatformAuditEvent(Base):
+    """Append-only platform-level audit trail (not tenant-visible)."""
+
+    __tablename__ = "platform_audit_events"
+    __table_args__ = (
+        Index("ix_platform_audit_events_org_occurred", "target_organization_id", text("occurred_at DESC")),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    actor_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    target_organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    details: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    request_id: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class Project(Base):
@@ -104,6 +410,12 @@ class SSOConfiguration(Base): #Single Sign-On.
     # A reference/identifier into the encrypted secret store (PROJECT_PLAN.md
     # section 12.5) -- never the raw client secret itself.
     client_secret_ref: Mapped[str] = mapped_column(Text, nullable=False)
+    # An administrator can switch SSO off without losing the configuration. A
+    # disabled configuration can neither begin nor complete a login and is not
+    # advertised on the login page. Existing rows stay enabled (server default).
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true"), default=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -292,6 +604,12 @@ class Invitation(Base):
     __tablename__ = "invitations"
     __table_args__ = (
         Index("ix_invitations_org_email", "organization_id", "email"),
+        # Serves the per-organization hourly/daily invitation caps.
+        Index("ix_invitations_org_created", "organization_id", "created_at"),
+        CheckConstraint(
+            "email_status IN ('not_sent', 'queued', 'sent', 'failed', 'not_configured')",
+            name="ck_invitations_email_status",
+        ),
         Index(
             "uq_invitations_org_email_pending",
             "organization_id",
@@ -318,9 +636,55 @@ class Invitation(Base):
     )
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Delivery of the invitation email (migration f4b8d1c7a3e9). `sent` is
+    # recorded ONLY after the SMTP provider accepted the message; `queued`
+    # means a background task owes the send; `not_configured` means no email
+    # provider existed (the admin must copy the link); `not_sent` is every
+    # invitation created before this feature (and `create_invitation` callers
+    # that do not email). `resend_count` bounds admin resends.
+    email_status: Mapped[str] = mapped_column(
+        Text, nullable=False, default="not_sent", server_default=text("'not_sent'")
+    )
+    email_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    email_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    email_last_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    resend_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
+
+
+# Indexes created by the SCIM migrations, declared here so the models match the schema (`alembic check`).
+Index("ix_scim_tokens_org", ScimToken.organization_id)
+Index(
+    "uq_scim_identities_username", ScimIdentity.organization_id, ScimIdentity.user_name_key,
+    unique=True, postgresql_where=text("deleted_at IS NULL"),
+)
+Index(
+    "uq_scim_identities_external", ScimIdentity.organization_id, ScimIdentity.external_id,
+    unique=True, postgresql_where=text("external_id IS NOT NULL AND deleted_at IS NULL"),
+)
+Index(
+    "uq_scim_identities_user", ScimIdentity.organization_id, ScimIdentity.user_id,
+    unique=True, postgresql_where=text("user_id IS NOT NULL AND deleted_at IS NULL"),
+)
+Index(
+    "uq_scim_pending_identity", ScimPendingAction.organization_id, ScimPendingAction.scim_identity_id,
+    unique=True, postgresql_where=text("status = 'pending'"),
+)
+Index("uq_scim_groups_name", ScimGroup.organization_id, ScimGroup.display_name_key, unique=True)
+Index(
+    "uq_scim_groups_external", ScimGroup.organization_id, ScimGroup.external_id,
+    unique=True, postgresql_where=text("external_id IS NOT NULL"),
+)
+Index("ix_scim_group_members_identity", ScimGroupMember.scim_identity_id)
+Index("ix_scim_role_grants_user_role", ScimRoleGrant.organization_id, ScimRoleGrant.user_id, ScimRoleGrant.role_id)

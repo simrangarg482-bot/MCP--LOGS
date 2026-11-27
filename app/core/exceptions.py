@@ -81,6 +81,17 @@ class PermissionDeniedError(EKIPError):
     default_error_code = "permission_denied"
 
 
+class OrganizationSuspendedError(PermissionDeniedError):
+    """The organization is suspended, so nothing may be processed for it.
+
+    The same wire code as the authentication paths (`auth.organization_suspended`), as a distinct
+    TYPE so background workers can recognise it and end a job with a clear, NON-retriable outcome
+    instead of the generic "retry with backoff" every other failure gets.
+    """
+
+    default_error_code = "auth.organization_suspended"
+
+
 class NotFoundError(EKIPError):
     """A referenced resource does not exist (or is soft-deleted / hidden)."""
 

@@ -69,7 +69,7 @@ export function DashboardPage() {
     queryFn: () => listIncidents({ limit: BREAKDOWN_SAMPLE_SIZE, offset: 0 }),
   });
   const connectorsQuery = useQuery({ queryKey: ["connectors"], queryFn: listConnectors });
-  const agentsQuery = useQuery({ queryKey: ["agents", "stats"], queryFn: listAgentStats });
+  const agentsQuery = useQuery({ queryKey: ["agents", "stats"], queryFn: () => listAgentStats() });
   // `listKnowledgeDocuments` returns one server-paginated page, not a
   // `total` count (Stage 5 dropped the `Paginated<T>` wrapper -- the real
   // `GET /knowledge` has no count query). `pageSize: 100` is the backend's

@@ -29,6 +29,7 @@ patched functions never actually touch it, mirroring
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 from datetime import datetime, timezone
 
 import pytest
@@ -113,10 +114,16 @@ async def test_single_organization_user_logs_in_normally(monkeypatch) -> None:
         assert uid == user_id
         return [organization_id]
 
+    async def fake_get_organizations_by_ids(session, ids):
+        return [SimpleNamespace(id=organization_id, name="Org", slug="org", status="active")]
+
     _patch_password_check(monkeypatch)
     monkeypatch.setattr(auth_service.users_service, "get_credential_lookup", fake_get_credential_lookup)
     monkeypatch.setattr(
         auth_service.users_service, "list_organizations_for_login", fake_list_organizations_for_login
+    )
+    monkeypatch.setattr(
+        auth_service.tenancy_repository, "get_organizations_by_ids", fake_get_organizations_by_ids
     )
     issue_calls = _patch_issue_session(monkeypatch)
 
@@ -142,6 +149,7 @@ async def test_multi_organization_user_gets_selection_required_not_a_silent_pick
     class _FakeOrgRow:
         def __init__(self, id, name, slug):
             self.id, self.name, self.slug = id, name, slug
+            self.status = "active"
 
     async def fake_get_credential_lookup(session, email):
         return lookup
@@ -187,6 +195,7 @@ async def test_list_available_organizations_returns_only_callers_organizations(m
     class _FakeOrgRow:
         def __init__(self, id, name, slug):
             self.id, self.name, self.slug = id, name, slug
+            self.status = "active"
 
     async def fake_list_organizations_for_login(session, uid):
         assert uid == user_id

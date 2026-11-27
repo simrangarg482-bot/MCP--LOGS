@@ -4,6 +4,7 @@ import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/context/ToastContext";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+import { MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH, PASSWORD_HINT, passwordErrorMessage, validateNewPassword } from "@/utils/password";
 import type { ApiError } from "@/types/common";
 import { CheckEmailPanel } from "./CheckEmailPanel";
 
@@ -37,6 +38,11 @@ export function SignupPage() {
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
+    const problem = validateNewPassword(password, email);
+    if (problem) {
+      toast({ variant: "error", title: "Choose a stronger password", description: problem });
+      return;
+    }
     setIsSubmitting(true);
     try {
       await signup({
@@ -52,7 +58,9 @@ export function SignupPage() {
       const message =
         apiError?.errorCode === "email.not_configured"
           ? "Sign-up is temporarily unavailable. Please try again later."
-          : apiError?.message || "Please check your details and try again.";
+          : apiError?.errorCode?.startsWith("auth.password_")
+            ? passwordErrorMessage(apiError)
+            : apiError?.message || "Please check your details and try again.";
       toast({ variant: "error", title: "Sign up failed", description: message });
     } finally {
       setIsSubmitting(false);
@@ -101,11 +109,14 @@ export function SignupPage() {
             id="password"
             type="password"
             required
-            minLength={8}
-            placeholder="At least 8 characters"
+            minLength={MIN_PASSWORD_LENGTH}
+            maxLength={MAX_PASSWORD_LENGTH}
+            autoComplete="new-password"
+            placeholder={`At least ${MIN_PASSWORD_LENGTH} characters`}
             value={password}
             onChange={(e) => setPassword(e.target.value)}
           />
+          <p className="mt-1 text-xs text-ink-subtle">{PASSWORD_HINT}</p>
         </div>
         <div>
           <label htmlFor="organizationName" className="mb-1.5 block text-xs font-medium text-ink-muted">

@@ -25,8 +25,7 @@ test.describe("RBAC", () => {
     // Gated items this user lacks the permission for: must not render at all.
     await expect(page.getByRole("link", { name: "Connectors" })).toHaveCount(0); // tenancy:manage
     await expect(page.getByRole("link", { name: "Audit Log" })).toHaveCount(0); // audit:read
-    await expect(page.getByRole("link", { name: "Agents" })).toHaveCount(0); // observability:read
-    await expect(page.getByRole("link", { name: "MCP Tools" })).toHaveCount(0); // observability:read
+    await expect(page.getByRole("link", { name: "Observability" })).toHaveCount(0); // observability:read
     await expect(page.getByRole("link", { name: "Knowledge Gaps" })).toHaveCount(0); // knowledge:review
   });
 
@@ -34,7 +33,7 @@ test.describe("RBAC", () => {
     await loginViaUI(page, ORG_ALPHA.admin.email, ORG_ALPHA.admin.password);
     await expect(page.getByRole("link", { name: "Connectors" })).toBeVisible();
     await expect(page.getByRole("link", { name: "Audit Log" })).toBeVisible();
-    await expect(page.getByRole("link", { name: "Agents" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Observability" })).toBeVisible();
     await expect(page.getByRole("link", { name: "Knowledge Gaps" })).toBeVisible();
   });
 

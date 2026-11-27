@@ -17,13 +17,10 @@ Two round trips, two schema pairs:
      `RefreshRequest` and also returns `SessionTokens`; `verify_access_token`
      returns `TokenClaims`.
 
-PKCE mechanics: `code_verifier` is generated when login begins and must be
-supplied again at the callback step to complete the token exchange with the
-IdP. This module treats it as an opaque string the caller (the future api/
-layer) is responsible for stashing server-side keyed by `state` across the
-redirect round trip -- core/auth does not persist it itself, since it is only
-meaningful for the duration of one in-flight login attempt, not something
-that needs a database row.
+PKCE mechanics: the `code_verifier` (and the OIDC `nonce`) are generated when
+login begins and kept server-side in a short-lived, single-use Redis record
+(`core.auth.sso_transaction`); the browser only ever holds an opaque
+`transaction_id`.
 """
 
 from __future__ import annotations
@@ -38,35 +35,50 @@ from pydantic import BaseModel, ConfigDict, Field
 class SSOAuthorizationRedirect(BaseModel):
     """Result of beginning an SSO login for one organization.
 
-    `authorization_url` is where the employee's browser should be redirected
-    (PROJECT_PLAN.md section 3.3, step 3) -- the IdP's OIDC authorize
-    endpoint, pre-filled with the organization's `client_id` (from its
-    `sso_configurations` row, resolved via core/tenancy) and the PKCE
-    challenge derived from `code_verifier`. `state` is an opaque anti-CSRF
-    token the callback must echo back unchanged.
+    `authorization_url` is where the browser should be sent -- the identity
+    provider's authorize endpoint, pre-filled with the organization's client id,
+    the PKCE challenge, the `state` and the OIDC `nonce`. `state` is echoed back
+    by the provider so the page can sanity-check the round trip, but the
+    authoritative check is server-side. `transaction_id` is an opaque handle to
+    a short-lived, single-use server record (see `core.auth.sso_transaction`)
+    that holds the PKCE verifier and nonce -- neither is ever sent to the
+    browser.
     """
 
     model_config = ConfigDict(frozen=True)
 
     authorization_url: str
     state: str
-    code_verifier: str
+    transaction_id: str
 
 
 class SSOCallbackRequest(BaseModel):
     """Input to `complete_sso_login`, once the IdP has redirected back.
 
-    `org_slug` re-identifies which organization's SSO configuration to
-    exchange the code against (the callback URL is
-    `/o/{org-slug}/callback`, PROJECT_PLAN.md section 11.1); `state` and
-    `code_verifier` are the values the caller stashed from the matching
-    `SSOAuthorizationRedirect` and must supply unchanged to complete PKCE.
+    `org_slug` must match the organization the transaction was started for;
+    `state` must equal the transaction's state; `transaction_id` is the handle
+    `SSOAuthorizationRedirect` returned. All of it is verified server-side.
     """
 
-    org_slug: str
-    code: str
-    state: str
-    code_verifier: str
+    org_slug: str = Field(min_length=1, max_length=63)
+    code: str = Field(min_length=1, max_length=4096)
+    state: str = Field(min_length=1, max_length=512)
+    transaction_id: str = Field(min_length=1, max_length=128)
+
+
+class SSOOptions(BaseModel):
+    """What the public login page may learn about an organization's SSO.
+
+    Deliberately minimal and identical in shape for "no such organization", "no
+    SSO", "SSO disabled" and "organization suspended": `available=false` with
+    no provider. Never the issuer, client id, secret or organization name.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    available: bool
+    provider: str | None = None
+    provider_label: str | None = None
 
 
 class SessionTokens(BaseModel):
@@ -116,17 +128,20 @@ class SignupRequest(BaseModel):
     """
 
     email: str
-    password: str = Field(min_length=8)
+    # Policy (12-128 characters) is enforced by `core.auth.passwords` so the error carries a
+    # stable `error_code`; this bound only stops absurd payloads.
+    password: str = Field(min_length=1, max_length=1024)
     display_name: str
     organization_name: str
     organization_slug: str = Field(pattern=r"^[a-z0-9]+(-[a-z0-9]+)*$", min_length=1, max_length=63)
 
 
 class LoginRequest(BaseModel):
-    """Input to `login_with_password`."""
+    """Input to `login_with_password`. No length POLICY here (an existing 8-character
+    password must still work); the bound only stops absurd payloads."""
 
     email: str
-    password: str
+    password: str = Field(min_length=1, max_length=1024)
 
 
 class OrganizationSummary(BaseModel):
@@ -142,6 +157,9 @@ class OrganizationSummary(BaseModel):
     id: uuid.UUID
     name: str
     slug: str
+    #: Read-only display of the organization's lifecycle state (`onboarding` / `active`; a suspended
+    #: organization is never offered). Only a platform operator can change it.
+    status: str | None = None
 
 
 class OrganizationSelectionRequired(BaseModel):
@@ -266,6 +284,12 @@ class TokenClaims(BaseModel):
     #: OAuth scopes carried by the token (`scope` claim, space-separated in the
     #: JWT). Empty for an ordinary REST session token.
     scopes: tuple[str, ...] = ()
+    #: The organization session epoch (`oe` claim) the token was issued under. A token minted before the
+    #: claim existed has none and counts as epoch 0.
+    org_session_epoch: int = 0
+    #: The member session epoch (`me` claim): moves on every deactivation and reactivation of this person's
+    #: membership in this organization. A token minted before the claim existed has none and counts as 0.
+    member_epoch: int = 0
 
 
 class VerifiedIdPClaims(BaseModel):
@@ -338,3 +362,40 @@ class VerifyEmailResponse(BaseModel):
 
 class ResendVerificationRequest(BaseModel):
     email: str = Field(max_length=320)
+
+
+class ForgotPasswordRequest(BaseModel):
+    """Input to `POST /auth/password/forgot`."""
+
+    email: str = Field(max_length=320)
+
+
+class PasswordResetRequested(BaseModel):
+    """Generic acknowledgement for "forgot password". Identical whether or not an
+    account exists, has a password, or a mail was actually sent."""
+
+    model_config = ConfigDict(frozen=True)
+
+    status: Literal["reset_requested"] = "reset_requested"
+    message: str = "If that address belongs to an account that can sign in with a password, a reset link is on its way."
+
+
+class ResetPasswordRequest(BaseModel):
+    """Input to `POST /auth/password/reset`: the emailed token and the new password."""
+
+    token: str = Field(min_length=1, max_length=512)
+    new_password: str = Field(min_length=1, max_length=1024)
+
+
+class PasswordResetCompleted(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    status: Literal["password_reset"] = "password_reset"
+    message: str = "Your password was changed. Sign in with the new password."
+
+
+class ChangePasswordRequest(BaseModel):
+    """Input to `POST /auth/password/change` (authenticated)."""
+
+    current_password: str = Field(min_length=1, max_length=1024)
+    new_password: str = Field(min_length=1, max_length=1024)

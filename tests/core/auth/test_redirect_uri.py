@@ -93,10 +93,10 @@ async def test_complete_sso_login_rejects_disallowed_redirect_uri_before_code_ex
     )
 
     data = SSOCallbackRequest(
-        org_slug="acme", code="fake-code", code_verifier="fake-verifier", state="fake-state"
+        org_slug="acme", code="fake-code", transaction_id="fake-txn", state="fake-state"
     )
     with pytest.raises(PermissionDeniedError, match="not an allowed origin"):
         await auth_service.complete_sso_login(
-            None, data, redirect_uri="https://evil.example.com/callback"
+            None, data, redirect_uri="https://evil.example.com/o/acme/callback"
         )
     assert called is False

@@ -13,6 +13,7 @@ import {
 import type { ChatTurn, Citation, ScoredChunk } from "@/types/ask";
 import type { Incident } from "@/types/incident";
 import type { GapReport } from "@/types/knowledge";
+import { AnswerFeedback } from "./AnswerFeedback";
 import { AnswerText } from "./AnswerText";
 import { AskCitationList } from "./AskCitationList";
 import { EvidencePreviewModal } from "./EvidencePreviewModal";
@@ -412,6 +413,11 @@ export function ChatMessage({ turn, onRetry }: { turn: ChatTurn; onRetry?: () =>
                   activeChunkId={previewing?.chunkId ?? null}
                 />
               </div>
+
+              {/* Outcome feedback, attached to the exact execution that
+                  produced this response. Absent for responses with no
+                  execution id (e.g. the failure fallback). */}
+              {response.executionId && <AnswerFeedback executionId={response.executionId} />}
             </div>
           )}
 

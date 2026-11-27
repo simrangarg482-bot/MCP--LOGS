@@ -46,5 +46,7 @@ class AuditLogQuery(BaseModel):
     resource_type: str | None = None
     resource_id: uuid.UUID | None = None
     actor: str | None = None
+    #: Only events whose action starts with this (e.g. `scim.` or `member.`); `%`, `_` and `\` are literal.
+    action_prefix: str | None = Field(default=None, max_length=64)
     limit: int = Field(default=50, ge=1, le=200)
     offset: int = Field(default=0, ge=0)

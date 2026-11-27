@@ -21,6 +21,7 @@ on the first one.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 
 from langchain_core.language_models import BaseChatModel
@@ -138,6 +139,7 @@ async def detect_knowledge_gaps(
     lookback: timedelta,
     min_cluster_size: int,
     similarity_threshold: float,
+    boundary_check: Callable[[], Awaitable[None]] | None = None,
 ) -> list[KnowledgeGapReport]:
     """Run the full Knowledge Gap Agent pipeline for one organization,
     returning every gap report created or updated by this run (empty if no
@@ -174,6 +176,10 @@ async def detect_knowledge_gaps(
     for member_indices in clusters:
         if len(member_indices) < min_cluster_size:
             continue  # a one-off hard question, not a repeated gap
+        # Batch boundary (one cluster = one batch; the expensive step per cluster is an LLM call):
+        # a scheduled caller passes a check that raises if the organization was suspended meanwhile.
+        if boundary_check is not None:
+            await boundary_check()
 
         cluster_executions = [queryable[i][0] for i in member_indices]
         cluster_queries = [queryable[i][1] for i in member_indices]

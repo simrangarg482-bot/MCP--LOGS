@@ -60,7 +60,7 @@ def _install(monkeypatch, model: _RlsModel, *, new_org_label: str = "NEW") -> uu
     async def fake_get_by_slug(session, slug):
         return None
 
-    async def fake_insert_organization(session, *, name, slug):
+    async def fake_insert_organization(session, *, name, slug, status="onboarding"):
         # `organizations` has no RLS policy: allowed under any context.
         model.events.append(("insert_organization", model.context))
         now = datetime.now(UTC)
@@ -80,6 +80,14 @@ def _install(monkeypatch, model: _RlsModel, *, new_org_label: str = "NEW") -> uu
         model.check_write("audit_logs", actor.organization_id)
         model.events.append(("audit", actor.organization_id))
 
+    async def fake_ensure_default_roles(session, organization_id):
+        # `roles` / `role_permissions` writes are RLS-protected as well (a role is
+        # only writable under its own organization's tenant context).
+        model.check_write("roles", organization_id)
+        model.events.append(("default_roles", organization_id))
+        return []
+
+    monkeypatch.setattr(tenancy_service.role_service, "ensure_default_roles", fake_ensure_default_roles)
     monkeypatch.setattr(tenancy_service.repository, "get_organization_by_slug", fake_get_by_slug)
     monkeypatch.setattr(tenancy_service.repository, "insert_organization", fake_insert_organization)
     monkeypatch.setattr(tenancy_service.repository, "insert_project", fake_insert_project)
@@ -118,6 +126,7 @@ async def test_authenticated_create_organization_exact_operation_order(monkeypat
         "audit:CALLER",  # audit row written while the caller's context is active
         "set_context:NEW",  # only then switch to the new organization
         "insert_project:NEW",  # default project under the new organization's context
+        "default_roles:NEW",  # starter roles, also under the new organization's context
         "set_context:CALLER",  # caller's context restored
     ]
     assert model.context == caller_org  # the request does not stay scoped to the new org
@@ -136,6 +145,7 @@ async def test_unauthenticated_create_organization_preserves_existing_behavior(m
         "insert_organization:<unset>",
         "set_context:NEW",
         "insert_project:NEW",
+        "default_roles:NEW",
     ]  # no audit, and nothing restored
     assert model.context == new_org_id  # the new org's context stays set, as signup expects
 
@@ -207,7 +217,7 @@ async def test_registration_activation_sets_the_new_organizations_context_before
         order.append("consume_token")
         return registration
 
-    async def fake_create_organization(session, data, actor=None):
+    async def fake_create_organization(session, data, actor=None, **kwargs):
         order.append("create_organization")
         # Simulate a create_organization that does NOT leave the context set.
         return SimpleNamespace(id=new_org)
@@ -271,8 +281,12 @@ async def test_sso_provisioning_sets_context_before_its_first_rls_query(monkeypa
 
     async def fake_user_state(session, user_id):
         # `users` is not RLS-protected; this lookup records no tenant event.
-        return SimpleNamespace(email_verified_at=datetime.now(UTC))
+        return SimpleNamespace(email_verified_at=datetime.now(UTC), is_active=True)
 
+    async def fake_holds_role(session, *, user_id, organization_id):
+        return True  # `user_roles` is read under the tenant context set above
+
+    monkeypatch.setattr(auth_service.users_service, "holds_any_role_in_organization", fake_holds_role)
     monkeypatch.setattr(auth_service, "set_tenant_context", fake_set_tenant_context)
     monkeypatch.setattr(auth_service.repository, "get_external_identity_mapping", fake_get_mapping)
     monkeypatch.setattr(auth_service.users_service, "get_user_email_state_by_id", fake_user_state)

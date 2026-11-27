@@ -37,7 +37,10 @@ interface OrganizationMemberResponse {
   email: string;
   displayName: string;
   isActive: boolean;
+  membershipStatus?: "active" | "deactivated";
+  membershipSource?: "admin" | "scim" | null;
   roles: string[];
+  roleIds?: string[];
   createdAt: string;
 }
 
@@ -63,7 +66,11 @@ export async function listOrgUsers(organizationId: string): Promise<OrgUser[]> {
     // makes for the current user (`roles[0]`), not a "most privileged role"
     // selection.
     role: (member.roles[0] as OrgUser["role"]) ?? "member",
+    roles: member.roles,
+    roleIds: member.roleIds ?? [],
     status: member.isActive ? "active" : "suspended",
+    membershipStatus: member.membershipStatus ?? "active",
+    membershipSource: member.membershipSource ?? null,
   }));
 }
 
@@ -80,7 +87,8 @@ interface SsoConfigWire {
   issuerUrl: string;
   clientId: string;
   clientSecretRef: string;
-  enabled?: boolean;
+  // Returned by the backend since `sso_configurations.enabled` exists -- never invented client-side.
+  enabled: boolean;
 }
 
 export async function getSsoConfig(organizationId: string): Promise<SsoConfig> {
@@ -94,7 +102,7 @@ export async function getSsoConfig(organizationId: string): Promise<SsoConfig> {
     issuerUrl: wire.issuerUrl,
     clientId: wire.clientId,
     clientSecretReference: wire.clientSecretRef,
-    enabled: wire.enabled ?? true,
+    enabled: wire.enabled,
   };
 }
 
@@ -120,6 +128,9 @@ export async function createInvitation(
         email: data.email,
         status: "pending",
         expiresAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString(),
+        emailStatus: "not_configured",
+        emailAttempts: 0,
+        resendCount: 0,
         token: "mock-invitation-token",
       },
       300,
@@ -128,6 +139,37 @@ export async function createInvitation(
   return apiRequest<Invitation>(`/organizations/${organizationId}/invitations`, {
     method: "POST",
     body: data,
+  });
+}
+
+/** `POST /organizations/{id}/invitations/{invitationId}/resend` (`tenancy:manage`).
+ * Always rotates the token (the previous link stops working). `email` re-sends
+ * the mail (cooldown and a per-invitation limit apply; the response has no
+ * token); `link` emails nothing and returns the new token once, for copying. */
+export async function resendInvitation(
+  organizationId: string,
+  invitationId: string,
+  method: "email" | "link",
+): Promise<Invitation> {
+  if (USE_MOCK_DATA) {
+    return mockDelay(
+      {
+        id: invitationId,
+        organizationId,
+        email: "mock@example.com",
+        status: "pending",
+        expiresAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString(),
+        emailStatus: method === "email" ? "queued" : "not_sent",
+        emailAttempts: 0,
+        resendCount: method === "email" ? 1 : 0,
+        token: method === "link" ? "mock-new-token" : undefined,
+      },
+      300,
+    );
+  }
+  return apiRequest<Invitation>(`/organizations/${organizationId}/invitations/${invitationId}/resend`, {
+    method: "POST",
+    body: { method },
   });
 }
 
@@ -155,6 +197,9 @@ export async function revokeInvitation(invitationId: string): Promise<Invitation
         email: "revoked@example.com",
         status: "revoked",
         expiresAt: new Date().toISOString(),
+        emailStatus: "not_sent",
+        emailAttempts: 0,
+        resendCount: 0,
       },
       300,
     );
@@ -223,31 +268,68 @@ export async function deactivateAccessRule(ruleId: string): Promise<AccessRule> 
   return apiRequest<AccessRule>(`/access-rules/${ruleId}/deactivate`, { method: "PATCH" });
 }
 
-export async function updateSsoConfig(organizationId: string, config: SsoConfig): Promise<SsoConfig> {
-  if (USE_MOCK_DATA) {
-    return mockDelay(config, 300);
-  }
-  // `SSOConfigurationCreate` (app/core/tenancy/schemas.py) takes
-  // `client_secret_ref`, not `client_secret_reference` -- see the matching
-  // comment on `getSsoConfig`/`SsoConfigWire` above -- and has no `enabled`
-  // field at all (the backend has no separate enable/disable state; a row
-  // existing in `sso_configurations` *is* "enabled").
-  const wire = await apiRequest<SsoConfigWire>(`/organizations/${organizationId}/sso/configure`, {
-    method: "POST",
-    body: {
-      provider: config.provider,
-      protocol: config.protocol,
-      issuerUrl: config.issuerUrl,
-      clientId: config.clientId,
-      clientSecretRef: config.clientSecretReference,
-    },
-  });
+function ssoFromWire(wire: SsoConfigWire): SsoConfig {
   return {
     provider: wire.provider,
     protocol: wire.protocol,
     issuerUrl: wire.issuerUrl,
     clientId: wire.clientId,
     clientSecretReference: wire.clientSecretRef,
-    enabled: true,
+    enabled: wire.enabled,
   };
+}
+
+/** First-time setup: `POST /organizations/{id}/sso/configure` (create-only on the server). */
+export async function createSsoConfig(organizationId: string, config: SsoConfig): Promise<SsoConfig> {
+  if (USE_MOCK_DATA) {
+    return mockDelay(config, 300);
+  }
+  // `SSOConfigurationCreate` takes `client_secret_ref` (plaintext on the way in, envelope-encrypted
+  // by the server), which the generic snake<->camel converter cannot derive from
+  // `clientSecretReference` -- translated explicitly here.
+  const wire = await apiRequest<SsoConfigWire>(`/organizations/${organizationId}/sso/configure`, {
+    method: "POST",
+    body: {
+      provider: config.provider,
+      protocol: "oidc",
+      issuerUrl: config.issuerUrl,
+      clientId: config.clientId,
+      clientSecretRef: config.clientSecretReference,
+      enabled: config.enabled,
+    },
+  });
+  return ssoFromWire(wire);
+}
+
+export interface SsoConfigChanges {
+  provider?: SsoProviderKind;
+  issuerUrl?: string;
+  clientId?: string;
+  /** New plaintext secret; leave undefined to keep the stored one. */
+  clientSecret?: string;
+  enabled?: boolean;
+  /** Required by the server when the provider or issuer changes and people are already linked. */
+  confirmIdentityReset?: boolean;
+}
+
+/**
+ * `PATCH /organizations/{id}/sso` -- change an existing configuration or switch it off/on
+ * (`{ enabled: false }`). Only the supplied fields change. Needs `tenancy:manage`.
+ */
+export async function patchSsoConfig(organizationId: string, changes: SsoConfigChanges): Promise<SsoConfig> {
+  if (USE_MOCK_DATA) {
+    Object.assign(mockSsoConfig, {
+      ...(changes.provider ? { provider: changes.provider } : {}),
+      ...(changes.issuerUrl ? { issuerUrl: changes.issuerUrl } : {}),
+      ...(changes.clientId ? { clientId: changes.clientId } : {}),
+      ...(changes.enabled !== undefined ? { enabled: changes.enabled } : {}),
+    });
+    return mockDelay({ ...mockSsoConfig }, 300);
+  }
+  const { clientSecret, ...rest } = changes;
+  const wire = await apiRequest<SsoConfigWire>(`/organizations/${organizationId}/sso`, {
+    method: "PATCH",
+    body: { ...rest, ...(clientSecret ? { clientSecretRef: clientSecret } : {}) },
+  });
+  return ssoFromWire(wire);
 }

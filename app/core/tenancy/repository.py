@@ -20,12 +20,13 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import case, func, select
+from sqlalchemy import case, delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models.ingestion_models import IngestionJob
 from app.database.models.tenancy_models import (
     ConnectorConfig,
+    ExternalIdentityMapping,
     Invitation,
     Organization,
     OrganizationAccessRule,
@@ -74,6 +75,62 @@ async def get_organization_by_slug(
     stmt = select(Organization).where(Organization.slug == slug)
     result = await session.execute(stmt)
     return result.scalar_one_or_none()
+
+
+async def get_organization_status(
+    session: AsyncSession, organization_id: uuid.UUID
+) -> tuple[bool, str | None]:
+    """`(exists, status)` of one organization, read as a COLUMN query so it is never served from
+    the session's identity map: a long-running job calling this between pages must see a
+    suspension committed by another session a moment ago (READ COMMITTED, fresh statement)."""
+    result = await session.execute(select(Organization.status).where(Organization.id == organization_id))
+    row = result.first()
+    return (row is not None, row[0] if row is not None else None)
+
+
+async def get_organization_access_state(
+    session: AsyncSession, organization_id: uuid.UUID
+) -> tuple[bool, str | None, int]:
+    """`(exists, status, session_epoch)` -- fresh column query (never the identity map). Used when a
+    session is issued, so the new access token is stamped with the organization's current epoch."""
+    result = await session.execute(
+        select(Organization.status, Organization.session_epoch).where(Organization.id == organization_id)
+    )
+    row = result.first()
+    if row is None:
+        return (False, None, 0)
+    return (True, row[0], int(row[1] or 0))
+
+
+async def get_organization_suspension_notice(
+    session: AsyncSession, organization_id: uuid.UUID
+) -> dict[str, str | None]:
+    """The customer-facing facts shown to someone refused because their organization is suspended:
+    its name and the operator's customer message (NEVER the reason or the private operator note, which
+    live in a table this role cannot read). Only called on the already-refusing path."""
+    row = (
+        await session.execute(
+            select(Organization.name, Organization.status_message_public).where(
+                Organization.id == organization_id
+            )
+        )
+    ).first()
+    if row is None:
+        return {}
+    return {"organization_name": row[0], "customer_message": row[1]}
+
+
+async def get_organization_statuses(
+    session: AsyncSession, organization_ids: Sequence[uuid.UUID]
+) -> dict[uuid.UUID, str]:
+    """`{organization_id: status}` for the given ids in ONE query (ids that do not exist are
+    absent). Used by scheduled fan-outs that must filter many organizations at once."""
+    if not organization_ids:
+        return {}
+    result = await session.execute(
+        select(Organization.id, Organization.status).where(Organization.id.in_(organization_ids))
+    )
+    return {row[0]: row[1] for row in result.all()}
 
 
 async def get_organizations_by_ids(
@@ -173,6 +230,7 @@ async def insert_sso_configuration(
     issuer_url: str,
     client_id: str,
     client_secret_ref: str,
+    enabled: bool = True,
 ) -> SSOConfiguration:
     """Create the (single, unique-per-organization) SSO configuration row.
 
@@ -189,11 +247,47 @@ async def insert_sso_configuration(
         issuer_url=issuer_url,
         client_id=client_id,
         client_secret_ref=client_secret_ref,
+        enabled=enabled,
     )
     session.add(row)
     await session.flush()
     await session.refresh(row)
     return row
+
+
+async def update_sso_configuration(
+    session: AsyncSession, row: SSOConfiguration, changes: dict[str, Any]
+) -> SSOConfiguration:
+    """Apply `changes` (already validated column -> value) to `row`."""
+    for column, value in changes.items():
+        setattr(row, column, value)
+    await session.flush()
+    await session.refresh(row)
+    return row
+
+
+async def count_external_identity_mappings(
+    session: AsyncSession, organization_id: uuid.UUID
+) -> int:
+    result = await session.execute(
+        select(func.count())
+        .select_from(ExternalIdentityMapping)
+        .where(ExternalIdentityMapping.organization_id == organization_id)
+    )
+    return int(result.scalar_one())
+
+
+async def delete_external_identity_mappings(
+    session: AsyncSession, organization_id: uuid.UUID
+) -> int:
+    """Drop every identity link of `organization_id`; returns how many."""
+    result = await session.execute(
+        delete(ExternalIdentityMapping).where(
+            ExternalIdentityMapping.organization_id == organization_id
+        )
+    )
+    await session.flush()
+    return int(result.rowcount or 0)
 
 
 async def get_sso_configuration_by_organization_id(
@@ -575,6 +669,7 @@ async def insert_invitation(
     invited_by: uuid.UUID,
     expires_at: datetime,
     token_hash: str | None = None,
+    email_status: str = "not_sent",
 ) -> Invitation:
     """Create one invitation row (status defaults to `"pending"`, per the
     model's column default) and return it with server defaults populated.
@@ -598,6 +693,7 @@ async def insert_invitation(
         invited_by=invited_by,
         expires_at=expires_at,
         token_hash=token_hash,
+        email_status=email_status,
     )
     session.add(row)
     await session.flush()
@@ -669,3 +765,75 @@ async def update_invitation_status(
     await session.flush()
     await session.refresh(row)
     return row
+
+
+# --- Invitation email delivery and caps -------------------------------------------------
+
+#: First key of the two-key advisory lock serializing invitation creation for
+#: one organization (the cap check is count-then-insert). Distinct from
+#: `core.users.repository._ORG_ADMIN_LOCK_NAMESPACE` (7001).
+_INVITATION_CAP_LOCK_NAMESPACE = 7002
+
+
+async def acquire_invitation_cap_lock(session: AsyncSession, organization_id: uuid.UUID) -> None:
+    """Transaction-scoped lock so two concurrent invitations cannot both pass
+    the cap check (released automatically at commit/rollback)."""
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(:namespace, hashtext(:organization_id))"),
+        {"namespace": _INVITATION_CAP_LOCK_NAMESPACE, "organization_id": str(organization_id)},
+    )
+
+
+async def count_invitations_since(
+    session: AsyncSession, organization_id: uuid.UUID, since: datetime
+) -> int:
+    """Invitations of any status created for `organization_id` at or after `since`."""
+    stmt = (
+        select(func.count())
+        .select_from(Invitation)
+        .where(Invitation.organization_id == organization_id, Invitation.created_at >= since)
+    )
+    return int((await session.execute(stmt)).scalar_one())
+
+
+async def get_invitation_for_update(
+    session: AsyncSession, invitation_id: uuid.UUID
+) -> Invitation | None:
+    """Row-locked fetch, so two concurrent resends of one invitation serialize."""
+    stmt = select(Invitation).where(Invitation.id == invitation_id).with_for_update()
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def record_invitation_email_result(
+    session: AsyncSession,
+    invitation_id: uuid.UUID,
+    *,
+    expected_token_hash: str,
+    status: str,
+    attempts: int,
+    now: datetime,
+) -> bool:
+    """Record how a delivery attempt ended -- but only if the invitation still
+    carries the token this attempt was sending (`expected_token_hash`) and is
+    still pending. A resend rotates the token, so a slow task for the OLD link
+    can never overwrite the new delivery's state, nor mark a revoked or
+    accepted invitation. Returns whether a row was updated.
+    """
+    values: dict[str, object] = {
+        "email_status": status,
+        "email_attempts": attempts,
+        "email_last_attempt_at": now,
+    }
+    if status == "sent":
+        values["email_sent_at"] = now
+    result = await session.execute(
+        update(Invitation)
+        .where(
+            Invitation.id == invitation_id,
+            Invitation.token_hash == expected_token_hash,
+            Invitation.status == "pending",
+        )
+        .values(**values)
+    )
+    await session.flush()
+    return bool(result.rowcount)

@@ -1,12 +1,14 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import type {
   AuthUser,
+  ChangePasswordPayload,
   InvitationAcceptPayload,
   LoginPayload,
   OrganizationSelectionPayload,
   OrganizationSelectionRequired,
   SessionTokens,
   SignupPayload,
+  SsoCallbackPayload,
   SwitchOrganizationPayload,
 } from "@/types/auth";
 import * as authApi from "@/api/auth";
@@ -14,11 +16,13 @@ import {
   clearSession,
   decodeAccessTokenClaims,
   dedupedRefresh,
+  getAccessToken,
   getRefreshToken,
   SESSION_EXPIRED_EVENT,
   setAccessToken,
   setRefreshToken,
 } from "./tokenStore";
+import { clearSuspensionNotice } from "./suspensionNotice";
 
 // login's return value: undefined for the unchanged single-organization
 // case (a session was already applied, same as before this fix existed),
@@ -40,11 +44,20 @@ interface AuthContextValue {
   // Completes a multi-organization login after the caller shows the user
   // OrganizationSelectionRequired.organizations and they pick one.
   selectOrganization: (payload: OrganizationSelectionPayload) => Promise<void>;
+  // Changes the signed-in user's password. The server ends every other session and returns a
+  // fresh one for this organization, which replaces the stored tokens.
+  changePassword: (payload: ChangePasswordPayload) => Promise<void>;
+  // Completes an SSO login (after the provider redirected back): the server verifies the
+  // single-use transaction, then the session is applied exactly like a password login's.
+  completeSsoLogin: (payload: SsoCallbackPayload, redirectUri: string) => Promise<void>;
   // Re-scopes an already-authenticated session to a different organization
   // the user also belongs to (POST /auth/switch-organization).
   switchOrganization: (payload: SwitchOrganizationPayload) => Promise<void>;
   acceptInvitation: (invitationId: string, payload: InvitationAcceptPayload) => Promise<void>;
   logout: () => Promise<void>;
+  // Re-reads `GET /auth/me` so roles/permissions changed on the server (e.g. an
+  // administrator editing a role) show up without signing in again.
+  refreshUser: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -93,6 +106,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const applySession = useCallback(
     async (tokens: SessionTokens) => {
+      // A working session supersedes any earlier "your organization is suspended" explanation.
+      clearSuspensionNotice();
       setAccessToken(tokens.accessToken);
       setRefreshToken(tokens.refreshToken);
       await loadUserFromAccessToken(tokens.accessToken);
@@ -123,6 +138,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const handleSelectOrganization = useCallback(
     async (payload: OrganizationSelectionPayload) => {
       await applySession(await authApi.selectOrganization(payload));
+    },
+    [applySession],
+  );
+
+  const handleCompleteSsoLogin = useCallback(
+    async (payload: SsoCallbackPayload, redirectUri: string) => {
+      await applySession(await authApi.completeSsoLogin(payload, redirectUri));
+    },
+    [applySession],
+  );
+
+  const handleChangePassword = useCallback(
+    async (payload: ChangePasswordPayload) => {
+      await applySession(await authApi.changePassword(payload));
     },
     [applySession],
   );
@@ -158,6 +187,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const handleRefreshUser = useCallback(async () => {
+    const accessToken = getAccessToken();
+    if (accessToken) await loadUserFromAccessToken(accessToken);
+  }, [loadUserFromAccessToken]);
+
   const value = useMemo<AuthContextValue>(
     () => ({
       user,
@@ -166,9 +200,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       signup: handleSignup,
       login: handleLogin,
       selectOrganization: handleSelectOrganization,
+      completeSsoLogin: handleCompleteSsoLogin,
+      changePassword: handleChangePassword,
       switchOrganization: handleSwitchOrganization,
       acceptInvitation: handleAcceptInvitation,
       logout: handleLogout,
+      refreshUser: handleRefreshUser,
     }),
     [
       user,
@@ -176,9 +213,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       handleSignup,
       handleLogin,
       handleSelectOrganization,
+      handleCompleteSsoLogin,
+      handleChangePassword,
       handleSwitchOrganization,
       handleAcceptInvitation,
       handleLogout,
+      handleRefreshUser,
     ],
   );
 

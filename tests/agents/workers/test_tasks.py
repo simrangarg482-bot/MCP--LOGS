@@ -37,14 +37,22 @@ async def test_sets_tenant_context_before_detecting_knowledge_gaps(monkeypatch) 
         assert session_arg is session
         assert org_id == organization_id
 
-    async def fake_detect_knowledge_gaps(session_arg, actor):
+    async def fake_detect_knowledge_gaps(session_arg, actor, **kwargs):
         call_order.append("detect_knowledge_gaps")
         assert session_arg is session
         assert actor.organization_id == organization_id
         return []
 
+    async def organization_is_processable(session_arg, org_id) -> None:
+        return None  # the status read needs a database; the real gate is tested in test_organization_suspension_workers*.py
+
     monkeypatch.setattr(tasks_module, "session_scope", fake_session_scope)
     monkeypatch.setattr(tasks_module, "set_tenant_context", fake_set_tenant_context)
+    monkeypatch.setattr(
+        tasks_module.tenancy_service,
+        "assert_organization_processing_allowed",
+        organization_is_processable,
+    )
     monkeypatch.setattr(
         tasks_module.agents_service, "detect_knowledge_gaps", fake_detect_knowledge_gaps
     )

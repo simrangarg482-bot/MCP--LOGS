@@ -98,6 +98,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime, timedelta
+from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
 from langchain_core.callbacks import UsageMetadataCallbackHandler
@@ -574,6 +575,7 @@ async def detect_knowledge_gaps(
     actor: Identity,
     *,
     trigger_source: TriggerSource = "scheduled",
+    boundary_check: Callable[[], Awaitable[None]] | None = None,
 ) -> list[GapReport]:
     """Run the Knowledge Gap Agent for `actor.organization_id`
     (`agents.knowledge_gap.pipeline.detect_knowledge_gaps`) and record one
@@ -625,6 +627,7 @@ async def detect_knowledge_gaps(
             lookback=timedelta(days=settings.knowledge_gap_lookback_days),
             min_cluster_size=settings.knowledge_gap_min_cluster_size,
             similarity_threshold=settings.knowledge_gap_similarity_threshold,
+            boundary_check=boundary_check,
         )
     except Exception as exc:
         await repository.update_agent_execution(
@@ -890,6 +893,25 @@ async def _run_graph_and_record(
         status="succeeded",
         confidence_score=final_state.confidence_score,
         completed_at=datetime.now(UTC),
+        output_summary=_summarize_output(final_state.result),
         **summarize_usage(usage_handler),
     )
-    return final_state.result
+    # Hand the caller the id of the run that produced this response, so
+    # outcome feedback can be attached to exactly this answer. Only success
+    # gets one: the failure fallbacks above deliberately carry none (there is
+    # no answer to rate, only a generic error message).
+    return final_state.result.model_copy(update={"execution_id": execution.id})
+
+
+def _summarize_output(result: AskResponse) -> dict[str, Any]:
+    """Non-sensitive facts about `result`, persisted on the execution
+    (`agent_executions.output_summary`) so outcome feedback can be analysed
+    without keeping a copy of the answer. Ids, counts and enums only -- never
+    the answer text, a citation excerpt, or any retrieved content.
+    """
+    return {
+        "route_taken": result.route_taken,
+        "answer_mode": result.answer_mode,
+        "citation_count": len(result.citations),
+        "cited_document_ids": sorted({str(citation.document_id) for citation in result.citations}),
+    }

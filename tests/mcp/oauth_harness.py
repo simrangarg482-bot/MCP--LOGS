@@ -91,6 +91,13 @@ def store(monkeypatch) -> FakeStore:
             if row.id == refresh_token_id:
                 row.revoked_at = revoked_at
 
+    async def revoke_refresh_token_if_active(session, refresh_token_id, *, revoked_at):
+        for row in fake.refresh_rows.values():
+            if row.id == refresh_token_id and row.revoked_at is None:
+                row.revoked_at = revoked_at
+                return True
+        return False
+
     async def revoke_family(session, family_id, *, revoked_at):
         for row in fake.refresh_rows.values():
             if row.family_id == family_id and row.revoked_at is None:
@@ -100,6 +107,7 @@ def store(monkeypatch) -> FakeStore:
     monkeypatch.setattr(repo, "resolve_refresh_token_organization_id", resolve_org)
     monkeypatch.setattr(repo, "get_refresh_token_by_hash", get_by_hash)
     monkeypatch.setattr(repo, "revoke_refresh_token", revoke_refresh_token)
+    monkeypatch.setattr(repo, "revoke_refresh_token_if_active", revoke_refresh_token_if_active)
     monkeypatch.setattr(repo, "revoke_family", revoke_family)
 
     async def no_tenant_context(session, organization_id):
@@ -107,8 +115,13 @@ def store(monkeypatch) -> FakeStore:
 
     monkeypatch.setattr(auth_service, "set_tenant_context", no_tenant_context)
 
+    async def organization_is_active(session, organization_id):
+        return 0  # epoch; `_assert_organization_not_suspended` needs a database; covered against Postgres
+
+    monkeypatch.setattr(auth_service, "_assert_organization_not_suspended", organization_is_active)
+
     # --- users / identity ----------------------------------------------------
-    async def resolve_identity(session, user_id, organization_id):
+    async def resolve_identity(session, user_id, organization_id, **kwargs):
         return SimpleNamespace(user_id=user_id, organization_id=organization_id)
 
     async def email_state(session, user_id):

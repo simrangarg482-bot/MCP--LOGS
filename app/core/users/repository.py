@@ -15,9 +15,10 @@ from collections.abc import Sequence
 
 from datetime import datetime
 
-from sqlalchemy import func, select, text
+from sqlalchemy import exists, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.users.permissions import ASSIGNABLE_PERMISSIONS
 from app.database.models.core_models import (
     Permission,
     Role,
@@ -25,25 +26,179 @@ from app.database.models.core_models import (
     User,
     UserRole,
 )
-from app.database.models.tenancy_models import Project, ProjectMembership
-
-# Defines the fixed permission list granted to the admin role during signup.
-
-ADMIN_PERMISSION_CODES: Sequence[str] = (
-    "tenancy:manage",
-    "incident:read",
-    "incident:write",
-    "postmortem:write",
-    "postmortem:approve",
-    "knowledge:review",
-    "observability:read",
-    "audit:read",
+from app.database.models.tenancy_models import (
+    Organization,
+    OrganizationMemberState,
+    Project,
+    ProjectMembership,
 )
+
+# The permission list the built-in admin role carries. Derived from the
+# assignable-permission catalog (`core.users.permissions`) so the two can never
+# drift apart; order is not significant.
+ADMIN_PERMISSION_CODES: Sequence[str] = tuple(spec.code for spec in ASSIGNABLE_PERMISSIONS)
 
 
 async def get_by_id(session: AsyncSession, user_id: uuid.UUID) -> User | None:
     """Fetch a single user by primary key, or None if absent."""
     return await session.get(User, user_id)
+
+
+async def get_organization_status(
+    session: AsyncSession, organization_id: uuid.UUID
+) -> tuple[bool, str | None]:
+    """`(exists, status)` of an organization -- one primary-key read of ONE column.
+
+    `organizations` carries no row-level security (it IS the tenant boundary), so this needs no
+    tenant context. Used by `resolve_identity`, which runs on every authenticated request.
+    """
+    result = await session.execute(
+        select(Organization.status).where(Organization.id == organization_id)
+    )
+    row = result.first()
+    return (row is not None, row[0] if row is not None else None)
+
+
+async def get_organization_access_state(
+    session: AsyncSession, organization_id: uuid.UUID
+) -> tuple[bool, str | None, int]:
+    """`(exists, status, session_epoch)` of an organization -- one primary-key read of two columns.
+
+    The session epoch is the organization-level session version: access tokens carry the value they
+    were issued under and are refused once it moved (every suspension and reactivation moves it).
+    Same properties as `get_organization_status`: no tenant context needed, a column query so it is
+    never served from the identity map.
+    """
+    result = await session.execute(
+        select(Organization.status, Organization.session_epoch).where(Organization.id == organization_id)
+    )
+    row = result.first()
+    if row is None:
+        return (False, None, 0)
+    return (True, row[0], int(row[1] or 0))
+
+
+async def get_organization_suspension_notice(
+    session: AsyncSession, organization_id: uuid.UUID
+) -> dict[str, str | None]:
+    """The customer-facing facts shown to someone refused because their organization is suspended:
+    its name and the operator's customer message (NEVER the reason or the private operator note, which
+    live in a table this role cannot read). Only called on the already-refusing path."""
+    row = (
+        await session.execute(
+            select(Organization.name, Organization.status_message_public).where(
+                Organization.id == organization_id
+            )
+        )
+    ).first()
+    if row is None:
+        return {}
+    return {"organization_name": row[0], "customer_message": row[1]}
+
+
+async def get_member_state(
+    session: AsyncSession, organization_id: uuid.UUID, user_id: uuid.UUID
+) -> OrganizationMemberState | None:
+    """The member's state row, or None (= active, never deactivated). `organization_member_states` is
+    FORCE-RLS: the caller must already have set `organization_id` as the tenant context."""
+    return (
+        await session.execute(
+            select(OrganizationMemberState)
+            .where(
+                OrganizationMemberState.organization_id == organization_id,
+                OrganizationMemberState.user_id == user_id,
+            )
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+
+
+async def get_member_access_state(
+    session: AsyncSession, organization_id: uuid.UUID, user_id: uuid.UUID
+) -> tuple[bool, int]:
+    """`(deactivated, member_epoch)` -- ONE primary-key read of two columns, never the identity map (a
+    long-running request must see a deactivation committed a moment ago). No row = `(False, 0)`.
+    Needs the tenant context to be `organization_id` (row-level security)."""
+    row = (
+        await session.execute(
+            select(OrganizationMemberState.status, OrganizationMemberState.member_epoch).where(
+                OrganizationMemberState.organization_id == organization_id,
+                OrganizationMemberState.user_id == user_id,
+            )
+        )
+    ).first()
+    if row is None:
+        return (False, 0)
+    return (row[0] == "deactivated", int(row[1]))
+
+
+async def lock_member_state(
+    session: AsyncSession, organization_id: uuid.UUID, user_id: uuid.UUID
+) -> OrganizationMemberState | None:
+    """The state row, locked FOR UPDATE until the transaction ends (None when there is no row)."""
+    return (
+        await session.execute(
+            select(OrganizationMemberState)
+            .where(
+                OrganizationMemberState.organization_id == organization_id,
+                OrganizationMemberState.user_id == user_id,
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+
+
+async def set_member_state(
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    user_id: uuid.UUID,
+    *,
+    status: str,
+    source: str,
+    reason: str | None,
+) -> OrganizationMemberState:
+    """Create or update the state row. The DATABASE computes `member_epoch`, `deactivated_at` and
+    `updated_at` (trigger `organization_member_state_guard`); nothing here can set them."""
+    existing = await lock_member_state(session, organization_id, user_id)
+    if existing is None:
+        row = OrganizationMemberState(
+            organization_id=organization_id, user_id=user_id, status=status, source=source, reason=reason
+        )
+        session.add(row)
+    else:
+        existing.status = status
+        existing.source = source
+        existing.reason = reason
+        row = existing
+    await session.flush()
+    await session.refresh(row)
+    return row
+
+
+async def list_deactivated_organization_ids(
+    session: AsyncSession, user_id: uuid.UUID
+) -> set[uuid.UUID]:
+    """Organizations where `user_id` is deactivated, through the narrow SECURITY DEFINER lookup (the
+    login / selection / switching paths run before any tenant context exists, so RLS would hide every
+    row). Returns organization ids only."""
+    result = await session.execute(
+        text("SELECT member_deactivated_organization_ids(:user_id)"), {"user_id": user_id}
+    )
+    return {row[0] for row in result.all()}
+
+
+async def get_member_deactivation_sources(
+    session: AsyncSession, organization_id: uuid.UUID
+) -> dict[uuid.UUID, str]:
+    """`{user_id: source}` for every member currently deactivated in this organization (tenant context set)."""
+    rows = await session.execute(
+        select(OrganizationMemberState.user_id, OrganizationMemberState.source).where(
+            OrganizationMemberState.organization_id == organization_id,
+            OrganizationMemberState.status == "deactivated",
+        )
+    )
+    return {r[0]: r[1] for r in rows.all()}
 
 
 async def get_by_email(session: AsyncSession, email: str) -> User | None:
@@ -180,18 +335,33 @@ async def insert_user(
     return row
 
 
-async def get_role_by_name(session: AsyncSession, name: str) -> Role | None:
-    """Fetch a single role by its unique name, or None if absent.
+async def get_role_by_name(
+    session: AsyncSession, name: str, organization_id: uuid.UUID | None = None
+) -> Role | None:
+    """Fetch a role by name (case-insensitive), or None if absent.
 
-    Used by core/tenancy to resolve a role name (e.g. `"engineer"`, as
-    supplied in an `AccessRuleCreate`/`InvitationCreate` request) into the
-    `grants_role_id` actually stored -- a read-only reference-data lookup, not
-    a tenant-scoped query, since the `roles` catalog itself is global
-    (DATABASE_DESIGN.md).
+    With `organization_id`, resolves among the roles that organization can use:
+    its own custom roles first, then the built-ins. Without it, only built-in
+    (platform-wide) roles are considered -- a custom role is never resolved
+    outside the organization that owns it (and row-level security hides it
+    anyway). Used by core/tenancy to turn a role name supplied on an
+    `AccessRuleCreate`/`InvitationCreate` request into the stored
+    `grants_role_id`.
     """
-    stmt = select(Role).where(Role.name == name)
-    result = await session.execute(stmt)
-    return result.scalar_one_or_none()
+    cleaned = name.strip().lower()
+    if organization_id is not None:
+        stmt = (
+            select(Role)
+            .where(
+                func.lower(Role.name) == cleaned,
+                or_(Role.organization_id.is_(None), Role.organization_id == organization_id),
+            )
+            .order_by(Role.organization_id.is_(None))  # the organization's own role first
+            .limit(1)
+        )
+    else:
+        stmt = select(Role).where(func.lower(Role.name) == cleaned, Role.organization_id.is_(None))
+    return (await session.execute(stmt)).scalar_one_or_none()
 
 
 async def get_user_role(
@@ -213,8 +383,10 @@ async def insert_user_role(
     user_id: uuid.UUID,
     organization_id: uuid.UUID,
     role_id: uuid.UUID,
+    granted_via: str = "manual",
 ) -> None:
-    """Assign `role_id` to `user_id` within `organization_id`.
+    """Assign `role_id` to `user_id` within `organization_id`. `granted_via` is the role's provenance:
+    `manual` (the default) or `scim` (created by group synchronization, the only kind it may later remove).
 
     Not idempotent by itself -- inserting a duplicate composite key raises an
     integrity error. Callers are expected to check `get_user_role` first
@@ -222,7 +394,9 @@ async def insert_user_role(
     `resolve_identity`'s `is_active` check) rather than this function
     silently swallowing a conflict.
     """
-    session.add(UserRole(user_id=user_id, organization_id=organization_id, role_id=role_id))
+    session.add(
+        UserRole(user_id=user_id, organization_id=organization_id, role_id=role_id, granted_via=granted_via)
+    )
     await session.flush()
 
 
@@ -289,6 +463,39 @@ async def update_password_hash(session: AsyncSession, *, user_id: uuid.UUID, pas
         raise ValueError(f"update_password_hash: no such user {user_id}")  # unreachable in practice
     row.password_hash = password_hash
     await session.flush()
+
+
+async def replace_password_hash(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    password_hash: str,
+    sessions_valid_after: datetime,
+) -> bool:
+    """Set a NEW credential and the session cut-off in one statement (row-locked
+    by the UPDATE itself). Returns False if no such user."""
+    result = await session.execute(
+        update(User)
+        .where(User.id == user_id)
+        .values(password_hash=password_hash, sessions_valid_after=sessions_valid_after)
+    )
+    await session.flush()
+    return bool(result.rowcount)
+
+
+async def upgrade_password_hash(
+    session: AsyncSession, *, user_id: uuid.UUID, old_hash: str, new_hash: str
+) -> bool:
+    """Swap one hash of the SAME password for a stronger one, only if the stored hash
+    is still `old_hash`. A password reset/change that landed in between wins (this
+    returns False and changes nothing), and the session cut-off is never touched."""
+    result = await session.execute(
+        update(User)
+        .where(User.id == user_id, User.password_hash == old_hash)
+        .values(password_hash=new_hash)
+    )
+    await session.flush()
+    return bool(result.rowcount)
 
 
 async def get_first_organization_id(session: AsyncSession, user_id: uuid.UUID) -> uuid.UUID | None:
@@ -404,6 +611,12 @@ async def list_org_admin_user_ids(
             Permission.code == _ADMIN_PERMISSION_CODE,
             User.is_active.is_(True),
             User.email_verified_at.is_not(None),
+            # A deactivated member cannot exercise admin power here, so they are no safety net either.
+            ~exists().where(
+                OrganizationMemberState.organization_id == UserRole.organization_id,
+                OrganizationMemberState.user_id == UserRole.user_id,
+                OrganizationMemberState.status == "deactivated",
+            ),
         )
         .order_by(UserRole.user_id)
     )
@@ -459,10 +672,23 @@ async def get_or_create_role_by_name(session: AsyncSession, name: str, *, descri
     if existing is not None:
         return existing
 
-    role = Role(name=name, description=description)
+    role = Role(name=name, description=description)  # organization_id NULL: a built-in role
     session.add(role)
     await session.flush()
     return role
+
+
+async def get_missing_permission_codes(
+    session: AsyncSession, role_id: uuid.UUID, codes: Sequence[str]
+) -> list[str]:
+    """Which of `codes` the role does not yet grant (read-only)."""
+    granted = await session.execute(
+        select(Permission.code)
+        .join(RolePermission, RolePermission.permission_id == Permission.id)
+        .where(RolePermission.role_id == role_id)
+    )
+    have = set(granted.scalars().all())
+    return [code for code in codes if code not in have]
 
 
 async def grant_permissions_to_role(

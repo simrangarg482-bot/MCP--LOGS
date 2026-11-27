@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from collections.abc import Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -377,7 +377,11 @@ async def _run_one_detector(
 
 
 async def run_detection(
-    session: AsyncSession, *, organization_id: uuid.UUID, finding_types: list[str] | None = None
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    finding_types: list[str] | None = None,
+    boundary_check: Callable[[], Awaitable[None]] | None = None,
 ) -> list[ReconciliationResult]:
     """Run every (or a named subset of) detector for one organization.
 
@@ -389,10 +393,19 @@ async def run_detection(
     discover_document_incident_edges` already supports.
     """
     types = finding_types if finding_types is not None else sorted(contract.FINDING_TYPES)
-    return [
-        await _run_one_detector(session, organization_id=organization_id, finding_type=finding_type)
-        for finding_type in types
-    ]
+    results: list[ReconciliationResult] = []
+    for finding_type in types:
+        # Batch boundary (one detector = one batch): a scheduled caller passes a check that raises
+        # when the organization has been suspended, so no further detector reads its data. The
+        # exception propagates and the caller's transaction rolls back -- no partial findings.
+        if boundary_check is not None:
+            await boundary_check()
+        results.append(
+            await _run_one_detector(
+                session, organization_id=organization_id, finding_type=finding_type
+            )
+        )
+    return results
 
 
 # --------------------------------------------------------------------------

@@ -20,6 +20,13 @@ from pydantic import ValidationError
 from app.shared.config.settings import Settings
 
 
+@pytest.fixture(autouse=True)
+def _no_dev_sso_switch(monkeypatch):
+    """A developer's own `.env` may turn on `SSO_ALLOW_INSECURE_ISSUERS` for local testing; these
+    tests are about the defaults and the production rules, so pin it off."""
+    monkeypatch.setenv("SSO_ALLOW_INSECURE_ISSUERS", "false")
+
+
 def test_cors_allowed_origins_parses_a_comma_separated_env_var(monkeypatch) -> None:
     monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "http://localhost:5180,http://127.0.0.1:5180")
 
@@ -218,3 +225,26 @@ def test_development_boots_without_email_but_reports_it_unconfigured(monkeypatch
         assert email_delivery_configured() is False
     finally:
         settings_module.get_settings.cache_clear()
+
+
+def test_insecure_sso_issuers_are_refused_in_production() -> None:
+    """`SSO_ALLOW_INSECURE_ISSUERS` exists for a local Keycloak; it must never be
+    honoured by a production process. (The validator is exercised directly so the
+    test does not depend on the unrelated production KMS/email requirements.)"""
+    production = Settings.model_construct(environment="production", sso_allow_insecure_issuers=True)
+    with pytest.raises(ValueError, match="SSO_ALLOW_INSECURE_ISSUERS"):
+        production._refuse_insecure_sso_in_production()
+    # the same switch is fine outside production, and production without it is fine
+    Settings.model_construct(environment="development", sso_allow_insecure_issuers=True)._refuse_insecure_sso_in_production()
+    Settings.model_construct(environment="production", sso_allow_insecure_issuers=False)._refuse_insecure_sso_in_production()
+
+
+def test_sso_defaults_are_conservative(monkeypatch) -> None:
+    # ignore any developer .env: these are the code defaults (the two required values come from env)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-test-secret-test-secret")
+    monkeypatch.setenv("CONNECTOR_SECRET_MASTER_KEY", "00" * 32)
+    monkeypatch.delenv("SSO_ALLOW_INSECURE_ISSUERS", raising=False)
+    settings = Settings(_env_file=None)
+    assert settings.sso_allow_insecure_issuers is False
+    assert settings.sso_transaction_ttl_seconds == 600 and settings.sso_http_timeout_seconds == 10.0

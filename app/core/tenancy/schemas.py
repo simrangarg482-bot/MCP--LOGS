@@ -55,6 +55,8 @@ one will not enqueue ingestion jobs the way the ingestion-backed sources do.
 ConnectorStatus = Literal["connecting", "active", "error", "disconnected"]
 AccessRuleType = Literal["domain", "group"]
 InvitationStatus = Literal["pending", "accepted", "expired", "revoked"]
+#: Delivery state of the invitation email -- `sent` only once the SMTP provider accepted it.
+InvitationEmailStatus = Literal["not_sent", "queued", "sent", "failed", "not_configured"]
 
 
 # --- Organizations -----------------------------------------------------------
@@ -132,6 +134,26 @@ class SSOConfigurationCreate(BaseModel):
     issuer_url: str
     client_id: str
     client_secret_ref: str
+    enabled: bool = True
+
+
+class SSOConfigurationUpdate(BaseModel):
+    """Partial update of an existing SSO configuration (`PATCH`). Every field is
+    optional; omitted fields keep their stored value. `client_secret_ref`
+    carries the NEW plaintext secret and is envelope-encrypted on write; leave
+    it out to keep the stored one. Changing the issuer or provider invalidates
+    every stored identity link (their `sub` values belong to the old identity
+    provider), so it must be confirmed with `confirm_identity_reset`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: SSOProvider | None = None
+    issuer_url: str | None = None
+    client_id: str | None = None
+    client_secret_ref: str | None = None
+    enabled: bool | None = None
+    confirm_identity_reset: bool = False
 
 
 class SSOConfiguration(BaseModel):
@@ -149,6 +171,7 @@ class SSOConfiguration(BaseModel):
     issuer_url: str
     client_id: str
     client_secret_ref: str
+    enabled: bool = True
     created_at: datetime
     updated_at: datetime
 
@@ -325,6 +348,16 @@ class InvitationCreate(BaseModel):
     expires_at: datetime | None = None
 
 
+class InvitationResendRequest(BaseModel):
+    """`email` re-sends the invitation mail; `link` only hands the admin a fresh
+    link to copy. Either way the previous link stops working (the token is
+    rotated)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    method: Literal["email", "link"] = "email"
+
+
 class Invitation(BaseModel):
     """A pending, accepted, expired, or revoked invitation, as returned by
     the read surface.
@@ -350,6 +383,10 @@ class Invitation(BaseModel):
     accepted_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    email_status: InvitationEmailStatus = "not_sent"
+    email_attempts: int = 0
+    email_sent_at: datetime | None = None
+    resend_count: int = 0
     token: str | None = None
 
 
@@ -362,7 +399,8 @@ class InvitationAcceptRequest(BaseModel):
     """
 
     token: str
-    password: str
+    # Policy (12-128 characters) is enforced by `core.auth.passwords`; this bound only stops absurd payloads.
+    password: str = Field(min_length=1, max_length=1024)
     display_name: str | None = None
 
 

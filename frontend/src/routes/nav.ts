@@ -9,8 +9,7 @@ import {
   Lightbulb,
   Search,
   Plug,
-  Bot,
-  Wrench,
+  Activity,
   ScrollText,
   Settings,
 } from "lucide-react";
@@ -35,8 +34,9 @@ export const PRIMARY_NAV: NavItem[] = [
   { label: "Knowledge Gaps", path: "/knowledge-gaps", icon: Lightbulb, permission: "knowledge:review" },
   { label: "Search", path: "/search", icon: Search },
   { label: "Connectors", path: "/connectors", icon: Plug, permission: "tenancy:manage" },
-  { label: "Agents", path: "/agents", icon: Bot, permission: "observability:read" },
-  { label: "MCP Tools", path: "/mcp", icon: Wrench, permission: "observability:read" },
+  // One entry for agents, MCP tools and ingestion (tabs on the page). The old /agents and /mcp URLs
+  // redirect to the matching tab, so existing links and bookmarks keep working.
+  { label: "Observability", path: "/observability", icon: Activity, permission: "observability:read" },
   { label: "Audit Log", path: "/audit", icon: ScrollText, permission: "audit:read" },
   { label: "Overview", path: "/about", icon: Compass },
 ];

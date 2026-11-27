@@ -13,7 +13,6 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
-import { FluidParticlesBackground } from "@/components/ui/fluid-particles-background";
 
 interface Pillar {
   icon: LucideIcon;
@@ -58,14 +57,14 @@ const PILLARS: Pillar[] = [
     icon: Bot,
     title: "AI investigation & agents",
     body: "Kick off an AI investigation on an incident to get verified evidence and unverified hypotheses side by side, and watch how each agent in the pipeline performed.",
-    to: "/agents",
+    to: "/observability?tab=agents",
     cta: "See agent activity",
   },
   {
     icon: Wrench,
     title: "MCP tools",
     body: "The same retrieval and investigation capabilities are exposed as Model Context Protocol tools, so your own assistants can query EKIP directly.",
-    to: "/mcp",
+    to: "/observability?tab=mcp",
     cta: "Explore MCP tools",
   },
 ];
@@ -103,8 +102,6 @@ export function AboutPage() {
 
   return (
     <div className="relative min-h-screen">
-      <FluidParticlesBackground asBackground particleCount={1100} />
-
       <header className="mx-auto flex max-w-5xl items-center justify-between px-5 py-5 sm:px-8">
         <div className="flex items-center gap-2.5">
           <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-gradient-to-br from-accent to-info text-white shadow-glow">

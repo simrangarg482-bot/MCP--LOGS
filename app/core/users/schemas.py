@@ -12,7 +12,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class Permission(BaseModel):
@@ -48,6 +48,10 @@ class UserProfile(BaseModel):
     email: str
     display_name: str
     is_active: bool
+    #: This organization's access state for the member: `active` or `deactivated` (never the global flag).
+    membership_status: str = "active"
+    #: Who deactivated them: `admin` or `scim`. None while active.
+    membership_source: str | None = None
     roles: tuple[str, ...] = ()
     permissions: tuple[str, ...] = ()
     created_at: datetime
@@ -68,7 +72,14 @@ class OrganizationMember(BaseModel):
     email: str
     display_name: str
     is_active: bool
+    #: This organization's access state for the member: `active` or `deactivated` (never the global flag).
+    membership_status: str = "active"
+    #: Who deactivated them: `admin` or `scim`. None while active.
+    membership_source: str | None = None
     roles: tuple[str, ...] = ()
+    #: Ids of the roles the member holds -- what the role editor needs to
+    #: preselect their current roles (order is not significant).
+    role_ids: tuple[uuid.UUID, ...] = ()
     created_at: datetime
 
 
@@ -89,6 +100,7 @@ class UserCredentialLookup(BaseModel):
     email_verified_at: datetime | None = None
     password_hash: str | None
     is_active: bool
+    email: str | None = None
 
 class UserEmailState(BaseModel):
     """Narrow view of a user's email-ownership state for the verification
@@ -101,3 +113,36 @@ class UserEmailState(BaseModel):
     email_verified_at: datetime | None
     is_active: bool
     has_password: bool
+
+
+# --- organization membership state (member offboarding) -------------------------------------------------
+
+
+class MemberStatus(BaseModel):
+    """One member's access state in ONE organization. `status` is `active` when no state row exists.
+    `reason` and `source` are shown only to callers holding `tenancy:manage` (the API requires it)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    user_id: uuid.UUID
+    organization_id: uuid.UUID
+    status: str
+    source: str | None = None
+    reason: str | None = None
+    deactivated_at: datetime | None = None
+    updated_at: datetime | None = None
+    member_epoch: int = 0
+
+
+class MemberStatusChange(BaseModel):
+    """Request body for deactivating or reactivating a member. A reason is mandatory."""
+
+    reason: str = Field(min_length=1, max_length=1000)
+
+    @field_validator("reason")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("A reason is required.")
+        return stripped

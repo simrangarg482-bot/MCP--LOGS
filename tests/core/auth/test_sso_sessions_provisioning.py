@@ -46,6 +46,13 @@ def _patch_user_state(monkeypatch, state) -> None:
     monkeypatch.setattr(auth_service.users_service, "get_user_email_state_by_id", fake_state)
 
 
+def _patch_membership(monkeypatch, member: bool = True) -> None:
+    async def fake_holds(session, *, user_id, organization_id):
+        return member
+
+    monkeypatch.setattr(auth_service.users_service, "holds_any_role_in_organization", fake_holds)
+
+
 def _settings():
     return SimpleNamespace(
         jwt_secret_key=_JWT_SECRET,
@@ -101,6 +108,11 @@ async def test_issue_session_persists_only_refresh_token_hash(monkeypatch) -> No
     monkeypatch.setattr(auth_service, "get_settings", _settings)
     monkeypatch.setattr(auth_service, "set_tenant_context", fake_set_tenant_context)
     monkeypatch.setattr(auth_service.repository, "insert_refresh_token", fake_insert_refresh_token)
+
+    async def organization_active(session, organization_id):
+        return 0  # epoch; the status read needs a database; covered against Postgres
+
+    monkeypatch.setattr(auth_service, "_assert_organization_not_suspended", organization_active)
 
     tokens = await auth_service._issue_session(
         None, user_id=user_id, organization_id=organization_id, family_id=family_id
@@ -192,6 +204,7 @@ async def test_refresh_rotates_token_in_same_family(monkeypatch) -> None:
         call_order.append("revoke_old")
         assert row_id == row.id
         row.revoked_at = revoked_at
+        return True  # the atomic claim succeeded
 
     async def fake_issue(session, *, user_id, organization_id, family_id):
         call_order.append("issue_new")
@@ -205,7 +218,7 @@ async def test_refresh_rotates_token_in_same_family(monkeypatch) -> None:
         auth_service.repository, "resolve_refresh_token_organization_id", fake_resolve_org
     )
     monkeypatch.setattr(auth_service.repository, "get_refresh_token_by_hash", fake_get_row)
-    monkeypatch.setattr(auth_service.repository, "revoke_refresh_token", fake_revoke)
+    monkeypatch.setattr(auth_service.repository, "revoke_refresh_token_if_active", fake_revoke)
     monkeypatch.setattr(auth_service, "_issue_session", fake_issue)
     _patch_user_state(monkeypatch, _email_state())
 
@@ -216,35 +229,189 @@ async def test_refresh_rotates_token_in_same_family(monkeypatch) -> None:
     assert call_order == ["resolve_org", "set_tenant", "read_row", "revoke_old", "issue_new"]
 
 
-@pytest.mark.asyncio
-async def test_refresh_replay_revokes_token_family(monkeypatch) -> None:
-    organization_id = uuid.uuid4()
-    row = _RefreshRow(organization_id=organization_id, revoked_at=datetime.now(UTC))
-    revoked_families: list[uuid.UUID] = []
+class _TxSession:
+    """Records the transaction calls reuse handling must make, in order, into a shared event list."""
+
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+
+    async def rollback(self) -> None:
+        self.events.append("rollback")
+
+    async def commit(self) -> None:
+        self.events.append("commit")
+
+
+def _wire_replay(monkeypatch, *, row, organization_id, events, claim_result=True, suspended=None, deactivated=None):
+    """The minimal fakes `refresh()` needs, all appending to `events`."""
 
     async def fake_resolve_org(session, token_hash):
         return organization_id
 
     async def fake_set_tenant(session, org_id):
         assert org_id == organization_id
+        events.append("set_tenant_context")
 
     async def fake_get_row(session, token_hash):
         return row
 
     async def fake_revoke_family(session, family_id, *, revoked_at):
-        revoked_families.append(family_id)
+        events.append(f"revoke_family:{family_id}")
         return 1
 
+    async def fake_claim(session, row_id, *, revoked_at):
+        events.append("claim")
+        return claim_result
+
+    async def organization_active(session, org_id):
+        events.append("check_suspended")
+        if suspended is not None:
+            raise suspended
+        return 0
+
+    async def member_active(session, org_id, user_id):
+        events.append("check_member")
+        if deactivated is not None:
+            raise deactivated
+        return 0
+
     monkeypatch.setattr(auth_service, "set_tenant_context", fake_set_tenant)
-    monkeypatch.setattr(
-        auth_service.repository, "resolve_refresh_token_organization_id", fake_resolve_org
-    )
+    monkeypatch.setattr(auth_service.repository, "resolve_refresh_token_organization_id", fake_resolve_org)
     monkeypatch.setattr(auth_service.repository, "get_refresh_token_by_hash", fake_get_row)
     monkeypatch.setattr(auth_service.repository, "revoke_family", fake_revoke_family)
+    monkeypatch.setattr(auth_service.repository, "revoke_refresh_token_if_active", fake_claim)
+    monkeypatch.setattr(auth_service, "_assert_organization_not_suspended", organization_active)
+    monkeypatch.setattr(auth_service.membership, "assert_member_active", member_active)
+    _patch_user_state(monkeypatch, _email_state())
 
-    with pytest.raises(PermissionDeniedError, match="session has been revoked"):
-        await auth_service.refresh(None, RefreshRequest(refresh_token="replayed-token"))
-    assert revoked_families == [row.family_id]
+
+_REUSE_SEQUENCE_TAIL = ["rollback", "set_tenant_context"]
+
+
+@pytest.mark.asyncio
+async def test_refresh_replay_revokes_token_family_durably_before_raising(monkeypatch) -> None:
+    organization_id = uuid.uuid4()
+    row = _RefreshRow(organization_id=organization_id, revoked_at=datetime.now(UTC))
+    events: list[str] = []
+    _wire_replay(monkeypatch, row=row, organization_id=organization_id, events=events)
+
+    with pytest.raises(PermissionDeniedError, match="session has been revoked") as info:
+        await auth_service.refresh(_TxSession(events), RefreshRequest(refresh_token="replayed-token"))
+
+    assert info.value.error_code == "auth.refresh_token_reused"
+    # roll back FIRST (nothing unrelated may be committed), restore the tenant context, revoke the family, commit --
+    # and only after the commit is the error raised (the `raises` block above ran after every recorded event).
+    assert events[-4:] == ["rollback", "set_tenant_context", f"revoke_family:{row.family_id}", "commit"]
+    assert events.index("check_suspended") < events.index("check_member") < events.index("rollback")  # real reasons first
+    assert events.count("commit") == 1 and events.count("rollback") == 1
+    assert "claim" not in events  # an already-revoked token never reaches the claim
+
+
+@pytest.mark.asyncio
+async def test_a_lost_atomic_claim_is_treated_as_reuse(monkeypatch) -> None:
+    organization_id = uuid.uuid4()
+    row = _RefreshRow(organization_id=organization_id)  # active when read ...
+    events: list[str] = []
+    _wire_replay(monkeypatch, row=row, organization_id=organization_id, events=events, claim_result=False)  # ... lost the race
+
+    issued: list[object] = []
+
+    async def must_not_issue(*args, **kwargs):
+        issued.append(1)
+
+    monkeypatch.setattr(auth_service, "_issue_session", must_not_issue)
+
+    with pytest.raises(PermissionDeniedError) as info:
+        await auth_service.refresh(_TxSession(events), RefreshRequest(refresh_token="raced-token"))
+
+    assert info.value.error_code == "auth.refresh_token_reused"
+    assert issued == []  # no descendant is minted for the loser
+    assert events.index("claim") < events.index("rollback")
+    assert events[-4:] == ["rollback", "set_tenant_context", f"revoke_family:{row.family_id}", "commit"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blocker", ["suspended", "deactivated"])
+async def test_suspension_and_deactivation_are_reported_as_such_and_revoke_nothing(monkeypatch, blocker) -> None:
+    organization_id = uuid.uuid4()
+    row = _RefreshRow(organization_id=organization_id, revoked_at=datetime.now(UTC))
+    events: list[str] = []
+    error = PermissionDeniedError("blocked", error_code=f"auth.{blocker}")
+    _wire_replay(
+        monkeypatch, row=row, organization_id=organization_id, events=events,
+        suspended=error if blocker == "suspended" else None,
+        deactivated=error if blocker == "deactivated" else None,
+    )
+
+    with pytest.raises(PermissionDeniedError) as info:
+        await auth_service.refresh(_TxSession(events), RefreshRequest(refresh_token="revoked-by-policy"))
+
+    assert info.value.error_code == f"auth.{blocker}"
+    assert not any(e in ("rollback", "commit") or e.startswith("revoke_family") for e in events)
+
+
+@pytest.mark.asyncio
+async def test_a_wrong_oauth_client_does_not_trigger_family_revocation(monkeypatch) -> None:
+    organization_id = uuid.uuid4()
+    row = _RefreshRow(organization_id=organization_id, revoked_at=datetime.now(UTC))
+    row.oauth_client_id = "client-a"
+    events: list[str] = []
+    _wire_replay(monkeypatch, row=row, organization_id=organization_id, events=events)
+
+    with pytest.raises(PermissionDeniedError) as info:
+        await auth_service.refresh(
+            _TxSession(events), RefreshRequest(refresh_token="t"), oauth_client_id="client-b"
+        )
+
+    assert info.value.error_code == "auth.invalid_refresh_token"
+    assert not any(e in ("rollback", "commit") or e.startswith("revoke_family") for e in events)
+
+
+@pytest.mark.asyncio
+async def test_reuse_handling_discards_unrelated_pending_work_and_never_commits_it(monkeypatch) -> None:
+    organization_id = uuid.uuid4()
+    row = _RefreshRow(organization_id=organization_id, revoked_at=datetime.now(UTC))
+    events: list[str] = []
+    _wire_replay(monkeypatch, row=row, organization_id=organization_id, events=events)
+
+    class _Session(_TxSession):
+        def __init__(self, events):
+            super().__init__(events)
+            self.pending = ["unrelated write"]
+            self.committed: list[str] = []
+
+        async def rollback(self) -> None:
+            await super().rollback()
+            self.pending.clear()  # a rollback discards pending work
+
+        async def commit(self) -> None:
+            await super().commit()
+            self.committed.extend(self.pending)
+
+    session = _Session(events)
+    with pytest.raises(PermissionDeniedError):
+        await auth_service.refresh(session, RefreshRequest(refresh_token="replayed-token"))
+
+    assert session.committed == []  # the unrelated write was discarded before the security action committed
+
+
+@pytest.mark.asyncio
+async def test_a_failing_revocation_is_not_reported_as_reuse_and_leaves_the_session_clean(monkeypatch) -> None:
+    organization_id = uuid.uuid4()
+    row = _RefreshRow(organization_id=organization_id, revoked_at=datetime.now(UTC))
+    events: list[str] = []
+    _wire_replay(monkeypatch, row=row, organization_id=organization_id, events=events)
+
+    async def broken_revoke_family(session, family_id, *, revoked_at):
+        raise RuntimeError("database went away")
+
+    monkeypatch.setattr(auth_service.repository, "revoke_family", broken_revoke_family)
+
+    with pytest.raises(RuntimeError, match="database went away"):  # NOT the reuse error: nothing was revoked
+        await auth_service.refresh(_TxSession(events), RefreshRequest(refresh_token="replayed-token"))
+
+    assert "commit" not in events
+    assert events[-1] == "rollback"  # rolled back again, so the session is left in a safe state
 
 
 @pytest.mark.asyncio
@@ -365,6 +532,7 @@ async def test_sso_provisioning_assigns_role_from_tenancy_decision(monkeypatch) 
     monkeypatch.setattr(
         auth_service.repository, "insert_external_identity_mapping", fake_insert_mapping
     )
+    _patch_user_state(monkeypatch, _email_state())
 
     result = await auth_service._resolve_or_provision_user(
         None, organization_id=organization_id, idp_subject=idp_claims.sub, idp_claims=idp_claims
@@ -393,6 +561,7 @@ async def test_sso_provisioning_reuses_existing_external_identity_mapping(monkey
     monkeypatch.setattr(auth_service.repository, "get_external_identity_mapping", fake_get_mapping)
     monkeypatch.setattr(auth_service.tenancy_service, "evaluate_provisioning", should_not_evaluate)
     _patch_user_state(monkeypatch, _email_state())
+    _patch_membership(monkeypatch)
 
     result = await auth_service._resolve_or_provision_user(
         None,

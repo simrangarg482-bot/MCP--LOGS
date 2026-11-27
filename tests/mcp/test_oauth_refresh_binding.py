@@ -75,11 +75,21 @@ def test_rotation_keeps_the_binding(client, store):
 async def test_reuse_detection_still_revokes_the_whole_family(client, store):
     """Replaying an already-rotated token (by its own client) still trips the
     family revocation in `core.auth.service.refresh`."""
+    class _Tx:
+        """Reuse handling owns the request's transaction (rollback, revoke, commit); the in-memory repository
+        needs no real session, only these two calls."""
+
+        async def rollback(self) -> None:
+            return None
+
+        async def commit(self) -> None:
+            return None
+
     owner, tokens = full_flow(client, store)
     request = RefreshRequest(refresh_token=tokens["refresh_token"])
     rotated = await auth_service.refresh(None, request, oauth_client_id=owner["client_id"])
     with pytest.raises(PermissionDeniedError) as excinfo:
-        await auth_service.refresh(None, request, oauth_client_id=owner["client_id"])
+        await auth_service.refresh(_Tx(), request, oauth_client_id=owner["client_id"])
     assert excinfo.value.error_code == "auth.refresh_token_reused"
     assert _row_for(store, rotated.refresh_token).revoked_at is not None
 

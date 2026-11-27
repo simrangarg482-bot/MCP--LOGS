@@ -15,9 +15,12 @@ import uuid
 import structlog
 from arq.worker import Retry
 
-from app.core.exceptions import EKIPError
+from app.core.exceptions import EKIPError, OrganizationSuspendedError
 from app.database.session import session_scope
+from app.core.retention import service as retention_service
+from app.core.storage import service as storage_service
 from app.ingestion import repository, service
+from app.ingestion import retention as document_retention
 from app.shared.backoff import full_jitter_backoff_seconds
 from app.shared.config.logging import get_logger
 from app.shared.config.settings import get_settings
@@ -143,11 +146,24 @@ async def run_ingestion_job_task(ctx: dict, connector_config_id: str) -> None:
                     uuid.UUID(connector_config_id),
                     **rate_limit_kwargs,
                 )
-                if job.status == "failed" and attempt >= MAX_JOB_TRIES:
+                if (
+                    job.status == "failed"
+                    and job.failed_stage != service.ORGANIZATION_SUSPENDED_STAGE
+                    and attempt >= MAX_JOB_TRIES
+                ):
                     job = await service.dead_letter_ingestion_job(
                         session, job.id, job.organization_id
                     )
         except EKIPError as exc:
+            if isinstance(exc, OrganizationSuspendedError):
+                # Not a failure and not worth a retry: the organization was suspended after this
+                # job was queued. Nothing was read, decrypted or fetched for it.
+                logger.info(
+                    "ingestion_job_task_skipped_organization_suspended",
+                    connector_config_id=connector_config_id,
+                    attempt=attempt,
+                )
+                return
             if exc.error_code == "connector_config.disconnected":
                 # Deliberately NOT a `_schedule_retry` case: this is not a
                 # transient failure to back off from, it's the user having
@@ -176,6 +192,16 @@ async def run_ingestion_job_task(ctx: dict, connector_config_id: str) -> None:
             _schedule_retry(connector_config_id, attempt, error=str(exc), cause=exc)
             return
 
+        if job.status == "failed" and job.failed_stage == service.ORGANIZATION_SUSPENDED_STAGE:
+            # Stopped at a page boundary because the organization was suspended mid-run: a clear
+            # terminal outcome. Never retried and never dead-lettered; the cursor is preserved.
+            logger.info(
+                "ingestion_job_task_stopped_organization_suspended",
+                job_id=str(job.id),
+                connector_config_id=connector_config_id,
+                attempt=attempt,
+            )
+            return
         if job.status == "dead_lettered":
             logger.error(
                 "ingestion_job_dead_lettered",
@@ -249,7 +275,11 @@ async def scheduled_reconciliation(ctx: dict) -> None:
     organization independently, inside `_execute_ingestion_job`.
     """
     async with session_scope() as session:
-        connector_config_ids = await repository.list_active_connector_config_ids(session)
+        # Suspended organizations' connectors are dropped HERE, before anything is enqueued (the
+        # worker re-checks at start too). One suspended organization changes nothing for the rest.
+        connector_config_ids, skipped_suspended = await service.list_reconciliation_connector_config_ids(
+            session
+        )
 
     redis = ctx["redis"]
     for connector_config_id in connector_config_ids:
@@ -258,4 +288,69 @@ async def scheduled_reconciliation(ctx: dict) -> None:
     logger.info(
         "ingestion_reconciliation_scheduled",
         connector_config_count=len(connector_config_ids),
+        skipped_suspended_organizations=skipped_suspended,
     )
+
+
+async def cleanup_connector_documents_task(ctx: dict, organization_id: str, connector_config_id: str) -> dict:
+    """Remove a DISCONNECTED connector's documents and chunks, in batches, off the request path.
+
+    Enqueued by `DELETE /tenancy/connectors/{id}` after the disconnect is committed. Idempotent and retryable
+    (a transient failure is retried with backoff; if every attempt fails the daily maintenance job's connector
+    sweep finishes it). A connector that is not disconnected, or not this organization's, is a no-op.
+    """
+    settings = get_settings()
+    attempt = int(ctx.get("job_try", 1))
+    try:
+        outcome = await document_retention.cleanup_connector_documents(
+            session_scope,
+            uuid.UUID(organization_id),
+            uuid.UUID(connector_config_id),
+            batch_size=settings.retention_batch_size,
+            pause_seconds=settings.retention_batch_pause_seconds,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "connector_cleanup_task_failed", connector_config_id=connector_config_id, attempt=attempt
+        )
+        if attempt < MAX_JOB_TRIES:
+            raise Retry(defer=min(_MAX_BACKOFF_SECONDS, 30 * 2**attempt)) from exc
+        return {"status": "failed", "retry": "daily_sweep"}
+    if outcome is None:
+        return {"status": "skipped"}
+    return {"status": "cleaned", "documents_deleted": outcome[0], "chunks_deleted": outcome[1]}
+
+
+async def scheduled_maintenance(ctx: dict) -> dict:
+    """Daily maintenance: retention of temporary records, then document/chunk cleanup. Each step is isolated:
+    a failure in one is logged and never prevents the next. `RETENTION_ENABLED=false` switches it all off and
+    `RETENTION_DRY_RUN=true` only counts. The last step records a storage snapshot (`core.storage`)."""
+    settings = get_settings()
+    if not settings.retention_enabled:
+        logger.info("maintenance_skipped", reason="retention_disabled")
+        return {"status": "disabled"}
+    summary: dict[str, object] = {"dry_run": settings.retention_dry_run}
+    try:
+        report = await retention_service.run_retention(session_scope, settings=settings)
+        summary["retention_deleted"] = report.total_deleted
+        summary["retention_errors"] = len(report.errors)
+    except Exception:  # noqa: BLE001
+        logger.exception("maintenance_step_failed", step="retention")
+        summary["retention_error"] = True
+    try:
+        documents = await document_retention.run_document_cleanup(session_scope, settings=settings)
+        summary["document_chunks_purged"] = sum(documents.chunks_purged.values())
+        summary["versions_tombstoned"] = documents.versions_tombstoned
+        summary["document_errors"] = len(documents.errors)
+    except Exception:  # noqa: BLE001
+        logger.exception("maintenance_step_failed", step="documents")
+        summary["documents_error"] = True
+    try:
+        snapshot = await storage_service.take_snapshot(session_scope, settings=settings)
+        summary["database_bytes"] = snapshot.database_bytes
+        summary["storage_warning"] = snapshot.warning
+    except Exception:  # noqa: BLE001
+        logger.exception("maintenance_step_failed", step="storage_snapshot")
+        summary["storage_error"] = True
+    logger.info("maintenance_completed", **summary)
+    return summary

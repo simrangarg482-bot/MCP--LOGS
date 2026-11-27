@@ -226,6 +226,7 @@ async def test_alembic_check_reports_zero_model_drift(populated):
         memory_models,
         pattern_models,
         retrieval_models,
+        storage_models,
         tenancy_models,
     )
 

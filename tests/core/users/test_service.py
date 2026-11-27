@@ -51,10 +51,11 @@ def _patch_resolve_identity_dependencies(
     permission_codes: set[str] | None = None,
     project_permission_map: dict[uuid.UUID, frozenset[str]] | None = None,
     call_order: list[str] | None = None,
+    organization_status: str = "active",
 ) -> None:
     """Shared plumbing for every test below that calls `resolve_identity` --
-    patches all four of its dependencies (`set_tenant_context`, and the
-    three `repository` lookups) at once, so adding `get_project_permission_map`
+    patches all five of its dependencies (`set_tenant_context`, and the
+    four `repository` lookups) at once, so adding `get_project_permission_map`
     (the newest of the four) doesn't require repeating this every time.
     """
     order = call_order if call_order is not None else []
@@ -67,6 +68,11 @@ def _patch_resolve_identity_dependencies(
         order.append("get_by_id")
         assert user_id_arg == user_id
         return user_row
+
+    async def fake_get_organization_status(session, org_id):
+        order.append("get_organization_status")
+        assert org_id == organization_id
+        return True, organization_status, 0
 
     async def fake_get_role_names(session, user_id_arg, org_id):
         order.append("get_role_names")
@@ -82,6 +88,9 @@ def _patch_resolve_identity_dependencies(
 
     monkeypatch.setattr(users_service, "set_tenant_context", fake_set_tenant_context)
     monkeypatch.setattr(users_service.repository, "get_by_id", fake_get_by_id)
+    monkeypatch.setattr(
+        users_service.repository, "get_organization_access_state", fake_get_organization_status
+    )
     monkeypatch.setattr(users_service.repository, "get_role_names", fake_get_role_names)
     monkeypatch.setattr(users_service.repository, "get_permission_codes", fake_get_permission_codes)
     monkeypatch.setattr(
@@ -273,13 +282,26 @@ async def test_list_organization_members_maps_rows_to_schema(monkeypatch) -> Non
         assert org_id == organization_id
         return [(row, ["member", "incident_commander"])]
 
+    role_id = uuid.uuid4()
+
+    async def fake_get_member_role_ids(session, org_id):
+        assert org_id == organization_id
+        return {row.id: (role_id,)}
+
     monkeypatch.setattr(
         users_service.repository, "list_organization_members", fake_list_organization_members
     )
+    monkeypatch.setattr(users_service.role_repository, "get_member_role_ids", fake_get_member_role_ids)
+
+    async def fake_deactivation_sources(session, org_id):
+        return {}
+
+    monkeypatch.setattr(users_service.repository, "get_member_deactivation_sources", fake_deactivation_sources)
 
     result = await users_service.list_organization_members(None, actor, organization_id)
 
     assert len(result) == 1
+    assert result[0].role_ids == (role_id,)  # ids for the role editor
     assert result[0].id == row.id
     assert result[0].email == "a@example.com"
     assert result[0].roles == ("member", "incident_commander")

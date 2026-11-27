@@ -23,11 +23,11 @@ import uuid
 from collections.abc import Sequence
 from datetime import datetime
 
-from sqlalchemy import select, text, update
+from sqlalchemy import delete, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database.models.auth_models import EmailVerification, RefreshToken
+from app.database.models.auth_models import EmailVerification, PasswordReset, RefreshToken
 from app.database.models.tenancy_models import ExternalIdentityMapping
 
 # --- Refresh tokens ----------------------------------------------------------
@@ -131,6 +131,30 @@ async def revoke_refresh_token(
     await session.flush()
     await session.refresh(row)
     return row
+
+
+async def revoke_refresh_token_if_active(
+    session: AsyncSession, refresh_token_id: uuid.UUID, *, revoked_at: datetime
+) -> bool:
+    """Atomically claim ONE refresh token for rotation: revoke it only if it is still active.
+
+    A single conditional `UPDATE ... WHERE id = :id AND revoked_at IS NULL RETURNING id` -- never a
+    read followed by a write. Under READ COMMITTED a concurrent request that already claimed the same
+    token holds its row lock, so this statement waits for that transaction and then re-evaluates the
+    predicate: it matches nothing and returns `False`. Of any number of simultaneous presentations of
+    one token exactly one gets `True`; every other one learns it lost the race, which is reuse.
+
+    Returns `True` iff this call revoked the row. Runs under the caller's tenant context (RLS applies
+    to the UPDATE like to any other statement on `refresh_tokens`).
+    """
+    stmt = (
+        update(RefreshToken)
+        .where(RefreshToken.id == refresh_token_id, RefreshToken.revoked_at.is_(None))
+        .values(revoked_at=revoked_at)
+        .returning(RefreshToken.id)
+    )
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none() is not None
 
 
 async def revoke_family(
@@ -353,3 +377,128 @@ async def resolve_invitation_organization_id(
         {"invitation_id": str(invitation_id)},
     )
     return result.scalar_one_or_none()
+
+
+async def delete_external_identity_mapping(session: AsyncSession, mapping_id: uuid.UUID) -> None:
+    """Remove one identity link (a stale one whose user is no longer a member)."""
+    await session.execute(
+        delete(ExternalIdentityMapping).where(ExternalIdentityMapping.id == mapping_id)
+    )
+    await session.flush()
+
+
+# --- password reset links -----------------------------------------------------------
+
+
+async def get_open_reset_for_update(
+    session: AsyncSession, *, user_id: uuid.UUID
+) -> PasswordReset | None:
+    """The single not-yet-consumed reset link of `user_id`, row-locked so concurrent
+    "forgot password" requests serialise on the cooldown / daily-cap bookkeeping."""
+    stmt = (
+        select(PasswordReset)
+        .where(PasswordReset.user_id == user_id, PasswordReset.consumed_at.is_(None))
+        .with_for_update()
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def insert_open_reset_if_absent(session: AsyncSession, *, values: dict) -> uuid.UUID | None:
+    """INSERT ... ON CONFLICT DO NOTHING against the one-open-link-per-user index.
+    Returns the new id, or None when a concurrent request created it first."""
+    stmt = (
+        pg_insert(PasswordReset)
+        .values(**values)
+        .on_conflict_do_nothing(index_elements=["user_id"], index_where=text("consumed_at IS NULL"))
+        .returning(PasswordReset.id)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def consume_reset_by_hash(
+    session: AsyncSession, *, token_hash: str, now: datetime
+) -> PasswordReset | None:
+    """THE single-use gate: one statement marks the matching, unconsumed, unexpired
+    link consumed and returns it. Two concurrent requests with the same token are
+    serialised by the row lock; the loser re-evaluates the WHERE against the committed
+    row and matches nothing. Runs in the same transaction as the password change, so a
+    failure after it rolls the consumption back with everything else."""
+    stmt = (
+        update(PasswordReset)
+        .where(
+            PasswordReset.token_hash == token_hash,
+            PasswordReset.consumed_at.is_(None),
+            PasswordReset.expires_at > now,
+        )
+        .values(consumed_at=now)
+        .returning(PasswordReset)
+        .execution_options(populate_existing=True)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def get_reset_by_hash(session: AsyncSession, token_hash: str) -> PasswordReset | None:
+    """Read-only lookup used only to EXPLAIN a failed consume to the token's holder."""
+    stmt = select(PasswordReset).where(PasswordReset.token_hash == token_hash)
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def consume_open_resets_for_user(
+    session: AsyncSession, *, user_id: uuid.UUID, now: datetime
+) -> int:
+    """Kill every outstanding link of `user_id` (after a password change)."""
+    result = await session.execute(
+        update(PasswordReset)
+        .where(PasswordReset.user_id == user_id, PasswordReset.consumed_at.is_(None))
+        .values(consumed_at=now)
+    )
+    return result.rowcount or 0
+
+
+async def delete_stale_resets(
+    session: AsyncSession, *, expired_before: datetime, consumed_before: datetime
+) -> int:
+    """Housekeeping for expired / consumed links."""
+    from sqlalchemy import delete, or_
+
+    result = await session.execute(
+        delete(PasswordReset).where(
+            or_(
+                PasswordReset.expires_at < expired_before,
+                PasswordReset.consumed_at < consumed_before,
+            )
+        )
+    )
+    return result.rowcount or 0
+
+
+async def revoke_all_for_organization(
+    session: AsyncSession, organization_id: uuid.UUID, *, revoked_at: datetime
+) -> int:
+    """Revoke every not-yet-revoked refresh token of `organization_id` (every user, every MCP
+    client) in one statement. Must run under that organization's tenant context -- the RLS
+    policy then confines the UPDATE to its own rows regardless of the filter."""
+    stmt = (
+        update(RefreshToken)
+        .where(
+            RefreshToken.organization_id == organization_id,
+            RefreshToken.revoked_at.is_(None),
+        )
+        .values(revoked_at=revoked_at)
+    )
+    result = await session.execute(stmt)
+    return result.rowcount or 0
+
+
+async def revoke_all_refresh_tokens_everywhere(
+    session: AsyncSession, *, user_id: uuid.UUID, revoked_at: datetime
+) -> int:
+    """Revoke every still-valid refresh token of `user_id` in EVERY organization (and
+    every MCP OAuth client) through the narrow `revoke_user_refresh_tokens` SECURITY
+    DEFINER function -- `refresh_tokens` is FORCE row-level-security, so no tenant-scoped
+    statement can reach other organizations' rows. Returns the number revoked."""
+    result = await session.execute(
+        text("SELECT revoke_user_refresh_tokens(:user_id, :revoked_at)"),
+        {"user_id": user_id, "revoked_at": revoked_at},
+    )
+    return int(result.scalar_one() or 0)

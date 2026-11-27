@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { Topbar } from "@/components/layout/Topbar";
-import { FluidParticlesBackground } from "@/components/ui/fluid-particles-background";
 import { useFocusTrap } from "@/hooks/useFocusTrap";
 
 export function AppLayout() {
@@ -31,7 +30,6 @@ export function AppLayout() {
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-transparent">
-      <FluidParticlesBackground asBackground particleCount={900} />
       <a
         href="#main-content"
         className="fixed left-4 top-3 z-[70] -translate-y-20 rounded-md bg-accent px-3 py-2 text-sm font-medium text-white shadow-glow transition-transform focus:translate-y-0"

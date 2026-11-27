@@ -38,6 +38,7 @@ from app.database.models import tenancy_models
 from app.database.models import mcp_models  
 from app.database.models import memory_models  
 from app.database.models import graph_models  
+from app.database.models import storage_models  # noqa: F401
 from app.database.models import pattern_models 
 
 

@@ -119,9 +119,13 @@ async def count_versions_to_mark(session: AsyncSession, organization_id: uuid.UU
     return int(result.scalar_one())
 
 
-def _purge_predicate(include_soft_deleted: bool) -> str:
+def _purge_predicate(include_soft_deleted: bool, soft_deleted_before: object | None = None) -> str:
+    """Which documents' chunks are dead. `soft_deleted_before` (a timestamp bound as `:sd_before`) purges the
+    chunks of documents soft-deleted BEFORE that moment only -- the grace period used by the scheduled job."""
     if include_soft_deleted:
         return "(d.superseded_at IS NOT NULL OR d.deleted_at IS NOT NULL)"
+    if soft_deleted_before is not None:
+        return "(d.superseded_at IS NOT NULL OR (d.deleted_at IS NOT NULL AND d.deleted_at < :sd_before))"
     return "d.superseded_at IS NOT NULL"
 
 
@@ -131,17 +135,21 @@ async def count_chunks_to_purge(
     table: str,
     *,
     include_soft_deleted: bool,
+    soft_deleted_before: object | None = None,
 ) -> int:
     assert table in CHUNK_TABLES
+    params: dict[str, object] = {"org": organization_id}
+    if soft_deleted_before is not None:
+        params["sd_before"] = soft_deleted_before
     result = await session.execute(
         text(
             f"""
             SELECT count(*) FROM {table} c JOIN documents d ON d.id = c.document_id
             WHERE d.organization_id = :org AND c.organization_id = :org
-              AND {_purge_predicate(include_soft_deleted)}
+              AND {_purge_predicate(include_soft_deleted, soft_deleted_before)}
             """
         ),
-        {"org": organization_id},
+        params,
     )
     return int(result.scalar_one())
 
@@ -217,22 +225,26 @@ async def purge_chunk_batch(
     *,
     batch_size: int,
     include_soft_deleted: bool,
+    soft_deleted_before: object | None = None,
 ) -> int:
     """Delete up to `batch_size` chunk rows of superseded documents from one
     chunk table; returns how many were deleted (0 = nothing left)."""
     assert table in CHUNK_TABLES
+    params: dict[str, object] = {"org": organization_id, "limit": batch_size}
+    if soft_deleted_before is not None:
+        params["sd_before"] = soft_deleted_before
     result = await session.execute(
         text(
             f"""
             DELETE FROM {table} WHERE id IN (
                 SELECT c.id FROM {table} c JOIN documents d ON d.id = c.document_id
                 WHERE d.organization_id = :org AND c.organization_id = :org
-                  AND {_purge_predicate(include_soft_deleted)}
+                  AND {_purge_predicate(include_soft_deleted, soft_deleted_before)}
                 LIMIT :limit
             )
             """
         ),
-        {"org": organization_id, "limit": batch_size},
+        params,
     )
     return int(result.rowcount or 0)
 
@@ -268,6 +280,7 @@ async def run_backfill(
     batch_size: int = 500,
     sleep_seconds: float = 0.2,
     include_soft_deleted: bool = False,
+    soft_deleted_before: object | None = None,
     log: Callable[[str], None] = print,
 ) -> BackfillReport:
     """Report (always) and, when `apply=True`, perform the backfill for the
@@ -292,7 +305,8 @@ async def run_backfill(
             org.versions_to_mark = await count_versions_to_mark(session, organization_id)
             for table in CHUNK_TABLES:
                 org.chunks_to_purge[table] = await count_chunks_to_purge(
-                    session, organization_id, table, include_soft_deleted=include_soft_deleted
+                    session, organization_id, table, include_soft_deleted=include_soft_deleted,
+                    soft_deleted_before=soft_deleted_before,
                 )
         log(
             f"[{organization_id}] backlog: {org.versions_to_mark} version(s) to mark, "
@@ -331,6 +345,7 @@ async def run_backfill(
                             table,
                             batch_size=batch_size,
                             include_soft_deleted=include_soft_deleted,
+                            soft_deleted_before=soft_deleted_before,
                         )
                     if deleted == 0:
                         break

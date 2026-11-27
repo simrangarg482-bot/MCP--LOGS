@@ -128,6 +128,8 @@ class Document(Base):
     # connector-ingested documents are ever superseded -- manual documents
     # bump `version` in place (`core.knowledge.repository`).
     superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: Set when the version-retention policy removed this old version's metadata. The row stays (citations).
+    tombstoned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

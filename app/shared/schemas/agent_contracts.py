@@ -162,6 +162,14 @@ class AskResponse(BaseModel):
     answer_mode: Literal["answered", "no_answer"] | None = None
     citations: list[Citation] = Field(default_factory=list)
     investigation: InvestigationResult | None = None
+    # The `agent_executions.id` of the run that produced this response -- the
+    # handle a client uses to attach outcome feedback to exactly this answer
+    # (`PUT /ask/executions/{execution_id}/feedback`). `None` when no
+    # feedback-eligible execution exists: the infrastructure-failure fallback,
+    # results built outside the graph runner (evaluation fixtures, tests), and
+    # responses from before this field existed. Additive and optional, so
+    # existing clients simply ignore it.
+    execution_id: uuid.UUID | None = None
 
 
 class GapReport(BaseModel):

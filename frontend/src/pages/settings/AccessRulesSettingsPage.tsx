@@ -10,6 +10,8 @@ import { Select } from "@/components/ui/Select";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { DataTable, type DataTableColumn } from "@/components/data/DataTable";
 import { createAccessRule, deactivateAccessRule, listAccessRules } from "@/api/tenancy";
+import { listRoles } from "@/api/roles";
+import { canGrantRole, roleErrorMessage } from "@/utils/roles";
 import type { AccessRule, AccessRuleType } from "@/types/tenancy";
 import type { ApiError } from "@/types/common";
 import { useTenant } from "@/context/TenantContext";
@@ -29,6 +31,14 @@ function CreateAccessRuleModal({ open, onClose }: { open: boolean; onClose: () =
   const [ruleType, setRuleType] = useState<AccessRuleType>("domain");
   const [value, setValue] = useState("");
   const [grantsRole, setGrantsRole] = useState("");
+  const { user } = useAuth();
+  const myPermissions = user?.permissions ?? [];
+  const rolesQuery = useQuery({
+    queryKey: ["roles", organization?.id],
+    queryFn: () => listRoles(organization!.id),
+    enabled: Boolean(organization) && open,
+  });
+  const roles = rolesQuery.data ?? [];
 
   const createMutation = useMutation({
     mutationFn: () => {
@@ -46,7 +56,7 @@ function CreateAccessRuleModal({ open, onClose }: { open: boolean; onClose: () =
       toast({
         variant: "error",
         title: "Failed to create access rule",
-        description: error.errorCode === "role.not_found" ? `No role named "${grantsRole}" exists.` : error.message,
+        description: error.errorCode === "role.not_found" ? `No role named "${grantsRole}" exists.` : roleErrorMessage(error),
       });
     },
   });
@@ -86,14 +96,26 @@ function CreateAccessRuleModal({ open, onClose }: { open: boolean; onClose: () =
         </label>
         <label className="flex flex-col gap-1 text-xs font-medium text-ink-muted">
           Grants role
-          <Input
+          <Select
+            aria-label="Grants role"
             required
-            placeholder="e.g. engineer"
             value={grantsRole}
+            disabled={rolesQuery.isLoading || roles.length === 0}
             onChange={(event) => setGrantsRole(event.target.value)}
-          />
+          >
+            <option value="" disabled>
+              Select a role
+            </option>
+            {roles.map((role) => (
+              <option key={role.id} value={role.name} disabled={!canGrantRole(role, myPermissions)}>
+                {role.name}
+                {role.isBuiltin ? " (built-in)" : ""}
+                {canGrantRole(role, myPermissions) ? "" : " - needs permissions you don't have"}
+              </option>
+            ))}
+          </Select>
           <span className="text-xs font-normal text-ink-subtle">
-            Exact role name as configured for your organization. There is no role catalog to pick from here.
+            Anyone matching this rule receives exactly this role's permissions. Manage roles under Settings, Roles &amp; Permissions.
           </span>
         </label>
         <div className="mt-2 flex justify-end gap-2">
@@ -133,6 +155,13 @@ export function AccessRulesSettingsPage() {
     enabled: Boolean(organization) && canManage,
   });
 
+  const pageRolesQuery = useQuery({
+    queryKey: ["roles", organization?.id],
+    queryFn: () => listRoles(organization!.id),
+    enabled: Boolean(organization) && canManage,
+  });
+  const roleNameById = new Map((pageRolesQuery.data ?? []).map((role) => [role.id, role.name]));
+
   const deactivateMutation = useMutation({
     mutationFn: (ruleId: string) => deactivateAccessRule(ruleId),
     onSuccess: () => {
@@ -160,13 +189,16 @@ export function AccessRulesSettingsPage() {
     {
       key: "grantsRoleId",
       header: "Grants role",
-      render: (row) => (
-        // The backend has no "list roles" endpoint to resolve this id to a
-        // display name -- shown as-is rather than inventing a lookup.
-        <span className="font-mono text-xs text-ink-muted" title={row.grantsRoleId}>
-          {row.grantsRoleId}
-        </span>
-      ),
+      render: (row) => {
+        // Resolved through `GET /organizations/{id}/roles`; falls back to the
+        // id if the role list has not loaded.
+        const name = roleNameById.get(row.grantsRoleId);
+        return (
+          <span className={name ? "text-xs text-ink" : "font-mono text-xs text-ink-muted"} title={row.grantsRoleId}>
+            {name ?? row.grantsRoleId}
+          </span>
+        );
+      },
     },
     {
       key: "isActive",

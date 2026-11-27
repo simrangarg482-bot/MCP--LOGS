@@ -32,6 +32,8 @@ from app.agents import service as agents_service
 from app.agents.schemas import AgentExecutionStats
 from app.api.deps import ArqPool, CurrentIdentity, DbSession
 from app.core.observability import service as observability_service
+from app.core.storage import service as storage_service
+from app.core.storage.service import TenantStorage
 from app.core.observability.schemas import McpToolDefinition, McpToolStats
 from app.core.tenancy import service as tenancy_service
 from app.core.tenancy.schemas import IngestionJobStats, IngestionQueueHealth
@@ -48,6 +50,15 @@ async def get_agent_execution_stats(
     since: datetime | None = None,
 ) -> list[AgentExecutionStats]:
     return await agents_service.get_agent_execution_stats(session, actor, since=since)
+
+
+@router.get("/storage", response_model=TenantStorage)
+async def get_storage_usage(actor: CurrentIdentity, session: DbSession) -> TenantStorage:
+    """This organization's storage footprint from the latest daily snapshot (never computed per request).
+    Row counts are exact as of `taken_at`; the byte figure is an ESTIMATE (`is_estimate`, `basis`): PostgreSQL
+    does not attribute table size to tenants. Only the caller's own organization is returned."""
+    require_permission(actor, "observability:read")
+    return await storage_service.get_tenant_storage(session, actor.organization_id)
 
 
 @router.get("/mcp", response_model=list[McpToolStats])

@@ -4,6 +4,8 @@ export interface Organization {
   id: UUID;
   name: string;
   slug: string;
+  /** Read-only. Only a platform operator can change it (there is no tenant API for that). */
+  status?: "onboarding" | "active" | "suspended";
 }
 
 export interface Project {
@@ -21,21 +23,31 @@ export interface OrgUser {
   name: string;
   email: string;
   role: UserRole;
+  /** Every role name the member holds (custom role names are arbitrary). */
+  roles: string[];
+  /** The same roles as ids, for the role editor. */
+  roleIds: UUID[];
   status: "active" | "invited" | "suspended";
+  /** This organization's access state for the member (never the global account flag). */
+  membershipStatus?: "active" | "deactivated";
+  /** Who deactivated them: an administrator or the identity provider (SCIM). */
+  membershipSource?: "admin" | "scim" | null;
   lastActiveAt?: string;
 }
 
-/** `grantsRole` is a platform role *name* (e.g. "admin"), not one of this
- * file's `UserRole` literals -- same constraint as `AccessRuleRequest.
- * grantsRole` below: roles are a seeded catalog with no "list roles"
- * endpoint, so this is free text, not a select. In practice "admin" is the
- * only role any deployment of this codebase actually creates today
- * (`core.users.service.ensure_admin_role`) -- inviting as anything else
- * 422s with `role.not_found` until a real role-management surface exists. */
+/** `grantsRole` is a role *name* (e.g. "engineer") -- one of the roles listed by
+ * `GET /organizations/{id}/roles` (the built-in `admin` or one of this
+ * organization's own roles); the invite form offers them as a dropdown. */
 export interface InvitationRequest {
   email: string;
   grantsRole: string;
 }
+
+/** Delivery of the invitation email (`core.tenancy.schemas.InvitationEmailStatus`).
+ * `sent` means the mail server accepted the message; `queued` means a background
+ * task still owes the send; `not_configured` means the server has no email
+ * provider, so the link must be copied by hand. */
+export type InvitationEmailStatus = "not_sent" | "queued" | "sent" | "failed" | "not_configured";
 
 export interface Invitation {
   id: UUID;
@@ -43,6 +55,10 @@ export interface Invitation {
   email: string;
   status: "pending" | "accepted" | "expired" | "revoked";
   expiresAt: string;
+  emailStatus: InvitationEmailStatus;
+  emailAttempts: number;
+  emailSentAt?: string | null;
+  resendCount: number;
   /** The single-use secret proving control of `email` (`AcceptInvitationPage`
    * needs this, not just `id`) -- present ONLY on the response to the
    * `create_invitation` call that generated it (`core.tenancy.schemas.
@@ -62,11 +78,7 @@ export interface Invitation {
 export type AccessRuleType = "domain" | "group";
 
 /** Mirrors `app.core.tenancy.schemas.AccessRuleCreate`. `grantsRole` is a
- * platform role *name* (e.g. "engineer"), not one of this file's
- * `UserRole` literals -- roles are a seeded, organization-independent
- * catalog with no fixed set the frontend can enumerate; there is no
- * "list roles" endpoint to populate a dropdown from, so this is a free-text
- * field, not a select. */
+ * role *name* from `GET /organizations/{id}/roles`, chosen from a dropdown. */
 export interface AccessRuleRequest {
   ruleType: AccessRuleType;
   value: string;

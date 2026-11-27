@@ -291,6 +291,7 @@ class _FakeOrganizationRow:
     def __init__(self, organization_id: uuid.UUID) -> None:
         self.id = organization_id
         self.slug = "acme"
+        self.status = "active"
 
 
 class _FakeSSOConfigurationRow:
@@ -303,6 +304,7 @@ class _FakeSSOConfigurationRow:
         self.issuer_url = "https://acme.okta.com"
         self.client_id = "client-123"
         self.client_secret_ref = "encrypted-ref"
+        self.enabled = True
         self.created_at = now
         self.updated_at = now
 
@@ -532,6 +534,19 @@ class _FakeOrgRow:
         self.updated_at = now
 
 
+@pytest.fixture(autouse=True)
+def _no_starter_roles(monkeypatch) -> None:
+    """`create_organization` also seeds the starter roles (database work covered
+    by `tests/core/users/test_role_management_postgres.py` and the ordering test in
+    `test_create_organization_tenant_context.py`); these unit tests fake the
+    repository layer only, so stub that one call."""
+
+    async def fake_ensure_default_roles(session, organization_id):
+        return []
+
+    monkeypatch.setattr(tenancy_service.role_service, "ensure_default_roles", fake_ensure_default_roles)
+
+
 @pytest.mark.asyncio
 async def test_create_organization_without_actor_records_no_audit_event(monkeypatch) -> None:
     """Existing callers with no `Identity` available at all
@@ -544,7 +559,7 @@ async def test_create_organization_without_actor_records_no_audit_event(monkeypa
     async def fake_get_organization_by_slug(session, slug):
         return None
 
-    async def fake_insert_organization(session, *, name, slug):
+    async def fake_insert_organization(session, *, name, slug, status="onboarding"):
         return _FakeOrgRow(name=name, slug=slug)
 
     async def fake_insert_project(session, **kwargs):
@@ -584,7 +599,7 @@ async def test_create_organization_with_actor_records_audit_event(monkeypatch) -
     async def fake_get_organization_by_slug(session, slug):
         return None
 
-    async def fake_insert_organization(session, *, name, slug):
+    async def fake_insert_organization(session, *, name, slug, status="onboarding"):
         return _FakeOrgRow(name=name, slug=slug)
 
     async def fake_insert_project(session, **kwargs):
@@ -646,7 +661,7 @@ async def test_create_organization_without_actor_bypasses_permission_check(monke
     async def fake_get_organization_by_slug(session, slug):
         return None
 
-    async def fake_insert_organization(session, *, name, slug):
+    async def fake_insert_organization(session, *, name, slug, status="onboarding"):
         return _FakeOrgRow(name=name, slug=slug)
 
     async def fake_insert_project(session, **kwargs):
@@ -694,7 +709,7 @@ async def test_create_organization_sets_tenant_context_before_default_project(
     async def fake_get_organization_by_slug(session, slug):
         return None
 
-    async def fake_insert_organization(session, *, name, slug):
+    async def fake_insert_organization(session, *, name, slug, status="onboarding"):
         return _FakeOrgRow(name=name, slug=slug)
 
     async def fake_set_tenant_context(session, organization_id):

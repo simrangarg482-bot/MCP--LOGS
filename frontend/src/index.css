@@ -22,6 +22,56 @@
   ::selection {
     background: rgb(91 141 239 / 0.35);
   }
+
+  /* ── Ambient backdrop ─────────────────────────────────────────────────────
+     One static, CSS-only atmosphere for every screen (app shell, auth, About and the
+     platform console). It sits behind all content (z-index -1), takes no
+     pointer events, never animates and costs no JavaScript, so tables, charts,
+     modals and tooltips are unaffected and long sessions stay calm.
+
+       ::before  two soft light pools (brand blue top-left, cyan bottom-right)
+                 plus a gentle edge vignette that focuses the content
+       ::after   a faint engineering grid that fades out away from the top
+
+     Tune the look from the variables below; keep every alpha low so text
+     contrast on the frosted cards is never affected. */
+  :root {
+    --backdrop-glow-accent: 91 141 239;
+    --backdrop-glow-info: 56 189 248;
+    --backdrop-grid: 255 255 255;
+  }
+
+  body::before,
+  body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+  }
+
+  body::before {
+    background:
+      radial-gradient(60rem 40rem at 8% -8%, rgb(var(--backdrop-glow-accent) / 0.14), transparent 70%),
+      radial-gradient(50rem 36rem at 100% 108%, rgb(var(--backdrop-glow-info) / 0.07), transparent 70%),
+      radial-gradient(120% 90% at 50% 40%, transparent 55%, rgb(0 0 0 / 0.38) 100%);
+  }
+
+  body::after {
+    background-image:
+      linear-gradient(to right, rgb(var(--backdrop-grid) / 0.035) 1px, transparent 1px),
+      linear-gradient(to bottom, rgb(var(--backdrop-grid) / 0.035) 1px, transparent 1px);
+    background-size: 56px 56px;
+    -webkit-mask-image: radial-gradient(ellipse 90% 70% at 50% 0%, #000 0%, transparent 75%);
+    mask-image: radial-gradient(ellipse 90% 70% at 50% 0%, #000 0%, transparent 75%);
+  }
+
+  @media (forced-colors: active), print {
+    body::before,
+    body::after {
+      display: none;
+    }
+  }
 }
 
 @layer components {

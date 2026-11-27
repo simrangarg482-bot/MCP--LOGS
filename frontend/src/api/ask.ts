@@ -1,6 +1,15 @@
 import { apiRequest, mockDelay } from "./client";
 import { USE_MOCK_DATA } from "./config";
+import { MOCK_UNRATEABLE_EXECUTION_ID } from "./feedback";
 import type { AskResponse, QuestionHistoryEntry, ScoredChunk } from "@/types/ask";
+
+let mockExecutionCounter = 0;
+
+/** A distinct id per mock run, like the real API: repeated questions are separate executions. */
+function nextMockExecutionId(): string {
+  mockExecutionCounter += 1;
+  return `00000000-0000-0000-0000-${String(mockExecutionCounter).padStart(12, "0")}`;
+}
 
 const MOCK_RESPONSE: AskResponse = {
   confidence: 0.86,
@@ -34,7 +43,8 @@ const MOCK_RESPONSE: AskResponse = {
 
 export async function askQuestion(query: string, incidentId?: string): Promise<AskResponse> {
   if (USE_MOCK_DATA) {
-    return mockDelay(MOCK_RESPONSE, 800);
+    const executionId = /unrateable/i.test(query) ? MOCK_UNRATEABLE_EXECUTION_ID : nextMockExecutionId();
+    return mockDelay({ ...MOCK_RESPONSE, executionId }, 800);
   }
   return apiRequest<AskResponse>("/ask", {
     method: "POST",
@@ -76,7 +86,7 @@ const MOCK_INVESTIGATION_RESPONSE: AskResponse = {
 
 export async function investigateIncident(incidentId: string): Promise<AskResponse> {
   if (USE_MOCK_DATA) {
-    return mockDelay(MOCK_INVESTIGATION_RESPONSE, 800);
+    return mockDelay({ ...MOCK_INVESTIGATION_RESPONSE, executionId: nextMockExecutionId() }, 800);
   }
   return apiRequest<AskResponse>(`/incidents/${incidentId}/investigate`, { method: "POST" });
 }

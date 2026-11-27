@@ -1,6 +1,8 @@
 import type { ApiError } from "@/types/common";
 import { API_BASE_URL } from "./config";
 import { clearSessionAndNotifyExpired, getAccessToken } from "@/context/tokenStore";
+import { setSuspensionNotice } from "@/context/suspensionNotice";
+import { suspensionNoticeFromError } from "@/utils/platform";
 import { keysToCamelCase, keysToSnakeCase } from "./caseConversion";
 
 interface RequestOptions {
@@ -58,8 +60,19 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     // for those or every failed login attempt would look like a forced
     // logout. See tokenStore.clearSessionAndNotifyExpired for the reactive
     // side (AuthContext clears its user state, ProtectedRoute redirects).
-    if (response.status === 401 && token) {
+    // `auth.session_revoked` (403) is the same situation: a password reset/change ended this
+    // session on the server while the page was open. Treat it exactly like an expired session.
+    if (token && (response.status === 401 || error.errorCode === "auth.session_revoked")) {
       clearSessionAndNotifyExpired();
+    }
+
+    // The organization was suspended (or this is a sign-in / refresh into a suspended one). Remember the
+    // customer-facing facts for the /suspended page; and if a session was held, it is dead on the server
+    // too (suspension revokes every session of the organization), so drop it instead of retrying forever.
+    // Other organizations of the same person are untouched: they sign in again from /login.
+    if (error.errorCode === "auth.organization_suspended") {
+      setSuspensionNotice(suspensionNoticeFromError(error));
+      if (token) clearSessionAndNotifyExpired();
     }
 
     throw error;

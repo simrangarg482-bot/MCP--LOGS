@@ -55,4 +55,11 @@ async def resolve_mcp_identity(session: AsyncSession, raw_token: str) -> Identit
             f"Connected token lacks required '{MCP_SCOPE}' scope.",
             error_code="auth.insufficient_scope",
         )
-    return await users_service.resolve_identity(session, claims.user_id, claims.organization_id)
+    return await users_service.resolve_identity(
+        session,
+        claims.user_id,
+        claims.organization_id,
+        token_issued_at=claims.issued_at,
+        token_org_epoch=claims.org_session_epoch,
+        token_member_epoch=claims.member_epoch,
+    )

@@ -1,4 +1,9 @@
-"""Mock-based tests for OIDC discovery, code exchange, and identity claims."""
+"""Mock-based tests for OIDC discovery, code exchange, and identity claims.
+
+SIMULATED provider: the HTTP layer is replaced by `_FakeAsyncClient` and tokens are signed with
+throw-away keys. These prove EKIP's verification logic, not interoperability with a real
+Entra ID / Okta / Auth0 / Google tenant.
+"""
 
 from __future__ import annotations
 
@@ -13,10 +18,11 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from jose import jwt as jose_jwt
 
 from app.core.auth import service as auth_service
-from app.core.exceptions import PermissionDeniedError
+from app.core.exceptions import PermissionDeniedError, ServiceUnavailableError
 from app.core.tenancy.schemas import SSOConfiguration
 
 ISSUER = "https://idp.example.test"
+NONCE = "test-nonce-value"
 TOKEN_ENDPOINT = "https://idp.example.test/token"
 JWKS_URI = "https://idp.example.test/keys"
 
@@ -71,8 +77,13 @@ def _patch_http(monkeypatch, *, get_responses, post_response=None):
 
 
 @pytest.fixture(autouse=True)
-def _clear_discovery_cache():
+def _clear_discovery_cache(monkeypatch):
     auth_service._discovery_cache.clear()
+
+    async def _no_dns(url: str) -> None:  # the fake hosts do not resolve; SSRF has its own tests
+        return None
+
+    monkeypatch.setattr(auth_service, "_assert_outbound_url_safe", _no_dns)
     yield
     auth_service._discovery_cache.clear()
 
@@ -116,6 +127,7 @@ def _valid_claims(**overrides):
     now = datetime.now(UTC)
     claims = {
         "iss": ISSUER,
+        "nonce": NONCE,
         "sub": "provider-user-123",
         "aud": "test-client-id",
         "iat": int(now.timestamp()),
@@ -130,17 +142,18 @@ def _valid_claims(**overrides):
 
 
 async def _exchange_signed_token(
-    monkeypatch, sso_config, *, claims=None, signing_key=None, jwks=None, token_payload=None
+    monkeypatch, sso_config, *, claims=None, signing_key=None, jwks=None, token_payload=None,
+    nonce=NONCE, algorithm="RS256", headers=None,
 ):
     private_key, signing_jwk = signing_key or _new_signing_key()
     id_token = jose_jwt.encode(
         claims if claims is not None else _valid_claims(),
         private_key,
-        algorithm="RS256",
-        headers={"kid": "test-kid"},
+        algorithm=algorithm,
+        headers=headers or {"kid": "test-kid"},
     )
     auth_service._discovery_cache[ISSUER] = (
-        {"token_endpoint": TOKEN_ENDPOINT, "jwks_uri": JWKS_URI},
+        {"issuer": ISSUER, "token_endpoint": TOKEN_ENDPOINT, "jwks_uri": JWKS_URI},
         datetime.now(UTC),
     )
     calls = _patch_http(
@@ -159,13 +172,14 @@ async def _exchange_signed_token(
         code="authorization-code",
         code_verifier="pkce-verifier",
         redirect_uri="https://app.example.test/callback",
+        expected_nonce=nonce,
     )
     return result, calls
 
 
 @pytest.mark.asyncio
 async def test_discovery_fetches_and_caches_document(monkeypatch) -> None:
-    expected = {"authorization_endpoint": "https://idp.example.test/authorize"}
+    expected = {"issuer": ISSUER, "authorization_endpoint": "https://idp.example.test/authorize"}
     calls = _patch_http(
         monkeypatch,
         get_responses={f"{ISSUER}/.well-known/openid-configuration": _FakeResponse(expected)},
@@ -182,9 +196,9 @@ async def test_discovery_fetches_and_caches_document(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_expired_discovery_cache_entry_is_refetched(monkeypatch) -> None:
     discovery_url = f"{ISSUER}/.well-known/openid-configuration"
-    refreshed = {"authorization_endpoint": "https://idp.example.test/new-authorize"}
+    refreshed = {"issuer": ISSUER, "authorization_endpoint": "https://idp.example.test/new-authorize"}
     auth_service._discovery_cache[ISSUER] = (
-        {"authorization_endpoint": "https://idp.example.test/old-authorize"},
+        {"issuer": ISSUER, "authorization_endpoint": "https://idp.example.test/old-authorize"},
         datetime.now(UTC) - auth_service._DISCOVERY_CACHE_TTL - timedelta(seconds=1),
     )
     calls = _patch_http(
@@ -202,8 +216,9 @@ async def test_discovery_http_error_is_not_cached(monkeypatch) -> None:
     discovery_url = f"{ISSUER}/.well-known/openid-configuration"
     calls = _patch_http(monkeypatch, get_responses={discovery_url: _FakeResponse(status_code=503)})
 
-    with pytest.raises(httpx.HTTPStatusError):
+    with pytest.raises(ServiceUnavailableError) as exc_info:
         await auth_service._get_discovery_document(ISSUER)
+    assert exc_info.value.error_code == "auth.idp_unreachable"
     assert ISSUER not in auth_service._discovery_cache
     assert calls[0][1] == discovery_url
 
@@ -218,8 +233,9 @@ async def test_malformed_discovery_json_is_not_cached(monkeypatch) -> None:
         },
     )
 
-    with pytest.raises(json.JSONDecodeError):
+    with pytest.raises(ServiceUnavailableError) as exc_info:
         await auth_service._get_discovery_document(ISSUER)
+    assert exc_info.value.error_code == "auth.idp_unreachable"
     assert ISSUER not in auth_service._discovery_cache
     assert calls[0][0] == "GET"
 
@@ -227,12 +243,13 @@ async def test_malformed_discovery_json_is_not_cached(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_missing_authorization_endpoint_fails_closed(monkeypatch) -> None:
     auth_service._discovery_cache[ISSUER] = (
-        {"token_endpoint": TOKEN_ENDPOINT},
+        {"issuer": ISSUER, "token_endpoint": TOKEN_ENDPOINT},
         datetime.now(UTC),
     )
 
-    with pytest.raises(KeyError, match="authorization_endpoint"):
+    with pytest.raises(ServiceUnavailableError) as exc_info:
         await auth_service._discover_authorization_endpoint(ISSUER)
+    assert exc_info.value.error_code == "auth.idp_unreachable"
 
 
 @pytest.mark.asyncio
@@ -258,19 +275,22 @@ async def test_exchange_verifies_signature_and_extracts_standard_groups(
 @pytest.mark.asyncio
 async def test_exchange_rejects_token_http_error(monkeypatch, sso_config) -> None:
     auth_service._discovery_cache[ISSUER] = (
-        {"token_endpoint": TOKEN_ENDPOINT, "jwks_uri": JWKS_URI},
+        {"issuer": ISSUER, "token_endpoint": TOKEN_ENDPOINT, "jwks_uri": JWKS_URI},
         datetime.now(UTC),
     )
     _patch_http(monkeypatch, get_responses={}, post_response=_FakeResponse(status_code=401))
     monkeypatch.setattr(auth_service, "_resolve_client_secret", _fake_secret)
 
-    with pytest.raises(httpx.HTTPStatusError):
+    with pytest.raises(PermissionDeniedError) as exc_info:
         await auth_service._exchange_code_for_claims(
             sso_config,
             code="code",
             code_verifier="verifier",
             redirect_uri="https://app.example.test/cb",
+            expected_nonce=NONCE,
         )
+    # a 4xx from the token endpoint = the provider refused the code
+    assert exc_info.value.error_code == "auth.idp_exchange_failed"
 
 
 async def _fake_secret(reference: str) -> str:
@@ -281,7 +301,7 @@ async def _fake_secret(reference: str) -> str:
 @pytest.mark.asyncio
 async def test_exchange_rejects_malformed_token_response(monkeypatch, sso_config) -> None:
     auth_service._discovery_cache[ISSUER] = (
-        {"token_endpoint": TOKEN_ENDPOINT, "jwks_uri": JWKS_URI},
+        {"issuer": ISSUER, "token_endpoint": TOKEN_ENDPOINT, "jwks_uri": JWKS_URI},
         datetime.now(UTC),
     )
     _patch_http(
@@ -291,19 +311,20 @@ async def test_exchange_rejects_malformed_token_response(monkeypatch, sso_config
     )
     monkeypatch.setattr(auth_service, "_resolve_client_secret", _fake_secret)
 
-    with pytest.raises(json.JSONDecodeError):
+    with pytest.raises(ServiceUnavailableError):
         await auth_service._exchange_code_for_claims(
             sso_config,
             code="code",
             code_verifier="verifier",
             redirect_uri="https://app.example.test/cb",
+            expected_nonce=NONCE,
         )
 
 
 @pytest.mark.asyncio
 async def test_exchange_rejects_missing_id_token(monkeypatch, sso_config) -> None:
     auth_service._discovery_cache[ISSUER] = (
-        {"token_endpoint": TOKEN_ENDPOINT, "jwks_uri": JWKS_URI},
+        {"issuer": ISSUER, "token_endpoint": TOKEN_ENDPOINT, "jwks_uri": JWKS_URI},
         datetime.now(UTC),
     )
     _patch_http(
@@ -317,13 +338,14 @@ async def test_exchange_rejects_missing_id_token(monkeypatch, sso_config) -> Non
             code="code",
             code_verifier="verifier",
             redirect_uri="https://app.example.test/cb",
+            expected_nonce=NONCE,
         )
 
 
 @pytest.mark.asyncio
 async def test_exchange_rejects_malformed_id_token(monkeypatch, sso_config) -> None:
     auth_service._discovery_cache[ISSUER] = (
-        {"token_endpoint": TOKEN_ENDPOINT, "jwks_uri": JWKS_URI},
+        {"issuer": ISSUER, "token_endpoint": TOKEN_ENDPOINT, "jwks_uri": JWKS_URI},
         datetime.now(UTC),
     )
     _patch_http(
@@ -339,6 +361,7 @@ async def test_exchange_rejects_malformed_id_token(monkeypatch, sso_config) -> N
             code="code",
             code_verifier="verifier",
             redirect_uri="https://app.example.test/cb",
+            expected_nonce=NONCE,
         )
 
 
@@ -347,7 +370,7 @@ async def test_exchange_rejects_unknown_kid(monkeypatch, sso_config) -> None:
     _, signing_jwk = _new_signing_key()
     signing_jwk["kid"] = "different-kid"
     auth_service._discovery_cache[ISSUER] = (
-        {"token_endpoint": TOKEN_ENDPOINT, "jwks_uri": JWKS_URI},
+        {"issuer": ISSUER, "token_endpoint": TOKEN_ENDPOINT, "jwks_uri": JWKS_URI},
         datetime.now(UTC),
     )
     private_key, _ = _new_signing_key()
@@ -367,6 +390,7 @@ async def test_exchange_rejects_unknown_kid(monkeypatch, sso_config) -> None:
             code="code",
             code_verifier="verifier",
             redirect_uri="https://app.example.test/cb",
+            expected_nonce=NONCE,
         )
 
 
@@ -381,7 +405,7 @@ async def test_exchange_rejects_invalid_signature_with_matching_kid(
         _valid_claims(), signing_key, algorithm="RS256", headers={"kid": "test-kid"}
     )
     auth_service._discovery_cache[ISSUER] = (
-        {"token_endpoint": TOKEN_ENDPOINT, "jwks_uri": JWKS_URI},
+        {"issuer": ISSUER, "token_endpoint": TOKEN_ENDPOINT, "jwks_uri": JWKS_URI},
         datetime.now(UTC),
     )
     _patch_http(
@@ -397,6 +421,7 @@ async def test_exchange_rejects_invalid_signature_with_matching_kid(
             code="code",
             code_verifier="verifier",
             redirect_uri="https://app.example.test/cb",
+            expected_nonce=NONCE,
         )
 
 
@@ -426,15 +451,14 @@ async def test_exchange_rejects_missing_email_claim(monkeypatch, sso_config) -> 
 
 
 @pytest.mark.asyncio
-async def test_exchange_currently_accepts_missing_issued_at_claim(monkeypatch, sso_config) -> None:
+async def test_exchange_rejects_missing_issued_at_claim(monkeypatch, sso_config) -> None:
+    """REVERSAL of `..._currently_accepts_missing_issued_at_claim`: OIDC ID tokens
+    require `iat`, and the decoder now enforces it."""
     claims = _valid_claims()
     del claims["iat"]
 
-    result, _ = await _exchange_signed_token(monkeypatch, sso_config, claims=claims)
-
-    # OIDC ID tokens require iat. The current decoder accepts this otherwise
-    # valid token, documenting a claim-validation gap for the audit report.
-    assert result.sub == "provider-user-123"
+    with pytest.raises(PermissionDeniedError, match="signature or claims verification failed"):
+        await _exchange_signed_token(monkeypatch, sso_config, claims=claims)
 
 
 @pytest.mark.asyncio
@@ -578,15 +602,12 @@ async def test_unverified_email_still_fails_before_it_can_reach_provisioning(mon
 
 
 @pytest.mark.asyncio
-async def test_exchange_fails_closed_but_leaks_keyerror_for_missing_subject(
-    monkeypatch, sso_config
-) -> None:
+async def test_exchange_rejects_missing_subject_cleanly(monkeypatch, sso_config) -> None:
+    """Was an unclassified `KeyError` (HTTP 500); now a classified rejection."""
     claims = _valid_claims()
     del claims["sub"]
 
-    # This captures an error-handling defect: the signature and issuer/audience
-    # still verify, but the missing required claim escapes as an unclassified KeyError.
-    with pytest.raises(KeyError, match="sub"):
+    with pytest.raises(PermissionDeniedError, match="signature or claims verification failed"):
         await _exchange_signed_token(monkeypatch, sso_config, claims=claims)
 
 
@@ -597,7 +618,7 @@ async def test_exchange_rejects_malformed_jwks_response(monkeypatch, sso_config)
         _valid_claims(), private_key, algorithm="RS256", headers={"kid": "test-kid"}
     )
     auth_service._discovery_cache[ISSUER] = (
-        {"token_endpoint": TOKEN_ENDPOINT, "jwks_uri": JWKS_URI},
+        {"issuer": ISSUER, "token_endpoint": TOKEN_ENDPOINT, "jwks_uri": JWKS_URI},
         datetime.now(UTC),
     )
     _patch_http(
@@ -607,29 +628,31 @@ async def test_exchange_rejects_malformed_jwks_response(monkeypatch, sso_config)
     )
     monkeypatch.setattr(auth_service, "_resolve_client_secret", _fake_secret)
 
-    with pytest.raises(httpx.HTTPStatusError):
+    with pytest.raises(ServiceUnavailableError):
         await auth_service._exchange_code_for_claims(
             sso_config,
             code="code",
             code_verifier="verifier",
             redirect_uri="https://app.example.test/cb",
+            expected_nonce=NONCE,
         )
 
 
 @pytest.mark.asyncio
 async def test_missing_token_endpoint_fails_closed(monkeypatch, sso_config) -> None:
     auth_service._discovery_cache[ISSUER] = (
-        {"jwks_uri": JWKS_URI},
+        {"issuer": ISSUER, "jwks_uri": JWKS_URI},
         datetime.now(UTC),
     )
     monkeypatch.setattr(auth_service, "_resolve_client_secret", _fake_secret)
 
-    with pytest.raises(KeyError, match="token_endpoint"):
+    with pytest.raises(ServiceUnavailableError):
         await auth_service._exchange_code_for_claims(
             sso_config,
             code="code",
             code_verifier="verifier",
             redirect_uri="https://app.example.test/cb",
+            expected_nonce=NONCE,
         )
 
 

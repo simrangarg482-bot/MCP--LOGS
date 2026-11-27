@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { useTenant } from "@/context/TenantContext";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
+import { Badge } from "@/components/ui/Badge";
 import { Input } from "@/components/ui/Input";
 
 // There is no `update_organization` backend capability -- `core.tenancy.
@@ -23,6 +24,18 @@ export function OrganizationSettingsPage() {
         <Field label="Slug" id="org-slug">
           <Input id="org-slug" defaultValue={organization?.slug} disabled />
         </Field>
+        {organization?.status && (
+          <Field label="Status" id="org-status">
+            <div id="org-status" data-testid="organization-status">
+              <Badge tone={organization.status === "active" ? "success" : "neutral"}>
+                {organization.status === "active" ? "Active" : "Onboarding"}
+              </Badge>
+            </div>
+            <p className="mt-1 text-xs text-ink-subtle">
+              Read-only. An organization&apos;s status is managed by the EKIP platform team.
+            </p>
+          </Field>
+        )}
         <Field label="Organization ID" id="org-id">
           <Input id="org-id" defaultValue={organization?.id} disabled className="font-mono text-xs" />
         </Field>

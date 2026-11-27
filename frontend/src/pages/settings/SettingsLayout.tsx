@@ -8,6 +8,8 @@ const SETTINGS_TABS = [
   { label: "Project", path: "/settings/project" },
   { label: "Users", path: "/settings/users" },
   { label: "SSO", path: "/settings/sso" },
+  // SCIM provisioning (offboarding from Entra ID / Okta): every endpoint behind it needs `tenancy:manage`.
+  { label: "Provisioning", path: "/settings/provisioning", permission: "tenancy:manage" },
   // `core.tenancy.service.list_connectors` gates on `tenancy:manage` --
   // hide this tab for anyone lacking it, matching the real /connectors
   // nav item's gate (see routes/nav.ts).
@@ -15,6 +17,12 @@ const SETTINGS_TABS = [
   // `core.tenancy.service.list_access_rules`/`create_access_rule`/
   // `deactivate_access_rule` all gate on `tenancy:manage` too.
   { label: "Access Rules", path: "/settings/access-rules", permission: "tenancy:manage" },
+  // `core.users.role_service` gates every role operation on `tenancy:manage`.
+  { label: "Roles & Permissions", path: "/settings/roles", permission: "tenancy:manage" },
+  // Read-only view of the signed-in user's own roles and permissions.
+  { label: "My Roles", path: "/settings/my-access" },
+  // Password change (and, later, two-factor). Every signed-in user has one -- no permission gate.
+  { label: "Security", path: "/settings/security" },
 ];
 
 export function SettingsLayout() {

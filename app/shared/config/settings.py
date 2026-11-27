@@ -269,6 +269,96 @@ class Settings(BaseSettings):
     email_verification_token_ttl_minutes: int = Field(default=1440, ge=5, le=10080)
     email_verification_resend_cooldown_seconds: int = Field(default=60, ge=0)
     email_verification_max_sends_per_day: int = Field(default=5, ge=1)
+    # --- invitation email (`core.tenancy.invitation_email`) ---------------------
+    # Per-organization ceilings on NEW invitations (counted from the database,
+    # so they hold across API replicas and never fail open), and bounds on
+    # re-sending one invitation. The invitation link is built from
+    # `frontend_public_base_url` above.
+    invitation_max_per_hour: int = Field(default=20, ge=1)
+    invitation_max_per_day: int = Field(default=100, ge=1)
+    invitation_resend_cooldown_seconds: int = Field(default=60, ge=0)
+    invitation_max_resends: int = Field(default=5, ge=0)
+
+    # --- password reset / change (`core.auth.password_reset`) ---------------------
+    # The reset link is built from `frontend_public_base_url` (https in production).
+    # Sends are bounded in the DATABASE per account (cooldown + daily cap), which holds
+    # across API replicas and cannot fail open the way the Redis request limiter does.
+    password_reset_token_ttl_minutes: int = Field(default=30, ge=5, le=120)
+    password_reset_resend_cooldown_seconds: int = Field(default=60, ge=0)
+    password_reset_max_sends_per_day: int = Field(default=5, ge=1)
+    # Argon2id cost for NEW password hashes (RFC 9106 "low memory" profile by default:
+    # 64 MiB, 3 passes). Existing hashes made with other parameters -- and bcrypt hashes --
+    # keep verifying and are upgraded after the next successful login.
+    argon2_memory_cost_kib: int = Field(default=65536, ge=8192)
+    argon2_time_cost: int = Field(default=3, ge=1)
+    argon2_parallelism: int = Field(default=2, ge=1, le=16)
+
+    # --- single sign-on (`core.auth.service` / `core.auth.sso_transaction`) -------
+    # A login in flight is a server-side record in Redis (state, nonce, PKCE
+    # verifier, organization, redirect URI), reachable only through an opaque
+    # handle, consumed exactly once. This is how long the person has to finish
+    # at the identity provider.
+    sso_transaction_ttl_seconds: int = Field(default=600, ge=60, le=3600)
+    sso_http_timeout_seconds: float = Field(default=10.0, gt=0, le=60)
+    sso_allow_insecure_issuers: bool = Field(
+        default=False,
+        description=(
+            "Development/test only. Allows an http:// identity provider and one on "
+            "a loopback/private address (e.g. a local Keycloak or mock OIDC server). "
+            "Refused at startup when ENVIRONMENT=production."
+        ),
+    )
+
+    # --- SCIM 2.0 provisioning / deprovisioning (core.scim) -------------------------
+    scim_enabled: bool = Field(
+        default=False,
+        description=(
+            "Kill switch for the whole SCIM surface (`/scim/v2/*`). OFF by default: while false every SCIM "
+            "endpoint answers 404 and no SCIM token authenticates. Each organization must ALSO enable SCIM "
+            "for itself (Settings -> Provisioning) before its tokens work."
+        ),
+    )
+    scim_token_default_ttl_days: int = Field(default=90, ge=1, le=3650)
+    scim_token_max_ttl_days: int = Field(default=365, ge=1, le=3650)
+    scim_requests_per_minute: int = Field(
+        default=300, ge=10, description="Rate limit per SCIM token (identity providers sync in bursts)."
+    )
+    scim_max_active_tokens: int = Field(default=5, ge=1, le=20)
+
+    # --- platform operator console (core.platform) ---------------------------------
+    platform_admin_enabled: bool = Field(
+        default=False,
+        description=(
+            "Kill switch for the whole platform-operator surface (`/platform/*`). OFF by default: "
+            "when false every platform endpoint answers `platform.unavailable` and no platform token "
+            "is issued or accepted. Platform operators are separate from tenant roles. "
+            "REFUSED at startup when ENVIRONMENT=production: production platform access stays "
+            "disabled until strong operator authentication (MFA) exists."
+        ),
+    )
+    platform_token_expiry_minutes: int = Field(
+        default=15,
+        ge=1,
+        le=60,
+        description="Lifetime of a platform access token. There are no platform refresh tokens.",
+    )
+
+    @model_validator(mode="after")
+    def _refuse_platform_access_in_production(self) -> "Settings":
+        if self.environment == "production" and self.platform_admin_enabled:
+            raise ValueError(
+                "PLATFORM_ADMIN_ENABLED must not be enabled when environment=production: platform "
+                "operator access requires multi-factor authentication, which is not available yet."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _refuse_insecure_sso_in_production(self) -> "Settings":
+        if self.environment == "production" and self.sso_allow_insecure_issuers:
+            raise ValueError(
+                "SSO_ALLOW_INSECURE_ISSUERS must not be enabled when environment=production."
+            )
+        return self
 
     @model_validator(mode="after")
     def _require_email_in_production(self) -> "Settings":
@@ -353,9 +443,115 @@ class Settings(BaseSettings):
         default=90,
         ge=1,
         description=(
-            "How long `mcp_requests` rows are kept. Rows older than this are "
-            "removed by `scripts/purge_mcp_requests.py --apply` (an operator-run "
-            "job; nothing deletes them automatically)."
+            "How long `mcp_requests` rows are kept. Rows older than this are removed by the daily "
+            "scheduled retention job (`RETENTION_ENABLED`) and by `scripts/purge_mcp_requests.py --apply`."
+        ),
+    )
+
+    # --- scheduled retention, document lifecycle and storage monitoring (core.retention) ------------
+    retention_enabled: bool = Field(
+        default=True,
+        description=(
+            "Run the daily maintenance job (retention of temporary records, document chunk cleanup, "
+            "version tombstoning, connector-deletion sweep, storage snapshot) in the ingestion worker. "
+            "Set false to switch every automatic deletion off."
+        ),
+    )
+    retention_dry_run: bool = Field(
+        default=False,
+        description="Count what the daily job WOULD delete and log it, without deleting anything.",
+    )
+    retention_hour: int = Field(
+        default=3, ge=0, le=23,
+        description="Hour of day the daily job runs, in the ingestion worker's own (system) time zone.",
+    )
+    retention_batch_size: int = Field(
+        default=1000, ge=10, le=50000, description="Rows deleted per transaction (bounds lock time)."
+    )
+    retention_batch_pause_seconds: float = Field(
+        default=0.1, ge=0, le=60, description="Pause between batches so cleanup never saturates the database."
+    )
+    ingestion_job_retention_days: int = Field(
+        default=90,
+        ge=7,
+        description=(
+            "Finished (`succeeded`/`failed`) ingestion job rows older than this are deleted. Queued and "
+            "running jobs, and each connector's most recent job, are never deleted."
+        ),
+    )
+    refresh_token_expired_grace_days: int = Field(
+        default=7, ge=1, description="An EXPIRED refresh token is deleted this many days after it expired."
+    )
+    refresh_token_revoked_retention_days: int = Field(
+        default=30,
+        ge=1,
+        description="A REVOKED refresh token is kept this long (it lets reuse of a stolen token be recognised).",
+    )
+    email_verification_retention_days: int = Field(
+        default=7, ge=1, description="Expired or consumed email verification rows are deleted after this."
+    )
+    password_reset_retention_days: int = Field(
+        default=7, ge=1, description="Expired or consumed password reset rows are deleted after this."
+    )
+    scim_token_retention_days: int = Field(
+        default=90, ge=1, description="SCIM tokens that expired or were revoked are deleted after this."
+    )
+    scim_pending_action_retention_days: int = Field(
+        default=180, ge=1, description="Decided (approved/rejected) held SCIM deactivations are deleted after this."
+    )
+    document_soft_delete_chunk_retention_days: int = Field(
+        default=7,
+        ge=0,
+        description=(
+            "Chunks and embeddings of a SOFT-DELETED document are removed this many days after it was "
+            "deleted. The document row itself stays (citations keep resolving)."
+        ),
+    )
+    document_version_keep_latest: int = Field(
+        default=5,
+        ge=1,
+        description=(
+            "Per logical document, the newest N versions (the current one included) keep their metadata. "
+            "Older superseded versions may be TOMBSTONED (see `document_version_retention_days`)."
+        ),
+    )
+    document_version_retention_days: int = Field(
+        default=90,
+        ge=0,
+        description=(
+            "A superseded version is tombstoned only when it is outside the newest N AND was superseded "
+            "more than this many days ago. Tombstoning removes its metadata rows; the `documents` row "
+            "(id, title, source URL, hash) is never deleted, so every citation still resolves."
+        ),
+    )
+    database_storage_limit_bytes: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "The storage limit that applies to this database (for example the plan limit of a hosted "
+            "PostgreSQL). Not guessed: when unset, EKIP reports sizes but no percentage and no warning."
+        ),
+    )
+    storage_warning_percent: int = Field(
+        default=70, ge=1, le=100, description="Warn when database size reaches this % of the configured limit."
+    )
+    storage_snapshot_retention_days: int = Field(
+        default=400, ge=30, description="Storage snapshots older than this are deleted."
+    )
+    storage_tenant_estimates_enabled: bool = Field(
+        default=True,
+        description="Also compute per-organization row counts and ESTIMATED sizes during the daily snapshot.",
+    )
+    audit_archive_min_age_days: int = Field(
+        default=365,
+        ge=31,
+        description="Only audit months that ended at least this many days ago are exported by the archive tool.",
+    )
+    audit_archive_directory: str | None = Field(
+        default=None,
+        description=(
+            "Directory for audit-log archive exports (`scripts/archive_audit_logs.py`). Archiving never "
+            "deletes audit rows; it is only available when this points at durable storage."
         ),
     )
     mcp_oauth_client_secret_expiry_days: int = Field(

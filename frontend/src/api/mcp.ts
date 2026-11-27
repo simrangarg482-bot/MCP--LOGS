@@ -19,9 +19,11 @@ export async function listMcpToolCatalogue(): Promise<McpToolDefinition[]> {
  * Recorded usage of MCP tools by the caller's organization
  * (`GET /observability/mcp`). Statistics only -- not the catalogue.
  */
-export async function listMcpToolUsage(): Promise<McpToolUsage[]> {
+export async function listMcpToolUsage(since?: string): Promise<McpToolUsage[]> {
   if (USE_MOCK_DATA) {
     return mockDelay(mockMcpToolUsage);
   }
-  return apiRequest<McpToolUsage[]>(`/observability/mcp`);
+  // `typeof` guard: react-query hands `queryFn` a context object when a function is passed directly.
+  const query = typeof since === "string" && since ? `?since=${encodeURIComponent(since)}` : "";
+  return apiRequest<McpToolUsage[]>(`/observability/mcp${query}`);
 }

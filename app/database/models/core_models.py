@@ -52,6 +52,15 @@ class User(Base):
     #: `email_link | oidc | operator_attestation`. Provenance only; never a
     #: substitute for checking `email_verified_at` itself.
     email_verified_via: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: Session cut-off set by a password reset / change: every access token issued
+    #: BEFORE this instant is refused (`core.users.service.resolve_identity`), and
+    #: every refresh token was revoked at the same time. `NULL` = never reset.
+    #: Compared against the token's microsecond `iat_us` claim, not its whole-second
+    #: `iat`, and stamped from the application clock (the same clock that signs the
+    #: tokens) -- never the database's `now()`.
+    sessions_valid_after: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -63,18 +72,51 @@ class User(Base):
 class Role(Base):
     """A named role, e.g. `engineer` or `incident_commander`.
 
-    A fixed, platform-wide catalog shared by every company -- not customer-
-    editable in the MVP. Grants zero or more
-    `Permission`s via `RolePermission`; assigned to a user within one
-    company via `UserRole`.
+    Two kinds, told apart by `organization_id`:
+
+    * **Built-in** (`organization_id IS NULL`) -- the platform-wide roles shared
+      by every company, today only `admin`. Visible to everyone, but immutable
+      to the application's database role: row-level security allows
+      INSERT/UPDATE/DELETE only on rows whose `organization_id` matches the
+      current tenant, so a built-in row can never be changed (or removed) by
+      application code, only by a migration.
+    * **Custom** (`organization_id` set) -- owned by exactly one organization,
+      created and edited by that organization's administrators (including the
+      three starter roles `viewer`/`engineer`/`reviewer` every organization
+      gets). Invisible to every other organization (RLS), and a database
+      trigger refuses to attach one to another organization's members,
+      invitations or access rules.
+
+    Names are unique case-insensitively within a scope (built-ins; or one
+    organization) -- see the partial unique indexes below. Grants zero or more
+    `Permission`s via `RolePermission`; assigned to a user within one company
+    via `UserRole`.
     """
 
     __tablename__ = "roles"
+    __table_args__ = (
+        Index(
+            "uq_roles_builtin_name",
+            text("lower(name)"),
+            unique=True,
+            postgresql_where=text("organization_id IS NULL"),
+        ),
+        Index(
+            "uq_roles_org_name",
+            "organization_id",
+            text("lower(name)"),
+            unique=True,
+            postgresql_where=text("organization_id IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
     )
-    name: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True
+    )
+    name: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
@@ -139,6 +181,10 @@ class UserRole(Base):
     role_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("roles.id", ondelete="CASCADE"), primary_key=True
     )
+    # Provenance: `manual` (an administrator, an invitation, an access rule, or anything that existed before
+    # provenance was tracked) or `scim` (created by group synchronization). Synchronization only ever removes
+    # `scim` roles, so it can never take away a manually assigned one.
+    granted_via: Mapped[str] = mapped_column(Text, nullable=False, default="manual", server_default=text("'manual'"))
 
 
 class Incident(Base):

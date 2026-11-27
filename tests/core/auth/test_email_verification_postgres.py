@@ -190,7 +190,7 @@ async def test_signup_creates_only_a_pending_row_no_org_user_role_or_session(env
     )
     assert row.token_hash == hash_opaque_token(delivery.raw_token) and len(row.token_hash) == 64
     assert row.consumed_at is None and row.expires_at > datetime.now(timezone.utc)
-    assert row.password_hash.startswith("$2")  # bcrypt hash, never the plaintext password
+    assert row.password_hash.startswith("$argon2id$")  # Argon2id hash, never the plaintext password
 
 
 @pytest.mark.asyncio
@@ -220,7 +220,7 @@ async def test_verify_creates_org_verified_admin_under_rls_and_no_session(env) -
         e=env.email("founder"),
     )
     assert user.email_verified_at is not None and user.email_verified_via == "email_link"
-    assert user.password_hash.startswith("$2")
+    assert user.password_hash.startswith("$argon2id$")
     (org,) = await env.sup("SELECT id FROM organizations WHERE slug = :s", s=env.slug("founder"))
 
     # RLS: the admin assignment is visible under ITS organization's context only

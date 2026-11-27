@@ -21,6 +21,7 @@ export async function listAuditLog(
   if (filters.resourceType) params.set("resource_type", filters.resourceType);
   if (filters.resourceId) params.set("resource_id", filters.resourceId);
   if (filters.actor) params.set("actor", filters.actor);
+  if (filters.actionPrefix) params.set("action_prefix", filters.actionPrefix);
   params.set("limit", String(filters.limit ?? 50));
   params.set("offset", String(filters.offset ?? 0));
   return apiRequest<AuditLogEntry[]>(`/organizations/${organizationId}/audit?${params.toString()}`);

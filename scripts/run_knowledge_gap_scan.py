@@ -30,6 +30,7 @@ import sys
 import uuid
 
 from app.agents import service as agents_service
+from app.core.exceptions import OrganizationSuspendedError
 from app.core.tenancy import service as tenancy_service
 from app.database.session import session_scope, set_tenant_context
 from app.shared.config.logging import configure_logging
@@ -60,6 +61,12 @@ async def main() -> None:
 
     async with session_scope() as session:
         organization_id = await _resolve_organization_id(session, raw_arg)
+        # Same gate as the scheduled job: a suspended organization is not processed, not even by hand.
+        try:
+            await tenancy_service.assert_organization_processing_allowed(session, organization_id)
+        except OrganizationSuspendedError:
+            print(f"Organization {organization_id} is suspended; the Knowledge Gap Agent will not run for it.")
+            sys.exit(2)
         await set_tenant_context(session, organization_id)
 
         actor = Identity.for_agent("knowledge_gap_agent", organization_id)

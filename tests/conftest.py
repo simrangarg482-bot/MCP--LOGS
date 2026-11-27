@@ -48,3 +48,31 @@ def _reset_rate_limiters():
         buckets = getattr(limiter, "_buckets", None)
         if buckets is not None:
             buckets.clear()
+
+
+@pytest.fixture(autouse=True)
+def _members_are_active_in_database_free_tests(request, monkeypatch):
+    """Offboarding adds a per-organization membership lookup (`organization_member_states`, row-level
+    secured) to `resolve_identity` and `_issue_session`. Database-free unit tests that build their own
+    fakes for the data layer know nothing about it, so for THEM every member is active (the default: no
+    state row). Tests that are about membership state patch these again themselves, later; every test that
+    talks to a real database is named `*_postgres.py` and gets the REAL functions -- never this stand-in.
+    """
+    if "postgres" in request.module.__name__:
+        return
+
+    from app.core.users import membership
+    from app.core.users import repository as users_repository
+
+    async def _active(session, organization_id, user_id):
+        return (False, 0)
+
+    async def _no_deactivated(session, user_id):
+        return set()
+
+    async def _assert_active(session, organization_id, user_id):
+        return 0
+
+    monkeypatch.setattr(users_repository, "get_member_access_state", _active)
+    monkeypatch.setattr(users_repository, "list_deactivated_organization_ids", _no_deactivated)
+    monkeypatch.setattr(membership, "assert_member_active", _assert_active)

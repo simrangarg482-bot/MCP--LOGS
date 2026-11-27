@@ -65,6 +65,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Depends
 
+from app.shared.config.logging import get_logger
 from app.api.deps import ArqPool, CurrentIdentity, DbSession, require_email_delivery
 from app.api.rate_limit import rate_limit_by_ip, rate_limit_by_org
 from app.core.audit import service as audit_service
@@ -72,6 +73,7 @@ from app.core.audit.schemas import AuditLogEntry, AuditLogQuery
 from app.core.auth import email_verification
 from app.core.auth import service as auth_service
 from app.core.auth.schemas import VerificationRequested
+from app.core.tenancy import invitation_email
 from app.core.tenancy import service as tenancy_service
 from app.core.tenancy.schemas import (
     AccessRule,
@@ -83,15 +85,19 @@ from app.core.tenancy.schemas import (
     Invitation,
     InvitationAcceptRequest,
     InvitationCreate,
+    InvitationResendRequest,
     Organization,
     OrganizationCreate,
     Project,
     ProjectCreate,
     SSOConfiguration,
     SSOConfigurationCreate,
+    SSOConfigurationUpdate,
 )
 from app.core.users import service as users_service
 from app.core.users.schemas import OrganizationMember
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/tenancy", tags=["tenancy"])
 
@@ -185,7 +191,7 @@ async def trigger_connector_event(
 
 @router.delete("/connectors/{connector_config_id}", response_model=ConnectorConfig)
 async def delete_connector(
-    connector_config_id: uuid.UUID, actor: CurrentIdentity, session: DbSession
+    connector_config_id: uuid.UUID, actor: CurrentIdentity, session: DbSession, arq_pool: ArqPool
 ) -> ConnectorConfig:
     """"Delete" a connector -- see `tenancy_service.disconnect_connector`'s
     own docstring for why this is a real `DELETE` verb backed by a status
@@ -195,10 +201,27 @@ async def delete_connector(
     sync. The row (and its job history) survives; the frontend's own
     connector list filters disconnected rows out of the default view, so
     this reads as deletion to the caller.
+
+    The connector's documents, chunks and embeddings are NOT deleted inside this request (that can be
+    large): once the disconnect is committed, a background job (`cleanup_connector_documents_task`) removes
+    them in batches. If the job cannot be queued, the request still succeeds and the daily maintenance job's
+    sweep finishes the cleanup.
     """
-    return await tenancy_service.disconnect_connector(
+    result = await tenancy_service.disconnect_connector(
         session, actor, actor.organization_id, connector_config_id
     )
+    # Commit BEFORE queueing: the job refuses a connector that is not (yet) disconnected.
+    await session.commit()
+    try:
+        await arq_pool.enqueue_job(
+            "cleanup_connector_documents_task",
+            str(actor.organization_id),
+            str(connector_config_id),
+            _job_id=f"connector-cleanup:{connector_config_id}",
+        )
+    except Exception:  # noqa: BLE001 - never fail the user's delete; the daily sweep recovers
+        logger.warning("connector_cleanup_enqueue_failed", connector_config_id=str(connector_config_id))
+    return result
 
 
 @router.get("/connectors/{connector_config_id}/runs", response_model=list[IngestionRun])
@@ -370,6 +393,23 @@ async def configure_sso(
     return await tenancy_service.configure_sso(session, actor, organization_id, data)
 
 
+@admin_router.patch(
+    "/organizations/{organization_id}/sso",
+    response_model=SSOConfiguration,
+)
+async def update_sso_config(
+    organization_id: uuid.UUID,
+    data: SSOConfigurationUpdate,
+    actor: CurrentIdentity,
+    session: DbSession,
+) -> SSOConfiguration:
+    """Update an existing SSO configuration or switch it off/on
+    (`{"enabled": false}`). `tenancy:manage` only; see
+    `core.tenancy.service.update_sso_config` for the identity-reset
+    confirmation required when the provider or issuer changes."""
+    return await tenancy_service.update_sso_config(session, actor, organization_id, data)
+
+
 # --- Access rules ----------------------------------------------------------------
 
 
@@ -411,16 +451,74 @@ async def deactivate_access_rule(
 # --- Invitations -----------------------------------------------------------------
 
 
+async def _commit_then_send(
+    session: DbSession, background_tasks: BackgroundTasks, issued: tenancy_service.IssuedInvitation
+) -> None:
+    """Schedule the invitation email -- but only once the invitation is durable.
+
+    FastAPI runs background tasks BEFORE the `get_db_session` dependency commits
+    (its exit code runs after the whole response, background tasks included).
+    The task records its outcome in its own session, which cannot see an
+    uncommitted row, and a rolled-back invitation must never have been emailed.
+    So the commit happens here, explicitly, first; the dependency's later commit
+    is then a no-op.
+    """
+    if issued.pending_email is None:
+        return
+    await session.commit()
+    background_tasks.add_task(invitation_email.deliver_invitation_email, issued.pending_email)
+
+
+# Redis-backed, per organization, on top of the database-counted hourly/daily
+# caps in `tenancy_service.issue_invitation` -- this one smooths bursts.
+_INVITATION_CREATE_RATE_LIMIT = rate_limit_by_org(scope="tenancy.invitation_create", requests_per_minute=10)
+_INVITATION_RESEND_RATE_LIMIT = rate_limit_by_org(scope="tenancy.invitation_resend", requests_per_minute=10)
+
+
 @admin_router.post(
-    "/organizations/{organization_id}/invitations", response_model=Invitation, status_code=201
+    "/organizations/{organization_id}/invitations",
+    response_model=Invitation,
+    status_code=201,
+    dependencies=[Depends(_INVITATION_CREATE_RATE_LIMIT)],
 )
 async def create_invitation(
     organization_id: uuid.UUID,
     data: InvitationCreate,
     actor: CurrentIdentity,
     session: DbSession,
+    background_tasks: BackgroundTasks,
 ) -> Invitation:
-    return await tenancy_service.create_invitation(session, actor, organization_id, data)
+    """Create an invitation. When an email provider is configured the link is
+    emailed to the invited address in the background (`email_status` starts as
+    `queued` and becomes `sent`/`failed` -- poll `GET .../invitations`) and the
+    raw token is NOT returned. Without email, the token is returned once for
+    the admin to copy (`email_status="not_configured"`)."""
+    issued = await tenancy_service.issue_invitation(session, actor, organization_id, data)
+    await _commit_then_send(session, background_tasks, issued)
+    return issued.invitation
+
+
+@admin_router.post(
+    "/organizations/{organization_id}/invitations/{invitation_id}/resend",
+    response_model=Invitation,
+    dependencies=[Depends(_INVITATION_RESEND_RATE_LIMIT)],
+)
+async def resend_invitation(
+    organization_id: uuid.UUID,
+    invitation_id: uuid.UUID,
+    data: InvitationResendRequest,
+    actor: CurrentIdentity,
+    session: DbSession,
+    background_tasks: BackgroundTasks,
+) -> Invitation:
+    """Rotate the invitation's token (the previous link stops working) and
+    either email the new link (`method="email"`, cooldown and per-invitation
+    limit apply) or return the new link once to copy (`method="link"`)."""
+    issued = await tenancy_service.resend_invitation(
+        session, actor, organization_id, invitation_id, method=data.method
+    )
+    await _commit_then_send(session, background_tasks, issued)
+    return issued.invitation
 
 
 @admin_router.get(

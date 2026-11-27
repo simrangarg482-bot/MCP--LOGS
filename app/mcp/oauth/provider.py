@@ -458,7 +458,12 @@ class EkipOAuthProvider:
             set_tenant_context = self._set_tenant_context()
             async with session_factory() as session:
                 identity = await users_service.resolve_identity(
-                    session, claims.user_id, claims.organization_id
+                    session,
+                    claims.user_id,
+                    claims.organization_id,
+                    token_issued_at=claims.issued_at,
+                    token_org_epoch=claims.org_session_epoch,
+                    token_member_epoch=claims.member_epoch,
                 )
                 await set_tenant_context(session, identity.organization_id)
                 tokens = await auth_service._issue_session(

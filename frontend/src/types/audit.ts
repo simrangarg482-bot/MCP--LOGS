@@ -17,6 +17,8 @@ export interface AuditLogFilters {
   resourceType?: string;
   resourceId?: string;
   actor?: string;
+  /** Only events whose action starts with this, e.g. "scim." or "member.". */
+  actionPrefix?: string;
   limit?: number;
   offset?: number;
 }

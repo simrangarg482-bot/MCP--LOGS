@@ -110,6 +110,26 @@ async def list_active_connector_config_ids(session: AsyncSession) -> Sequence[uu
     return result.scalars().all()
 
 
+async def resolve_connector_config_organization_ids(
+    session: AsyncSession, connector_config_ids: Sequence[uuid.UUID]
+) -> dict[uuid.UUID, uuid.UUID]:
+    """`{connector_config_id: organization_id}` for many connectors in ONE round trip, through the
+    same narrow `resolve_connector_config_organization` SECURITY DEFINER function the single-id
+    variant above uses -- so no new database privilege. A connector that no longer exists is simply
+    absent. Used by the reconciliation fan-out to drop suspended organizations' connectors before
+    anything is enqueued."""
+    if not connector_config_ids:
+        return {}
+    result = await session.execute(
+        text(
+            "SELECT i AS config_id, resolve_connector_config_organization(i) AS organization_id "
+            "FROM unnest(CAST(:ids AS uuid[])) AS i"
+        ),
+        {"ids": list(connector_config_ids)},
+    )
+    return {row.config_id: row.organization_id for row in result if row.organization_id is not None}
+
+
 async def get_connector_config_for_source(
     session: AsyncSession, organization_id: uuid.UUID, source: str
 ) -> ConnectorConfig | None:

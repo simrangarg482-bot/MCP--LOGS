@@ -58,6 +58,42 @@ export interface AskResponse {
   answerMode: "answered" | "no_answer" | null;
   citations: Citation[];
   investigation: InvestigationResult | null;
+  /**
+   * The `agent_executions.id` of the run that produced this response -- the
+   * handle outcome feedback is attached to (`PUT /ask/executions/{id}/feedback`).
+   * Absent/`null` when there is nothing to rate: an infrastructure-failure
+   * fallback, or a response from a server that predates feedback. The UI
+   * simply shows no feedback controls in that case.
+   */
+  executionId?: UUID | null;
+}
+
+export type FeedbackRating = "helpful" | "not_helpful";
+
+/** Why an answer was not helpful. Optional, and only meaningful for `not_helpful`. */
+export type FeedbackReasonCode =
+  | "incorrect"
+  | "incomplete"
+  | "outdated"
+  | "irrelevant_sources"
+  | "no_answer_needed_more"
+  | "other";
+
+/** The caller's own rating of one execution (`GET /ask/executions/{id}/feedback`). */
+export interface AnswerFeedback {
+  id: UUID;
+  executionId: UUID;
+  rating: FeedbackRating;
+  reasonCode: FeedbackReasonCode | null;
+  comment: string | null;
+  createdAt: ISODateString;
+  updatedAt: ISODateString;
+}
+
+export interface FeedbackSubmitPayload {
+  rating: FeedbackRating;
+  reasonCode?: FeedbackReasonCode | null;
+  comment?: string | null;
 }
 
 export type AgentExecutionStatus = "running" | "succeeded" | "failed";

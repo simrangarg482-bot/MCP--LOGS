@@ -23,6 +23,21 @@ from app.ingestion.schemas import FetchResult, ResolvedConnectorConfig
 from app.shared.security import encrypt_secret, get_kms
 
 
+@pytest.fixture(autouse=True)
+def _organization_is_processable(monkeypatch):
+    """These tests drive `_execute_ingestion_job` with a fake session that cannot run the
+    organization-status query. The REAL gate (suspended -> skipped before decryption, stopped at
+    a page boundary) is covered against real Postgres in
+    `tests/ingestion/test_organization_suspension_workers_postgres.py`."""
+
+    async def allowed(session, organization_id) -> None:
+        return None
+
+    monkeypatch.setattr(
+        ingestion_service.tenancy_service, "assert_organization_processing_allowed", allowed
+    )
+
+
 class _FakeNestedTransaction:
     async def __aenter__(self):
         return self

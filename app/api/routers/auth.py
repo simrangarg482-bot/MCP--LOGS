@@ -23,22 +23,28 @@ from __future__ import annotations
 from fastapi import APIRouter, BackgroundTasks, Depends, Response, status
 
 from app.api.deps import CurrentIdentity, DbSession, require_email_delivery
-from app.api.rate_limit import rate_limit_by_ip
+from app.api.rate_limit import rate_limit_by_ip, rate_limit_by_user
 from app.core.audit.service import record_audit_event
-from app.core.auth import email_verification
+from app.core.auth import email_verification, password_reset
 from app.core.auth import service as auth_service
 from app.core.auth.schemas import (
+    ChangePasswordRequest,
+    ForgotPasswordRequest,
     LoginRequest,
     LoginResponse,
     LogoutAllResponse,
     OrganizationSelectionRequest,
     OrganizationsListResponse,
+    PasswordResetCompleted,
+    PasswordResetRequested,
     RefreshRequest,
     ResendVerificationRequest,
+    ResetPasswordRequest,
     SessionTokens,
     SignupRequest,
     SSOAuthorizationRedirect,
     SSOCallbackRequest,
+    SSOOptions,
     SwitchOrganizationRequest,
     VerificationRequested,
     VerifyEmailRequest,
@@ -51,23 +57,54 @@ from app.core.users.schemas import UserProfile
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-@router.get("/{org_slug}/login", response_model=SSOAuthorizationRedirect)
+# Per-IP limits on the three public SSO endpoints: each can trigger outbound
+# requests to an identity provider or burn a login transaction, and none has a
+# user or organization to key on yet.
+_SSO_OPTIONS_RATE_LIMIT = rate_limit_by_ip(scope="auth.sso_options", requests_per_minute=30)
+_SSO_BEGIN_RATE_LIMIT = rate_limit_by_ip(scope="auth.sso_begin", requests_per_minute=20)
+_SSO_CALLBACK_RATE_LIMIT = rate_limit_by_ip(scope="auth.sso_callback", requests_per_minute=20)
+
+
+@router.get(
+    "/{org_slug}/sso-options",
+    response_model=SSOOptions,
+    dependencies=[Depends(_SSO_OPTIONS_RATE_LIMIT)],
+)
+async def sso_options(org_slug: str, session: DbSession) -> SSOOptions:
+    """Public: may the login page offer "Continue with <provider>" for this
+    organization? Returns only `{available, provider, provider_label}`; an
+    unknown organization, one without SSO, with SSO disabled, or suspended all
+    get the identical `available=false` answer."""
+    return await auth_service.get_sso_options(session, org_slug)
+
+
+@router.get(
+    "/{org_slug}/login",
+    response_model=SSOAuthorizationRedirect,
+    dependencies=[Depends(_SSO_BEGIN_RATE_LIMIT)],
+)
 async def begin_login(
     org_slug: str, redirect_uri: str, session: DbSession
 ) -> SSOAuthorizationRedirect:
-    """Start an SSO login. `redirect_uri` is supplied by the caller (its own
-    callback URL) -- core/auth does not hardcode or guess it (see
-    `begin_sso_login`'s docstring).
+    """Start an SSO login. `redirect_uri` must be exactly
+    `<allowed frontend origin>/o/<org_slug>/callback`. Returns the provider URL
+    and an opaque, single-use `transaction_id`; the PKCE verifier and nonce stay
+    on the server (see `core.auth.sso_transaction`).
     """
     return await auth_service.begin_sso_login(session, org_slug, redirect_uri=redirect_uri)
 
 
-@router.post("/callback", response_model=SessionTokens)
+@router.post(
+    "/callback",
+    response_model=SessionTokens,
+    dependencies=[Depends(_SSO_CALLBACK_RATE_LIMIT)],
+)
 async def complete_login(
     data: SSOCallbackRequest, redirect_uri: str, session: DbSession
 ) -> SessionTokens:
     """Complete an SSO login. `redirect_uri` must be identical to the one
-    used in `begin_login`, per the OAuth2 spec.
+    used in `begin_login`; `state` and `transaction_id` are verified against the
+    server-side transaction, which can be used only once.
     """
     return await auth_service.complete_sso_login(session, data, redirect_uri=redirect_uri)
 
@@ -140,6 +177,73 @@ async def resend_verification(
     if delivery is not None:
         background_tasks.add_task(email_verification.deliver_verification_email, delivery)
     return VerificationRequested()
+
+
+_FORGOT_RATE_LIMIT = rate_limit_by_ip(scope="auth.password_forgot", requests_per_minute=5)
+_RESET_RATE_LIMIT = rate_limit_by_ip(scope="auth.password_reset", requests_per_minute=10)
+# Changing a password re-checks the CURRENT one, which makes it a guessing oracle for a
+# stolen session: tight, per user (the per-IP limiter would let one attacker rotate IPs).
+_CHANGE_RATE_LIMIT = rate_limit_by_user(scope="auth.password_change", requests_per_minute=5)
+
+
+@router.post(
+    "/password/forgot",
+    response_model=PasswordResetRequested,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(_FORGOT_RATE_LIMIT), Depends(require_email_delivery)],
+)
+async def forgot_password(
+    data: ForgotPasswordRequest, session: DbSession, background_tasks: BackgroundTasks
+) -> PasswordResetRequested:
+    """Start a password reset. Always the same 202 body, whether or not the address has
+    an account that can use a password (unknown, SSO-only, inactive, unverified and
+    rate-limited accounts all look identical). The mail is sent after the response."""
+    delivery = await password_reset.request_reset(session, email=data.email)
+    if delivery is not None:
+        background_tasks.add_task(password_reset.deliver_reset_email, delivery)
+    return PasswordResetRequested()
+
+
+@router.post(
+    "/password/reset",
+    response_model=PasswordResetCompleted,
+    dependencies=[Depends(_RESET_RATE_LIMIT)],
+)
+async def reset_password(
+    data: ResetPasswordRequest, session: DbSession, background_tasks: BackgroundTasks
+) -> PasswordResetCompleted:
+    """Consume the emailed token and set a new password. Ends every session of the
+    account in every organization. Returns no tokens: sign in with the new password."""
+    notice = await password_reset.reset_password(
+        session, token=data.token, new_password=data.new_password
+    )
+    background_tasks.add_task(password_reset.deliver_password_changed_notice, notice)
+    return PasswordResetCompleted()
+
+
+@router.post(
+    "/password/change",
+    response_model=SessionTokens,
+    dependencies=[Depends(_CHANGE_RATE_LIMIT)],
+)
+async def change_password(
+    data: ChangePasswordRequest,
+    actor: CurrentIdentity,
+    session: DbSession,
+    background_tasks: BackgroundTasks,
+) -> SessionTokens:
+    """Change the signed-in user's password (current password required). Every other
+    session ends; the response is the NEW session for this organization -- the client
+    must replace its stored tokens with it."""
+    if actor.user_id is None:
+        raise ValidationError(
+            "Only a user identity has a password.", error_code="user.no_profile"
+        )
+    tokens, notice = await auth_service.change_password(
+        session, user_id=actor.user_id, organization_id=actor.organization_id, data=data
+    )
+    background_tasks.add_task(password_reset.deliver_password_changed_notice, notice)
+    return tokens
 
 
 @router.post("/login", response_model=LoginResponse, dependencies=[Depends(_LOGIN_RATE_LIMIT)])

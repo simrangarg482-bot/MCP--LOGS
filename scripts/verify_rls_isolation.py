@@ -809,6 +809,15 @@ async def _organization_creation_checks(org_a: Organization) -> None:
             await auth_repository.insert_external_identity_mapping(
                 session, organization_id=created.id, user_id=user_id, idp_subject=f"sub-{tag}"
             )
+            # A returning SSO user is a current MEMBER (provisioning assigned a role); the SSO
+            # login now refuses an identity link whose user holds no role in the organization.
+            await set_tenant_context(session, created.id)
+            await users_service.assign_role(
+                session,
+                user_id=user_id,
+                organization_id=created.id,
+                role_id=await users_service.ensure_admin_role(session),
+            )
             await _clear_context(session)
             resolved = await auth_service._resolve_or_provision_user(
                 session,

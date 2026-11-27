@@ -15,6 +15,7 @@ import structlog
 from arq.worker import Retry
 
 from app.agents import service as agents_service
+from app.core.exceptions import OrganizationSuspendedError
 from app.core.proactive import service as proactive_service
 from app.core.tenancy import service as tenancy_service
 from app.database.session import session_scope, set_tenant_context
@@ -58,14 +59,32 @@ async def run_knowledge_gap_detection_task(ctx: dict, organization_id: str) -> N
         try:
             async with session_scope() as session:
                 org_uuid = uuid.UUID(organization_id)
+                # Checked BEFORE the tenant context is set and before the agent (which reads the
+                # organization's executions and calls an LLM) runs; `Identity.for_agent` bypasses
+                # `resolve_identity`, so this is the gate for this job.
+                await tenancy_service.assert_organization_processing_allowed(session, org_uuid)
                 await set_tenant_context(session, org_uuid)
                 actor = Identity.for_agent("knowledge_gap_agent", org_uuid)
-                reports = await agents_service.detect_knowledge_gaps(session, actor)
+
+                async def boundary_check() -> None:
+                    await tenancy_service.assert_organization_processing_allowed(session, org_uuid)
+
+                reports = await agents_service.detect_knowledge_gaps(
+                    session, actor, boundary_check=boundary_check
+                )
             logger.info(
                 "knowledge_gap_detection_task_completed",
                 organization_id=organization_id,
                 report_count=len(reports),
             )
+        except OrganizationSuspendedError:
+            # Suspended after the job was queued, or during the run: a clean, NON-retriable end.
+            # (A mid-run stop rolls the run's transaction back: no partial reports are kept.)
+            logger.info(
+                "knowledge_gap_detection_task_skipped_organization_suspended",
+                organization_id=organization_id,
+            )
+            return
         except Exception as exc:
             attempt = ctx["job_try"]
             # Phase 6.2: full jitter -- see `app.ingestion.workers.tasks.
@@ -96,7 +115,7 @@ async def scheduled_knowledge_gap_scan(ctx: dict) -> None:
     independent retry/backoff.
     """
     async with session_scope() as session:
-        organizations = await tenancy_service.list_organizations(session)
+        organizations = await tenancy_service.list_processable_organizations(session)
 
     redis = ctx["redis"]
     for organization in organizations:
@@ -123,8 +142,15 @@ async def run_pattern_detection_task(ctx: dict, organization_id: str) -> None:
         try:
             async with session_scope() as session:
                 org_uuid = uuid.UUID(organization_id)
+                await tenancy_service.assert_organization_processing_allowed(session, org_uuid)
                 await set_tenant_context(session, org_uuid)
-                results = await proactive_service.run_detection(session, organization_id=org_uuid)
+
+                async def boundary_check() -> None:
+                    await tenancy_service.assert_organization_processing_allowed(session, org_uuid)
+
+                results = await proactive_service.run_detection(
+                    session, organization_id=org_uuid, boundary_check=boundary_check
+                )
             logger.info(
                 "pattern_detection_task_completed",
                 organization_id=organization_id,
@@ -134,6 +160,12 @@ async def run_pattern_detection_task(ctx: dict, organization_id: str) -> None:
                 deactivated_count=sum(r.deactivated_count for r in results),
                 failed_detectors=[r.finding_type for r in results if r.error is not None],
             )
+        except OrganizationSuspendedError:
+            logger.info(
+                "pattern_detection_task_skipped_organization_suspended",
+                organization_id=organization_id,
+            )
+            return
         except Exception as exc:
             attempt = ctx["job_try"]
             defer_seconds = full_jitter_backoff_seconds(attempt, cap=_MAX_BACKOFF_SECONDS)
@@ -165,7 +197,7 @@ async def scheduled_pattern_detection_scan(ctx: dict) -> None:
     idempotent, so a safe retry, not a partial-state risk.
     """
     async with session_scope() as session:
-        organizations = await tenancy_service.list_organizations(session)
+        organizations = await tenancy_service.list_processable_organizations(session)
 
     redis = ctx["redis"]
     for organization in organizations:

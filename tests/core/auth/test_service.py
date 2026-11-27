@@ -53,6 +53,12 @@ class _FakeRefreshTokenRow:
         self.expires_at = now + timedelta(days=30)
 
 
+async def _organization_is_active(session, organization_id):
+    """Stand-in for `_assert_organization_not_suspended`: the real one reads the database
+    (covered against Postgres in `test_organization_suspension_postgres.py`)."""
+    return 0  # the epoch
+
+
 @pytest.mark.asyncio
 async def test_refresh_raises_invalid_token_when_hash_unresolvable(monkeypatch) -> None:
     """No row matches this token hash at all -- the RLS-bypassing resolver
@@ -94,8 +100,8 @@ async def test_refresh_sets_tenant_context_before_reading_full_token_row(monkeyp
         call_order.append("get_refresh_token_by_hash")
         return token_row
 
-    async def fake_revoke_refresh_token(session, refresh_token_id, *, revoked_at) -> None:
-        return None
+    async def fake_revoke_refresh_token(session, refresh_token_id, *, revoked_at) -> bool:
+        return True  # the atomic claim succeeded
 
     async def fake_issue_session(session, *, user_id, organization_id, family_id):
         call_order.append("issue_session")
@@ -111,7 +117,7 @@ async def test_refresh_sets_tenant_context_before_reading_full_token_row(monkeyp
     monkeypatch.setattr(
         auth_service.repository, "get_refresh_token_by_hash", fake_get_refresh_token_by_hash
     )
-    monkeypatch.setattr(auth_service.repository, "revoke_refresh_token", fake_revoke_refresh_token)
+    monkeypatch.setattr(auth_service.repository, "revoke_refresh_token_if_active", fake_revoke_refresh_token)
     monkeypatch.setattr(auth_service, "_issue_session", fake_issue_session)
     _patch_user_state(monkeypatch, _email_state())
 
@@ -155,8 +161,9 @@ async def test_refresh_is_refused_for_unverified_or_inactive_user_and_does_not_r
     async def fake_get_refresh_token_by_hash(session, token_hash):
         return token_row
 
-    async def fake_revoke_refresh_token(session, refresh_token_id, *, revoked_at) -> None:
+    async def fake_revoke_refresh_token(session, refresh_token_id, *, revoked_at) -> bool:
         rotated.append(refresh_token_id)
+        return True
 
     async def fake_issue_session(session, **kwargs):
         issued.append(kwargs)
@@ -166,7 +173,7 @@ async def test_refresh_is_refused_for_unverified_or_inactive_user_and_does_not_r
     monkeypatch.setattr(
         auth_service.repository, "get_refresh_token_by_hash", fake_get_refresh_token_by_hash
     )
-    monkeypatch.setattr(auth_service.repository, "revoke_refresh_token", fake_revoke_refresh_token)
+    monkeypatch.setattr(auth_service.repository, "revoke_refresh_token_if_active", fake_revoke_refresh_token)
     monkeypatch.setattr(auth_service, "_issue_session", fake_issue_session)
     _patch_user_state(monkeypatch, _email_state(**state_kwargs))
 
@@ -376,6 +383,7 @@ async def test_accept_invitation_with_password_only_starts_verification_and_crea
         return _inner
 
     monkeypatch.setattr(auth_service.tenancy_repository, "get_invitation_by_id", fake_get_invitation_by_id)
+    monkeypatch.setattr(auth_service, "_assert_organization_not_suspended", _organization_is_active)
     monkeypatch.setattr(auth_service.email_verification, "start_invitation_acceptance", fake_start)
     monkeypatch.setattr(auth_service.users_service, "get_or_create_user", _forbid("get_or_create_user"))
     monkeypatch.setattr(auth_service.users_service, "set_password", _forbid("set_password"))
@@ -395,7 +403,7 @@ async def test_accept_invitation_with_password_only_starts_verification_and_crea
     assert started["email"] == invitation.email
     # only a bcrypt hash is carried forward, never the plaintext password
     assert started["password_hash"] != "a-strong-password"
-    assert str(started["password_hash"]).startswith("$2")
+    assert str(started["password_hash"]).startswith("$argon2id$")
 
 
 @pytest.mark.asyncio
@@ -421,6 +429,7 @@ async def test_accept_invitation_with_password_refuses_to_adopt_an_existing_acco
         touched.append("issue_session")
 
     monkeypatch.setattr(auth_service.tenancy_repository, "get_invitation_by_id", fake_get_invitation_by_id)
+    monkeypatch.setattr(auth_service, "_assert_organization_not_suspended", _organization_is_active)
     monkeypatch.setattr(auth_service.email_verification, "start_invitation_acceptance", fake_start)
     monkeypatch.setattr(auth_service.users_service, "set_password", fake_set_password)
     monkeypatch.setattr(auth_service, "_issue_session", fake_issue_session)
@@ -459,6 +468,7 @@ async def test_accept_invitation_with_password_rejects_unknown_invitation(monkey
         return None
 
     monkeypatch.setattr(auth_service.tenancy_repository, "get_invitation_by_id", fake_get_invitation_by_id)
+    monkeypatch.setattr(auth_service, "_assert_organization_not_suspended", _organization_is_active)
 
     with pytest.raises(NotFoundError):
         await auth_service.accept_invitation_with_password(
@@ -480,6 +490,7 @@ async def test_accept_invitation_with_password_rejects_wrong_token(monkeypatch) 
         return invitation
 
     monkeypatch.setattr(auth_service.tenancy_repository, "get_invitation_by_id", fake_get_invitation_by_id)
+    monkeypatch.setattr(auth_service, "_assert_organization_not_suspended", _organization_is_active)
 
     with pytest.raises(PermissionDeniedError):
         await auth_service.accept_invitation_with_password(
@@ -497,6 +508,7 @@ async def test_accept_invitation_with_password_rejects_already_accepted_invitati
         return invitation
 
     monkeypatch.setattr(auth_service.tenancy_repository, "get_invitation_by_id", fake_get_invitation_by_id)
+    monkeypatch.setattr(auth_service, "_assert_organization_not_suspended", _organization_is_active)
 
     with pytest.raises(ConflictError):
         await auth_service.accept_invitation_with_password(
@@ -519,6 +531,7 @@ async def test_accept_invitation_with_password_rejects_expired_invitation(monkey
         return invitation
 
     monkeypatch.setattr(auth_service.tenancy_repository, "get_invitation_by_id", fake_get_invitation_by_id)
+    monkeypatch.setattr(auth_service, "_assert_organization_not_suspended", _organization_is_active)
 
     with pytest.raises(ConflictError):
         await auth_service.accept_invitation_with_password(
@@ -538,6 +551,7 @@ async def test_accept_invitation_with_password_rejects_revoked_invitation(monkey
         return invitation
 
     monkeypatch.setattr(auth_service.tenancy_repository, "get_invitation_by_id", fake_get_invitation_by_id)
+    monkeypatch.setattr(auth_service, "_assert_organization_not_suspended", _organization_is_active)
 
     with pytest.raises(ConflictError):
         await auth_service.accept_invitation_with_password(

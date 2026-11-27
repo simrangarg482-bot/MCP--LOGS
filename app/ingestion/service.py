@@ -62,7 +62,7 @@ from opentelemetry import trace
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import ConflictError, NotFoundError
+from app.core.exceptions import ConflictError, NotFoundError, OrganizationSuspendedError
 from app.core.tenancy import service as tenancy_service
 from app.database.session import session_scope, set_tenant_context
 from app.ingestion import repository
@@ -263,6 +263,48 @@ def _validate_fetch_result(
         raise IngestionSafetyLimitError(
             f"Connector '{source}' repeated a pagination cursor."
         )
+
+
+#: `ingestion_jobs.failed_stage` value of a job that was STOPPED because its organization is
+#: suspended (not a processing failure). It is a normal terminal job outcome that the worker task
+#: recognises and never retries or dead-letters; the connector's own status and its saved cursor
+#: are left exactly as they were, so processing resumes where it stopped once the organization is
+#: usable again.
+ORGANIZATION_SUSPENDED_STAGE = "organization_suspended"
+
+
+async def list_reconciliation_connector_config_ids(
+    session: AsyncSession,
+) -> tuple[list[uuid.UUID], int]:
+    """`(connector ids to enqueue, number skipped)` for the periodic reconciliation pass.
+
+    Starts from the cross-tenant list of active/errored connectors and drops every connector whose
+    organization is suspended (or no longer exists), BEFORE anything is enqueued. Fail-closed: if
+    the status lookup itself raises, nothing is enqueued this tick (the next hourly tick retries)
+    rather than enqueuing everything unfiltered. The worker still re-checks at start -- an
+    organization can be suspended between this scan and the job running."""
+    connector_ids = list(await repository.list_active_connector_config_ids(session))
+    organization_by_connector = await repository.resolve_connector_config_organization_ids(
+        session, connector_ids
+    )
+    processable = await tenancy_service.get_processable_organization_ids(
+        session, list(set(organization_by_connector.values()))
+    )
+    eligible = [
+        connector_id
+        for connector_id in connector_ids
+        if organization_by_connector.get(connector_id) in processable
+    ]
+    return eligible, len(connector_ids) - len(eligible)
+
+
+async def _organization_may_continue(session: AsyncSession, organization_id: uuid.UUID) -> bool:
+    """False once the organization is suspended (read fresh from the database each call)."""
+    try:
+        await tenancy_service.assert_organization_processing_allowed(session, organization_id)
+    except OrganizationSuspendedError:
+        return False
+    return True
 
 
 async def run_ingestion_job(
@@ -488,6 +530,11 @@ async def _execute_ingestion_job(
             error_code="connector_config.not_found",
             detail={"connector_config_id": str(connector_config_id)},
         )
+    # A suspended organization is not processed at all: refused HERE -- before the tenant context
+    # is even set, before the connector row is read and therefore before its credential is
+    # decrypted. Raises `OrganizationSuspendedError`, which the worker task turns into a clean,
+    # non-retriable skip (no job row exists yet, nothing to clean up).
+    await tenancy_service.assert_organization_processing_allowed(session, organization_id)
     await set_tenant_context(session, organization_id)
 
     config_row = await repository.get_connector_config(session, connector_config_id)
@@ -589,6 +636,7 @@ async def _execute_ingestion_job(
     items_skipped = 0
     chunks_embedded = 0
     stage = "authenticate"
+    suspended_during_run = False
     client = None
     # Fixed for the whole sync (not threaded through `cursor`, which is
     # purely intra-sync pagination) -- see `FetchResult.resume_token`'s own
@@ -619,6 +667,12 @@ async def _execute_ingestion_job(
     try:
         client = await connector.authenticate(resolved_config)
         while True:
+            # Page boundary: the previous page is fully durable and its cursor is checkpointed (or
+            # this is the first page). If the organization has been suspended since, stop HERE --
+            # before the next fetch and before anything else of the tenant's is read or processed.
+            if not await _organization_may_continue(session, organization_id):
+                suspended_during_run = True
+                break
             stage = "fetch"
             # Two independent budgets, both acquired before every fetch
             # (PROJECT_PLAN.md sections 4.5/10: "per connector, per
@@ -734,6 +788,37 @@ async def _execute_ingestion_job(
             await session.commit()
             await set_tenant_context(session, organization_id)
             cursor = fetch_result.next_cursor
+
+        if suspended_during_run:
+            # Stopped, not failed and not succeeded: never reported as a success, and no
+            # retry. Only the job row is closed (so it is not left "running"); the connector's status
+            # and its saved cursor/checkpoint are deliberately NOT touched, so reactivation simply
+            # resumes from the last completed page. Idempotent per-item processing makes that
+            # resume safe (see the checkpoint comment above).
+            job_row = await repository.update_ingestion_job(
+                session,
+                job_id,
+                status="failed",
+                failed_stage=ORGANIZATION_SUSPENDED_STAGE,
+                documents_processed=documents_processed,
+                pages_fetched=pages_fetched,
+                items_discovered=items_discovered,
+                items_skipped=items_skipped,
+                chunks_embedded=chunks_embedded,
+                last_error_type="OrganizationSuspendedError",
+                completed_at=datetime.now(UTC),
+            )
+            await session.commit()
+            logger.warning(
+                "ingestion_job_stopped_organization_suspended",
+                job_id=str(job_id),
+                connector_config_id=str(connector_config_id),
+                pages_fetched=pages_fetched,
+                documents_processed=documents_processed,
+            )
+            if job_row is None:
+                raise RuntimeError("Ingestion job disappeared mid-update.")  # unreachable: updated above
+            return IngestionJob.model_validate(job_row)
 
         completed_at = datetime.now(UTC)
         job_row = await repository.update_ingestion_job(

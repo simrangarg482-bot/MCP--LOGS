@@ -39,18 +39,25 @@ from app.api.middleware import RequestContextMiddleware
 from app.api.routers import (
     ask,
     auth,
+    feedback,
     graph,
     health,
     incidents,
     insights,
     knowledge,
+    members,
     observability,
     postmortems,
+    roles,
+    scim,
+    scim_admin,
     tenancy,
     memory,
+    platform,
     users,
 )
 from app.core.exceptions import EKIPError
+from app.core.scim.errors import ScimError
 from app.shared.config.logging import get_logger
 from app.shared.config.settings import get_settings
 from app.shared.config.tracing import configure_tracing
@@ -154,20 +161,27 @@ def create_app() -> FastAPI:
     app.add_middleware(RequestContextMiddleware)
 
     app.add_exception_handler(EKIPError, ekip_error_handler)
+    app.add_exception_handler(ScimError, scim.scim_error_handler)
 
     app.include_router(health.router)
     app.include_router(auth.router)
     app.include_router(incidents.router)
     app.include_router(ask.router)
+    app.include_router(feedback.router)
     app.include_router(postmortems.router)
     app.include_router(knowledge.router)
     app.include_router(observability.router)
     app.include_router(tenancy.router)
     app.include_router(tenancy.admin_router)
+    app.include_router(roles.router)
+    app.include_router(members.router)
+    app.include_router(scim.router)
+    app.include_router(scim_admin.router)
     app.include_router(users.router)
     app.include_router(memory.router)
     app.include_router(graph.router)
     app.include_router(insights.router)
+    app.include_router(platform.router)
 
     configure_tracing(app)
 

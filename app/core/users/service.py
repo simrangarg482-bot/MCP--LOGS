@@ -15,10 +15,12 @@ import uuid
 from collections.abc import Sequence
 from datetime import datetime, timezone
 
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import ConflictError, NotFoundError, PermissionDeniedError
-from app.core.users import repository
+from app.core.users import repository, role_repository
+from app.core.users.permissions import BUILTIN_ADMIN_ROLE_DESCRIPTION
 from app.core.users.schemas import (
     OrganizationMember,
     UserCredentialLookup,
@@ -27,6 +29,7 @@ from app.core.users.schemas import (
 )
 from app.database.session import set_tenant_context
 from app.shared.config.logging import get_logger
+from app.shared.organization_status import is_recognized, is_suspended
 from app.shared.schemas import ActorKind, Identity
 
 logger = get_logger(__name__)
@@ -49,8 +52,26 @@ def _ensure_same_organization(actor: Identity, organization_id: uuid.UUID) -> No
         )
 
 
+MEMBERSHIP_DEACTIVATED_CODE = "auth.membership_deactivated"
+MEMBERSHIP_DEACTIVATED_MESSAGE = (
+    "Your access to this organization has been deactivated. Contact your administrator."
+)
+
+
+def membership_deactivated_error() -> PermissionDeniedError:
+    """The one refusal for a member whose access to THIS organization was deactivated (REST, MCP, login,
+    refresh, selection, switching and SSO all raise exactly this)."""
+    return PermissionDeniedError(MEMBERSHIP_DEACTIVATED_MESSAGE, error_code=MEMBERSHIP_DEACTIVATED_CODE)
+
+
 async def resolve_identity(
-    session: AsyncSession, user_id: uuid.UUID, organization_id: uuid.UUID
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    organization_id: uuid.UUID,
+    *,
+    token_issued_at: datetime | None = None,
+    token_org_epoch: int | None = None,
+    token_member_epoch: int | None = None,
 ) -> Identity:
     """This function builds a fully populated `Identity` for a user within a specific 
     organization by loading their user record, roles, and permissions. It raises 
@@ -89,6 +110,72 @@ async def resolve_identity(
             error_code="auth.email_not_verified",
         )
 
+    # A password reset/change stamps `sessions_valid_after`: any access token issued
+    # before that instant is refused immediately, whatever its remaining lifetime.
+    # `token_issued_at` carries the token's microsecond `iat_us` (or, for a token
+    # minted before that claim existed, the START of its `iat` second -- so a
+    # same-second pre-reset token is refused, never accepted). Zero extra queries.
+    if (
+        token_issued_at is not None
+        and user.sessions_valid_after is not None
+        and token_issued_at < user.sessions_valid_after
+    ):
+        raise PermissionDeniedError(
+            "This session was ended because the password changed. Sign in again.",
+            error_code="auth.session_revoked",
+        )
+
+    # THE central organization-status check. Every authenticated REST request, every MCP tool
+    # call and the MCP authorization step resolve their caller here, so a suspended organization
+    # is refused for already-issued access tokens at once -- not after they expire. It is scoped
+    # to THIS organization: the same user's token for another organization resolves normally.
+    # One primary-key read of one column; `organizations` has no RLS.
+    exists, org_status, org_epoch = await repository.get_organization_access_state(
+        session, organization_id
+    )
+    if not exists:
+        raise NotFoundError(
+            "Organization not found.",
+            error_code="organization.not_found",
+            detail={"organization_id": str(organization_id)},
+        )
+    if is_suspended(org_status):
+        raise PermissionDeniedError(
+            "This organization's access has been suspended. Contact your administrator.",
+            error_code="auth.organization_suspended",
+            detail=await repository.get_organization_suspension_notice(session, organization_id),
+        )
+    if not is_recognized(org_status):
+        # The database CHECK makes this unreachable for new data; kept as a loud, non-blocking
+        # signal rather than locking a customer out over an unexpected value.
+        logger.warning("organization_status_unrecognized", organization_id=str(organization_id))
+    # The organization session epoch moves on every suspension AND every reactivation, so an access
+    # token issued before a suspension stays dead after the organization is reactivated: the user
+    # signs in again. A token minted before the claim existed carries epoch 0 (== the value every
+    # organization has until its first suspension, so existing sessions are unaffected). A counter,
+    # not a timestamp: nothing is compared across machine clocks. Same read as the status above.
+    if token_org_epoch is not None and token_org_epoch != org_epoch:
+        raise PermissionDeniedError(
+            "This session was ended because the organization's access changed. Sign in again.",
+            error_code="auth.session_revoked",
+        )
+
+    # THIS person's membership of THIS organization (organization-scoped offboarding). A deactivated member
+    # is refused on the very next request, and the member epoch -- which moves on every deactivation AND
+    # every reactivation -- ends every token issued before it, so reactivation cannot revive them either.
+    # A token minted before the claim existed carries epoch 0 (= a member who was never deactivated).
+    # One primary-key read; the tenant context for this organization was set at the top of this function.
+    member_deactivated, member_epoch = await repository.get_member_access_state(
+        session, organization_id, user_id
+    )
+    if member_deactivated:
+        raise membership_deactivated_error()
+    if token_member_epoch is not None and token_member_epoch != member_epoch:
+        raise PermissionDeniedError(
+            "This session was ended because your access to the organization changed. Sign in again.",
+            error_code="auth.session_revoked",
+        )
+
     role_names = await repository.get_role_names(session, user_id, organization_id)
     permission_codes = await repository.get_permission_codes(
         session, user_id, organization_id
@@ -107,6 +194,12 @@ async def resolve_identity(
         permissions=frozenset(permission_codes),
         project_permissions=project_permissions,
     )
+
+
+async def get_display_name(session: AsyncSession, user_id: uuid.UUID) -> str | None:
+    """A user's display name, or None -- e.g. to say who sent an invitation."""
+    user = await repository.get_by_id(session, user_id)
+    return user.display_name if user is not None else None
 
 
 async def get_user_profile(
@@ -160,13 +253,18 @@ async def list_organization_members(
     """
     _ensure_same_organization(actor, organization_id)
     rows = await repository.list_organization_members(session, organization_id)
+    role_ids = await role_repository.get_member_role_ids(session, organization_id)
+    deactivated = await repository.get_member_deactivation_sources(session, organization_id)
     return [
         OrganizationMember(
             id=user.id,
             email=user.email,
             display_name=user.display_name,
             is_active=user.is_active,
+            membership_status="deactivated" if user.id in deactivated else "active",
+            membership_source=deactivated.get(user.id),
             roles=tuple(role_names),
+            role_ids=role_ids.get(user.id, ()),
             created_at=user.created_at,
         )
         for user, role_names in rows
@@ -314,14 +412,27 @@ async def resolve_user_for_sso_provisioning(
     return existing.id
 
 
+async def holds_any_role_in_organization(
+    session: AsyncSession, *, user_id: uuid.UUID, organization_id: uuid.UUID
+) -> bool:
+    """Whether `user_id` currently holds at least one role in `organization_id`
+    -- i.e. is still a member. Reads `user_roles` under the caller's tenant
+    context (which must already be `organization_id`'s)."""
+    return bool(await role_repository.get_user_role_ids(session, organization_id, user_id))
+
+
 async def assign_role(
     session: AsyncSession,
     *,
     user_id: uuid.UUID,
     organization_id: uuid.UUID,
     role_id: uuid.UUID,
+    granted_via: str = "manual",
 ) -> None:
-    """Grant `role_id` to `user_id` within `organization_id`, idempotently.
+    """Grant `role_id` to `user_id` within `organization_id`, idempotently. `granted_via` records provenance:
+    only SCIM group synchronization passes `scim`; every other caller (administrators, invitations, access
+    rules) is `manual`. A MANUAL grant of a role that SCIM had created converts it to `manual`, so
+    synchronization can never take away a role an administrator has chosen to give.
 
     Checks for an existing assignment first rather than relying on the
     database to reject a duplicate composite key, so a caller that runs this
@@ -337,6 +448,9 @@ async def assign_role(
     """
     existing = await repository.get_user_role(session, user_id, organization_id, role_id)
     if existing is not None:
+        if granted_via == "manual" and getattr(existing, "granted_via", "manual") != "manual":
+            existing.granted_via = "manual"
+            await session.flush()
         return
 
     # Serialize with account anonymization (`core.privacy`): take a shared
@@ -352,7 +466,7 @@ async def assign_role(
         )
 
     await repository.insert_user_role(
-        session, user_id=user_id, organization_id=organization_id, role_id=role_id
+        session, user_id=user_id, organization_id=organization_id, role_id=role_id, granted_via=granted_via
     )
     logger.info(
         "role_assigned",
@@ -471,6 +585,60 @@ async def get_credential_lookup(session: AsyncSession, email: str) -> UserCreden
     )
 
 
+def _credential_lookup(row) -> UserCredentialLookup:
+    return UserCredentialLookup(
+        user_id=row.id,
+        password_hash=row.password_hash,
+        is_active=row.is_active,
+        email_verified_at=row.email_verified_at,
+        email=row.email,
+    )
+
+
+async def get_credential_lookup_by_id(
+    session: AsyncSession, user_id: uuid.UUID
+) -> UserCredentialLookup | None:
+    row = await repository.get_by_id(session, user_id)
+    return _credential_lookup(row) if row is not None else None
+
+
+async def get_credential_lookup_by_email_ci(
+    session: AsyncSession, email: str
+) -> UserCredentialLookup | None:
+    """Case-insensitive variant, for flows that must find the account however the
+    address was typed (password reset)."""
+    row = await repository.get_by_email_ci(session, email)
+    return _credential_lookup(row) if row is not None else None
+
+
+async def replace_password(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    password_hash: str,
+    sessions_valid_after: datetime,
+) -> None:
+    """Set a new password and the session cut-off together (reset / change).
+    Callers revoke the refresh tokens in the same transaction."""
+    if not await repository.replace_password_hash(
+        session,
+        user_id=user_id,
+        password_hash=password_hash,
+        sessions_valid_after=sessions_valid_after,
+    ):
+        raise NotFoundError("User not found.", error_code="user.not_found")
+
+
+async def upgrade_password_hash(
+    session: AsyncSession, *, user_id: uuid.UUID, old_hash: str, new_hash: str
+) -> bool:
+    """Re-hash the same password with the current algorithm (see
+    `core.auth.passwords.needs_rehash`). Never changes who is signed in."""
+    return await repository.upgrade_password_hash(
+        session, user_id=user_id, old_hash=old_hash, new_hash=new_hash
+    )
+
+
 async def set_password(session: AsyncSession, *, user_id: uuid.UUID, password_hash: str) -> None:
     """Set `user_id`'s local password credential (already hashed by the
     caller -- `core/users` has no opinion on the hashing scheme, that's
@@ -507,25 +675,60 @@ async def list_organizations_for_login(session: AsyncSession, user_id: uuid.UUID
     return await repository.list_organization_ids(session, user_id)
 
 
+async def split_organizations_by_membership(
+    session: AsyncSession, user_id: uuid.UUID
+) -> tuple[list[uuid.UUID], list[uuid.UUID]]:
+    """`(active, deactivated)` organization ids `user_id` holds a role in. Login, organization selection,
+    switching and the organization list offer ONLY the active ones; the deactivated ones are returned so
+    a caller can say "your access was deactivated" instead of a misleading "not a member"."""
+    all_ids = list(await list_organizations_for_login(session, user_id))
+    deactivated = await repository.list_deactivated_organization_ids(session, user_id)
+    return (
+        [org_id for org_id in all_ids if org_id not in deactivated],
+        [org_id for org_id in all_ids if org_id in deactivated],
+    )
+
+
 _ADMIN_ROLE_NAME = "admin"
 
 
 async def ensure_admin_role(session: AsyncSession) -> uuid.UUID:
-    """Fetch-or-create the platform's `"admin"` role, granting it every
-    permission code `repository.ADMIN_PERMISSION_CODES` lists, and return its
-    id.
+    """Return the id of the platform's built-in `"admin"` role.
 
-    Idempotent -- safe to call on every signup, not just the first ever. This
-    is the same bootstrap `scripts/seed_test_organization.py`'s dev-only
-    script has always performed by hand; extracted here so real signup
-    (`core.auth.service.signup`) grants a newly-created organization's first
-    user the same working permission set without duplicating that logic.
+    The built-in role (and its grants) is provisioned by migration
+    `e8c3a1f5b7d2` and is immutable to the application's database role, so on a
+    migrated database this is a read. It still creates the role when it is
+    absent (dev/test databases built from the models, or an owner-role script)
+    and still *tries* to top up any grant that `ADMIN_PERMISSION_CODES` lists
+    but the role lacks -- the old "self-heal on signup". Under row-level
+    security that top-up is refused by design; the refusal is logged loudly and
+    swallowed (the savepoint keeps the signup transaction alive) so a catalog
+    that is ahead of the database degrades one permission, not every signup.
+    The fix for that situation is a migration, never a request-time write.
     """
-    permissions = await repository.get_or_create_permissions(session, repository.ADMIN_PERMISSION_CODES)
-    role = await repository.get_or_create_role_by_name(
-        session, _ADMIN_ROLE_NAME, description="Full-access role granted to an organization's first user."
+    role = await repository.get_role_by_name(session, _ADMIN_ROLE_NAME)
+    if role is None:
+        permissions = await repository.get_or_create_permissions(
+            session, repository.ADMIN_PERMISSION_CODES
+        )
+        role = await repository.get_or_create_role_by_name(
+            session, _ADMIN_ROLE_NAME, description=BUILTIN_ADMIN_ROLE_DESCRIPTION
+        )
+        await repository.grant_permissions_to_role(session, role_id=role.id, permissions=permissions)
+        return role.id
+
+    missing = await repository.get_missing_permission_codes(
+        session, role.id, repository.ADMIN_PERMISSION_CODES
     )
-    await repository.grant_permissions_to_role(session, role_id=role.id, permissions=permissions)
+    if missing:
+        try:
+            async with session.begin_nested():
+                permissions = await repository.get_or_create_permissions(session, missing)
+                await repository.grant_permissions_to_role(
+                    session, role_id=role.id, permissions=permissions
+                )
+        except DBAPIError:
+            logger.error("builtin_admin_role_missing_permissions", missing=sorted(missing))
     return role.id
 
 

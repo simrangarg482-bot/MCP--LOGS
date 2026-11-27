@@ -2,6 +2,9 @@ import { apiRequest, mockDelay } from "./client";
 import { USE_MOCK_DATA } from "./config";
 import type {
   AuthUser,
+  ChangePasswordPayload,
+  PasswordResetCompleted,
+  PasswordResetRequested,
   InvitationAcceptPayload,
   LoginPayload,
   LoginResponse,
@@ -9,6 +12,9 @@ import type {
   OrganizationsListResponse,
   SessionTokens,
   SignupPayload,
+  SsoCallbackPayload,
+  SsoOptions,
+  SsoStart,
   SwitchOrganizationPayload,
   VerificationRequested,
   VerifyEmailResult,
@@ -29,6 +35,7 @@ const MOCK_USER: AuthUser = {
   email: "bhawna.relhan@navikenz.com",
   organizationId: "org-1",
   role: "owner",
+  roles: ["admin"],
   permissions: ["tenancy:manage", "knowledge:review", "observability:read", "incident:write", "postmortem:write", "postmortem:approve", "audit:read"],
 };
 
@@ -82,6 +89,44 @@ export async function resendVerification(email: string): Promise<VerificationReq
     method: "POST",
     body: { email },
   });
+}
+
+/**
+ * `POST /auth/password/forgot` (always 202). The answer never depends on whether the
+ * address has an account, so the UI must show the same message either way.
+ */
+export async function requestPasswordReset(email: string): Promise<PasswordResetRequested> {
+  if (USE_MOCK_DATA) {
+    return mockDelay({ status: "reset_requested", message: "ok" }, 400);
+  }
+  return apiRequest<PasswordResetRequested>("/auth/password/forgot", { method: "POST", body: { email } });
+}
+
+/**
+ * `POST /auth/password/reset`. `token` comes from the URL FRAGMENT of the emailed link and is
+ * held in memory only. Resolves only if the SERVER consumed the token; returns no session --
+ * the person signs in with the new password.
+ */
+export async function resetPassword(token: string, newPassword: string): Promise<PasswordResetCompleted> {
+  if (USE_MOCK_DATA) {
+    return mockDelay({ status: "password_reset", message: "ok" }, 400);
+  }
+  return apiRequest<PasswordResetCompleted>("/auth/password/reset", {
+    method: "POST",
+    body: { token, newPassword },
+  });
+}
+
+/**
+ * `POST /auth/password/change` (authenticated). Returns the NEW session for this organization:
+ * every other session -- and the old access token -- is ended by the server, so the caller must
+ * replace its stored tokens with this response.
+ */
+export async function changePassword(payload: ChangePasswordPayload): Promise<SessionTokens> {
+  if (USE_MOCK_DATA) {
+    return mockDelay(MOCK_TOKENS, 400);
+  }
+  return apiRequest<SessionTokens>("/auth/password/change", { method: "POST", body: payload });
 }
 
 export async function login(payload: LoginPayload): Promise<LoginResponse> {
@@ -165,6 +210,57 @@ export async function acceptInvitation(
   });
 }
 
+/**
+ * `GET /auth/{slug}/sso-options` (public, rate limited): may the login page offer SSO for this
+ * organization, and with which provider. Never returns an issuer, client id or organization name.
+ */
+export async function getSsoOptions(slug: string): Promise<SsoOptions> {
+  if (USE_MOCK_DATA) {
+    return mockDelay(
+      slug === "acme"
+        ? { available: true, provider: "okta", providerLabel: "Okta" }
+        : { available: false, provider: null, providerLabel: null },
+      250,
+    );
+  }
+  return apiRequest<SsoOptions>(`/auth/${encodeURIComponent(slug)}/sso-options`);
+}
+
+/** `GET /auth/{slug}/login?redirect_uri=...` -- start an SSO login. */
+export async function beginSsoLogin(slug: string, redirectUri: string): Promise<SsoStart> {
+  if (USE_MOCK_DATA) {
+    return mockDelay(
+      {
+        authorizationUrl: `${redirectUri}?code=mock-code&state=mock-state`,
+        state: "mock-state",
+        transactionId: "mock-transaction",
+      },
+      250,
+    );
+  }
+  return apiRequest<SsoStart>(
+    `/auth/${encodeURIComponent(slug)}/login?redirect_uri=${encodeURIComponent(redirectUri)}`,
+  );
+}
+
+/**
+ * `POST /auth/callback?redirect_uri=...` -- exchange the provider's code for an EKIP session.
+ * The server checks `state` and `transactionId` against its own record (single use); tokens come
+ * back in the JSON body, never in a URL.
+ */
+export async function completeSsoLogin(
+  payload: SsoCallbackPayload,
+  redirectUri: string,
+): Promise<SessionTokens> {
+  if (USE_MOCK_DATA) {
+    return mockDelay(MOCK_TOKENS, 300);
+  }
+  return apiRequest<SessionTokens>(`/auth/callback?redirect_uri=${encodeURIComponent(redirectUri)}`, {
+    method: "POST",
+    body: payload,
+  });
+}
+
 export async function refreshSession(refreshToken: string): Promise<SessionTokens> {
   return apiRequest<SessionTokens>("/auth/refresh", {
     method: "POST",
@@ -188,6 +284,7 @@ export async function getCurrentUser(organizationId: string): Promise<AuthUser> 
     email: profile.email,
     organizationId,
     role: (profile.roles[0] as AuthUser["role"]) ?? "member",
+    roles: profile.roles,
     permissions: profile.permissions,
   };
 }

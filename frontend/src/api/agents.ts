@@ -13,9 +13,11 @@ import { mockAgentStats } from "@/mocks/data/agents";
  * own question history, not a per-agent execution list, so it isn't a
  * substitute and this function was removed rather than pointed at it.
  */
-export async function listAgentStats(): Promise<AgentExecutionStats[]> {
+export async function listAgentStats(since?: string): Promise<AgentExecutionStats[]> {
   if (USE_MOCK_DATA) {
     return mockDelay(mockAgentStats);
   }
-  return apiRequest<AgentExecutionStats[]>(`/observability/agents`);
+  // `typeof` guard: react-query hands `queryFn` a context object when a function is passed directly.
+  const query = typeof since === "string" && since ? `?since=${encodeURIComponent(since)}` : "";
+  return apiRequest<AgentExecutionStats[]>(`/observability/agents${query}`);
 }
